@@ -1,0 +1,33 @@
+{
+  "name": "tavern-master",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted AI Dungeon Master for small groups",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @tavern/server",
+    "dev:worker": "npm run dev:worker -w @tavern/server",
+    "dev:web": "npm run dev -w @tavern/web",
+    "build": "npm run build -w @tavern/server && npm run build -w @tavern/web",
+    "test": "npm run test -w @tavern/server",
+    "typecheck": "npm run typecheck -w @tavern/server && npm run typecheck -w @tavern/web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10",
+    "typescript-eslint": "^8.72.2"
+  }
+}
