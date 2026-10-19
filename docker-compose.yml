@@ -1,0 +1,101 @@
+# Tavern Master — full stack.
+#
+#   cp .env.example .env   # fill in the secrets
+#   docker compose up -d
+#
+# Nothing here uses a fixed container name, so the stack can sit next to other
+# compose projects. The project name defaults to "tavern"; override it with
+# COMPOSE_PROJECT_NAME or `docker compose -p <name>`.
+name: tavern
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-app: &app
+  <<: *hardening
+  image: ${TAVERN_IMAGE:-ghcr.io/samohrenberg/rpg:latest}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  # PUID/PGID-style mapping: the process runs as this uid:gid and owns the
+  # files it writes. With bind mounts, chown the host directories to match.
+  user: '${PUID:-1000}:${PGID:-1000}'
+  env_file:
+    - .env
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+services:
+  web:
+    <<: *app
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-tavern}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-tavern}
+      DATA_DIR: /data
+    ports:
+      # Bound to loopback by default; a reverse proxy on the host can reach it.
+      # Set APP_BIND=0.0.0.0 for direct LAN access, or remove the mapping and
+      # attach the proxy network instead (docker/compose.proxy.example.yml).
+      - '${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080'
+    volumes:
+      - ${UPLOADS_PATH:-uploads}:/data/uploads
+    networks:
+      - edge
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: ${WEB_MEM_LIMIT:-384m}
+
+  db:
+    <<: *hardening
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tavern}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-tavern}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-64MB}
+      - -c
+      - max_connections=40
+    # The entrypoint starts as root to fix volume ownership, then drops to the
+    # postgres user; these are the capabilities that step needs.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    shm_size: 128m
+    volumes:
+      - ${PGDATA_PATH:-pgdata}:/var/lib/postgresql/data
+    # Internal network only: the database is never published or routable.
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    mem_limit: ${DB_MEM_LIMIT:-512m}
+
+networks:
+  # Outbound access for web (LLM API) and the published port.
+  edge: {}
+  # No route in or out; db lives only here.
+  internal:
+    internal: true
+
+volumes:
+  pgdata: {}
+  uploads: {}
