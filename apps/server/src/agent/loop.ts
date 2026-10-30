@@ -1,0 +1,172 @@
+import type { ResolvedLlm } from '../llm/index.js';
+import type { Usage } from '../llm/pricing.js';
+import type { Block, Message, StreamEvent } from '../llm/types.js';
+import type { Rng } from './dice.js';
+import type { GameStore, TurnContext } from './store.js';
+import { dispatchTool, toolDefs } from './tools.js';
+
+export interface AgentRun {
+  llm: ResolvedLlm;
+  system: { text: string; cache?: boolean }[];
+  messages: Message[];
+  ctx: TurnContext;
+  store: GameStore;
+  maxRounds: number;
+  maxTokens: number;
+  onText?: (text: string) => void;
+  /** A short, player-safe line about a tool the DM just used. */
+  onTool?: (tool: string, summary: string) => void;
+  onUsage?: (usage: Usage, model: string) => Promise<void> | void;
+  signal?: AbortSignal;
+  rng?: Rng;
+}
+
+export interface AgentResult {
+  text: string;
+  refused: boolean;
+  truncated: boolean;
+  rounds: number;
+  toolCalls: number;
+}
+
+const REFUSAL_TEXT =
+  'The narrator falters and sets the scene aside. (The model declined to continue this thread; try approaching it differently.)';
+
+/** What players may see about a tool call. Never includes hidden state. */
+function publicSummary(tool: string, input: unknown, result: string): string {
+  switch (tool) {
+    case 'roll_dice':
+      return result;
+    case 'lookup_rules':
+      return `Consulted the rules: “${String((input as { query?: unknown })?.query ?? '').slice(0, 80)}”`;
+    case 'get_state':
+      return 'Reviewed the party';
+    case 'reveal_secret':
+      return 'A secret comes to light';
+    case 'remember':
+      return 'Made a note for later';
+    default:
+      return result.slice(0, 160);
+  }
+}
+
+/**
+ * The DM's turn: call the model, run the tools it asks for, feed the results
+ * back, and repeat until it writes its narration or the round limit is hit.
+ * The conversation only ever grows by appending, and assistant content is
+ * returned to the model untouched, which keeps the prompt cache valid and any
+ * reasoning blocks intact for the rest of the turn.
+ */
+export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
+  const { llm, ctx, store } = run;
+  const messages = [...run.messages];
+  const tools = toolDefs();
+  const texts: string[] = [];
+  let toolCalls = 0;
+  let truncated = false;
+
+  for (let round = 1; round <= run.maxRounds; round++) {
+    let done: Extract<StreamEvent, { type: 'done' }> | undefined;
+    let roundText = '';
+    for await (const ev of llm.provider.stream({
+      model: llm.model,
+      system: run.system,
+      messages,
+      tools,
+      maxTokens: run.maxTokens,
+      effort: llm.effort,
+      signal: run.signal,
+    })) {
+      if (ev.type === 'text') {
+        if (!roundText && texts.length) run.onText?.('\n\n');
+        roundText += ev.text;
+        run.onText?.(ev.text);
+      } else {
+        done = ev;
+      }
+    }
+    if (!done) throw new Error('model stream ended without a result');
+    await run.onUsage?.(done.usage, done.model);
+    if (roundText.trim()) texts.push(roundText.trim());
+
+    if (done.stop === 'refusal') {
+      return { text: texts.join('\n\n') || REFUSAL_TEXT, refused: true, truncated, rounds: round, toolCalls };
+    }
+    if (done.stop === 'max_tokens') truncated = true;
+
+    const calls = done.content.filter(
+      (b): b is Extract<Block, { type: 'tool_use' }> => b.type === 'tool_use',
+    );
+    if (done.stop !== 'tool_use' || calls.length === 0) {
+      return { text: texts.join('\n\n'), refused: false, truncated, rounds: round, toolCalls };
+    }
+
+    const results: Block[] = [];
+    for (const call of calls) {
+      toolCalls++;
+      const outcome = await dispatchTool(call.name, call.input, ctx, store, run.rng);
+      results.push({
+        type: 'tool_result',
+        toolUseId: call.id,
+        content: outcome.content,
+        isError: outcome.isError,
+      });
+      if (!outcome.isError) run.onTool?.(call.name, publicSummary(call.name, call.input, outcome.content));
+    }
+    if (round === run.maxRounds - 1) {
+      results.push({
+        type: 'text',
+        text: 'You have one reply left this turn. Write the narration now without further tool calls.',
+      });
+    }
+
+    // Move the cache breakpoint to the newest tool results.
+    for (const m of messages)
+      if (m.role === 'user' && m.content.some((b) => b.type === 'tool_result')) m.cache = false;
+    messages.push({ role: 'assistant', content: done.content });
+    messages.push({ role: 'user', content: results, cache: true });
+  }
+
+  // Out of rounds while still asking for tools: use whatever was narrated.
+  return {
+    text:
+      texts.join('\n\n') ||
+      'The dust settles while the narrator gathers their thoughts. (The turn ran out of steps; try again.)',
+    refused: false,
+    truncated: true,
+    rounds: run.maxRounds,
+    toolCalls,
+  };
+}
+
+/**
+ * Last line of defence for hidden information: if narration quotes a secret
+ * that has not been revealed through reveal_secret, the passage is blacked
+ * out before the message is stored or broadcast. It catches verbatim leaks;
+ * the prompt and the reveal tool are the first line.
+ */
+export function redactSecrets(text: string, unrevealed: string[]): { text: string; redacted: boolean } {
+  let out = text;
+  let redacted = false;
+  for (const secret of unrevealed) {
+    for (const clause of secret.split(/[.;!?\n]+/)) {
+      const words = clause.trim().split(/\s+/).filter(Boolean);
+      if (words.join(' ').length < 24) continue;
+      const pattern = new RegExp(
+        words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'),
+        'gi',
+      );
+      if (pattern.test(out)) {
+        redacted = true;
+        out = out.replace(pattern, '▮▮▮');
+      }
+    }
+  }
+  return { text: out, redacted };
+}
+
+/** Keep only the citations the narration actually refers to. */
+export function usedCitations<T extends { ref: string }>(text: string, citations: T[]): T[] {
+  const refs = new Set([...text.matchAll(/\[(R\d+)\]/g)].map((m) => m[1]));
+  return citations.filter((c) => refs.has(c.ref));
+}
