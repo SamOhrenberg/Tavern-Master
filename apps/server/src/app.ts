@@ -2,18 +2,31 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import fastifyCookie from '@fastify/cookie';
+import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import { config } from './config.js';
 import { q } from './db/pool.js';
 import { HttpError } from './errors.js';
+import { registerSecurity } from './http/security.js';
 import { loggerOptions } from './log.js';
+import { realtimeRoutes } from './realtime/ws.js';
+import { accountRoutes } from './routes/account.js';
+import { adminRoutes } from './routes/admin.js';
+import { authRoutes } from './routes/auth.js';
+import { campaignRoutes } from './routes/campaigns.js';
+import { friendRoutes } from './routes/friends.js';
+import { systemRoutes } from './routes/systems.js';
 import { securityHeaders } from './security/headers.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** Where the built SPA lives: WEB_DIST in the image, the workspace build in dev. */
 function webDist(): string | undefined {
-  const candidates = [process.env.WEB_DIST, join(HERE, '..', '..', 'web', 'dist')].filter(Boolean) as string[];
+  const candidates = [process.env.WEB_DIST, join(HERE, '..', '..', 'web', 'dist')].filter(
+    Boolean,
+  ) as string[];
   return candidates.find((p) => existsSync(join(p, 'index.html')));
 }
 
@@ -35,16 +48,25 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   app.setErrorHandler((err: FastifyError | HttpError, req, reply) => {
     if (err instanceof HttpError) {
-      if (err.status === 429 && err.details && typeof err.details === 'object' && 'retryAfter' in err.details) {
+      if (
+        err.status === 429 &&
+        err.details &&
+        typeof err.details === 'object' &&
+        'retryAfter' in err.details
+      ) {
         reply.header('Retry-After', String((err.details as { retryAfter: number }).retryAfter));
       }
-      return reply.status(err.status).send({ error: { code: err.code, message: err.message, details: err.details } });
+      return reply
+        .status(err.status)
+        .send({ error: { code: err.code, message: err.message, details: err.details } });
     }
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (status >= 500) req.log.error({ err }, 'unhandled error');
     // Never leak internals: 5xx bodies are generic.
     const message = status >= 500 ? 'Something went wrong.' : err.message;
-    return reply.status(status).send({ error: { code: status >= 500 ? 'internal' : (err.code ?? 'bad_request'), message } });
+    return reply
+      .status(status)
+      .send({ error: { code: status >= 500 ? 'internal' : (err.code ?? 'bad_request'), message } });
   });
 
   app.get('/healthz', async (_req, reply) => {
@@ -55,6 +77,21 @@ export async function buildApp(): Promise<FastifyInstance> {
       return reply.status(503).send({ status: 'degraded' });
     }
   });
+
+  await app.register(fastifyCookie);
+  await app.register(fastifyMultipart, {
+    limits: { fileSize: cfg.MAX_UPLOAD_MB * 1024 * 1024, files: 1, fields: 4, fieldSize: 2048 },
+  });
+  await app.register(fastifyWebsocket, { options: { maxPayload: 16 * 1024 } });
+  await registerSecurity(app);
+
+  await app.register(authRoutes);
+  await app.register(accountRoutes);
+  await app.register(adminRoutes);
+  await app.register(friendRoutes);
+  await app.register(systemRoutes);
+  await app.register(campaignRoutes);
+  await app.register(realtimeRoutes);
 
   await registerSpa(app);
   return app;
@@ -76,7 +113,10 @@ async function registerSpa(app: FastifyInstance): Promise<void> {
     index: ['index.html'],
     setHeaders(res, path) {
       // Vite fingerprints everything under /assets.
-      res.header('Cache-Control', path.includes('assets') ? 'public, max-age=31536000, immutable' : 'no-cache');
+      res.header(
+        'Cache-Control',
+        path.includes('assets') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      );
     },
   });
 }

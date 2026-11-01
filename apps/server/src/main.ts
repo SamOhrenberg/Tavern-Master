@@ -1,13 +1,19 @@
 import { buildApp } from './app.js';
+import { ensureAdmin } from './auth/bootstrap.js';
 import { config } from './config.js';
 import { migrate } from './db/migrate.js';
 import { closeDb, waitForDb } from './db/pool.js';
 import { log } from './log.js';
+import { failStaleTurns } from './realtime/room.js';
+import { seedIfEmpty } from './seed.js';
 
 async function main(): Promise<void> {
   const cfg = config();
   await waitForDb();
   await migrate();
+  await ensureAdmin();
+  await seedIfEmpty();
+  await failStaleTurns();
 
   const app = await buildApp();
   await app.listen({ host: cfg.HOST, port: cfg.PORT });
