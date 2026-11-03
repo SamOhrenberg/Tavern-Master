@@ -35,6 +35,14 @@ export async function ensureAdmin(): Promise<void> {
 
   // Only one outstanding setup invite at a time.
   await q(`UPDATE invites SET revoked_at = now() WHERE note = 'first-run setup' AND revoked_at IS NULL`);
-  const invite = await createInvite({ role: 'admin', note: 'first-run setup', maxUses: 1, expiresInDays: 2, createdBy: null });
-  log().warn(`No users exist yet. Register the first administrator with this one-time invite code: ${invite.code}`);
+  const invite = await createInvite({
+    role: 'admin',
+    note: 'first-run setup',
+    maxUses: 1,
+    expiresInDays: 2,
+    createdBy: null,
+  });
+  log().warn(
+    `No users exist yet. Register the first administrator with this one-time invite code: ${invite.code}`,
+  );
 }

@@ -44,7 +44,11 @@ export function enforceLimit(limiter: RateLimiter, key: string): void {
  * Is this browser origin allowed to make state-changing requests?
  * Same-origin requests always are; anything else must be listed explicitly.
  */
-export function originAllowed(origin: string | undefined, host: string | undefined, fetchSite?: string): boolean {
+export function originAllowed(
+  origin: string | undefined,
+  host: string | undefined,
+  fetchSite?: string,
+): boolean {
   const cfg = config();
   if (!origin) {
     // Non-browser clients send no Origin. Browsers that omit it still send
@@ -102,7 +106,10 @@ export async function registerSecurity(app: FastifyInstance): Promise<void> {
 
     // CSRF layer 1: the request must come from our own origin.
     if (!originAllowed(origin, req.host, req.headers['sec-fetch-site'] as string | undefined)) {
-      throw forbidden('Cross-site request blocked. Check BASE_URL matches the address you use.', 'bad_origin');
+      throw forbidden(
+        'Cross-site request blocked. Check BASE_URL matches the address you use.',
+        'bad_origin',
+      );
     }
     // CSRF layer 2: authenticated requests must echo the session-bound token,
     // which a cross-site page cannot read. Anonymous requests (login, register)

@@ -27,7 +27,9 @@ export async function migrate(dir = MIGRATIONS_DIR): Promise<string[]> {
          applied_at timestamptz NOT NULL DEFAULT now()
        )`,
     );
-    const done = new Set((await q<{ name: string }>('SELECT name FROM schema_migrations', [], client)).map((r) => r.name));
+    const done = new Set(
+      (await q<{ name: string }>('SELECT name FROM schema_migrations', [], client)).map((r) => r.name),
+    );
     for (const file of await listMigrations(dir)) {
       if (done.has(file)) continue;
       const sql = await readFile(join(dir, file), 'utf8');

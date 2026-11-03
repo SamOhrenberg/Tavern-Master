@@ -37,7 +37,9 @@ export function safeEqual(a: string, b: string): boolean {
 let encKey: Buffer | undefined;
 function key(): Buffer {
   // Derive a fixed-size key so ENCRYPTION_KEY can be any 32+ char string.
-  encKey ??= Buffer.from(hkdfSync('sha256', config().ENCRYPTION_KEY, 'tavern-master', 'secrets-at-rest-v1', 32));
+  encKey ??= Buffer.from(
+    hkdfSync('sha256', config().ENCRYPTION_KEY, 'tavern-master', 'secrets-at-rest-v1', 32),
+  );
   return encKey;
 }
 
@@ -46,7 +48,12 @@ export function encryptSecret(plaintext: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key(), iv);
   const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  return ['v1', iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ct.toString('base64url')].join('.');
+  return [
+    'v1',
+    iv.toString('base64url'),
+    cipher.getAuthTag().toString('base64url'),
+    ct.toString('base64url'),
+  ].join('.');
 }
 
 export function decryptSecret(blob: string): string {

@@ -41,7 +41,15 @@ export async function createInvite(input: NewInvite, on?: Queryable): Promise<{ 
      VALUES ($1, $2, $3, $4, $5,
              CASE WHEN $6::int IS NULL THEN NULL ELSE now() + make_interval(days => $6::int) END, $7)
      RETURNING id`,
-    [hashCode(code), code.slice(0, 4), input.role, input.note, input.maxUses, input.expiresInDays, input.createdBy],
+    [
+      hashCode(code),
+      code.slice(0, 4),
+      input.role,
+      input.note,
+      input.maxUses,
+      input.expiresInDays,
+      input.createdBy,
+    ],
     on,
   );
   return { id: row!.id, code };

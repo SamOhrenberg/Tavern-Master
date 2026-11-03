@@ -40,7 +40,13 @@ export function loggerOptions(): LoggerOptions {
     },
     serializers: {
       err(err: Error & { status?: number; code?: string }) {
-        return { type: err.name, message: scrub(err.message ?? ''), code: err.code, status: err.status, stack: err.stack };
+        return {
+          type: err.name,
+          message: scrub(err.message ?? ''),
+          code: err.code,
+          status: err.status,
+          stack: err.stack,
+        };
       },
     },
   };

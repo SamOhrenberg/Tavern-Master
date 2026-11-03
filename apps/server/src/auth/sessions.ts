@@ -31,7 +31,11 @@ interface SessionRow {
 }
 
 /** Create a session and return the opaque token for the cookie. Only its hash is stored. */
-export async function createSession(userId: string, ip: string, userAgent: string | undefined): Promise<string> {
+export async function createSession(
+  userId: string,
+  ip: string,
+  userAgent: string | undefined,
+): Promise<string> {
   const token = randomToken(32);
   await q(
     `INSERT INTO sessions (user_id, token_hash, expires_at, ip, user_agent)
