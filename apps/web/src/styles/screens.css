@@ -211,3 +211,187 @@ button.banner {
 .row-detail {
   white-space: normal;
 }
+
+/* ---------- campaigns ---------- */
+.campaign h2 {
+  font-size: 20px;
+}
+.campaign-premise {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+.campaign-meta {
+  gap: 6px;
+  margin-top: 12px;
+}
+.campaign.archived {
+  opacity: 0.7;
+}
+.new-campaign {
+  margin-top: 16px;
+}
+.invite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.invite-card .row {
+  margin-top: 6px;
+}
+.back-home {
+  margin-top: 16px;
+}
+
+/* ---------- friends, search rows ---------- */
+.add-friend {
+  display: flex;
+  gap: 10px;
+}
+.add-friend .input {
+  flex: 1;
+  min-width: 0;
+}
+.add-friend .btn {
+  min-height: 50px;
+  padding: 0 16px;
+}
+.under-field {
+  margin-top: 8px;
+}
+
+/* ---------- library ---------- */
+.tome {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 12px;
+  background: var(--gold-wash);
+  color: var(--gold);
+}
+.tome svg {
+  width: 24px;
+  height: 24px;
+}
+.system-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  margin-top: 10px;
+}
+.library-note {
+  margin-top: 18px;
+  text-align: center;
+}
+.system-lede {
+  margin: -8px 0 14px;
+  font-size: 15px;
+}
+.doc h3 {
+  font-size: 16px;
+}
+.doc-error {
+  margin-top: 8px;
+}
+.doc-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.upload {
+  margin-top: 14px;
+}
+.hits {
+  margin-top: 12px;
+}
+.danger-zone {
+  margin-top: 34px;
+}
+
+/* ---------- you ---------- */
+.card.profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 14px;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.profile-name {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+}
+.profile .small {
+  display: block;
+}
+.signout {
+  margin-top: 26px;
+}
+.about {
+  margin-top: 18px;
+}
+.qr {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+}
+.qr img {
+  width: 220px;
+  height: 220px;
+  border-radius: 16px;
+}
+button.code-box {
+  width: 100%;
+  cursor: copy;
+}
+.code-box.totp-secret {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.code-input {
+  text-align: center;
+  font-size: 22px;
+  letter-spacing: 0.3em;
+}
+.recovery {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.3);
+  text-align: center;
+  font-size: 15px;
+}
+
+/* ---------- admin ---------- */
+.admin-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.admin-body .section-title {
+  margin: 12px 2px 0;
+}
+.list > .spent {
+  opacity: 0.5;
+}
+.cost-note,
+.locked-note {
+  margin-top: 4px;
+}
