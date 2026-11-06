@@ -1,0 +1,213 @@
+/* Screen-level layout: sign-in, the tab screens, and the pieces they share. */
+
+.splash {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+}
+.splash img {
+  border-radius: 20px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* ---------- sign in ---------- */
+.auth {
+  min-height: 100dvh;
+  max-width: 440px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 26px;
+  padding: calc(var(--safe-top) + 28px) calc(var(--gutter) + 4px + var(--safe-right))
+    calc(var(--safe-bottom) + 28px) calc(var(--gutter) + 4px + var(--safe-left));
+  animation: rise 0.5s var(--ease);
+}
+.auth-brand {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.auth-halo {
+  position: absolute;
+  top: -76px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(230, 185, 101, 0.34), transparent 68%);
+  animation: pulse 4s ease-in-out infinite;
+  pointer-events: none;
+}
+.auth-brand img {
+  position: relative;
+  border-radius: 22px;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.auth-brand h1 {
+  position: relative;
+  margin-top: 8px;
+  font-size: 30px;
+  background: linear-gradient(135deg, var(--gold-bright), var(--gold) 50%, var(--gold-deep));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.auth-brand p {
+  position: relative;
+  max-width: 300px;
+  font-size: 15px;
+}
+.auth-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  box-shadow: var(--shadow-pop);
+}
+
+/* ---------- shared bits ---------- */
+.page-head {
+  align-items: center;
+}
+.page-back {
+  margin: 0 -4px 0 -12px;
+}
+.icon-btn.tinted {
+  background: var(--gold-wash);
+  color: var(--gold);
+}
+a.banner,
+button.banner {
+  width: 100%;
+  margin-bottom: 14px;
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.row.top {
+  align-items: flex-start;
+}
+.row.top > .field {
+  flex: 1;
+  min-width: 0;
+}
+.section-title.first {
+  margin-top: 4px;
+}
+.section-title.with-icon span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.section-title.with-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.pill-icon {
+  width: 13px;
+  height: 13px;
+}
+.btn.armed {
+  background: rgba(255, 122, 122, 0.16);
+  border-color: rgba(255, 122, 122, 0.5);
+  color: #ffb1b1;
+}
+.here {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--jade);
+  vertical-align: 1px;
+}
+.kv.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 14px 16px;
+}
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14.5px;
+}
+.kv-row dt {
+  min-width: 0;
+  color: var(--muted);
+}
+.kv-row dd {
+  margin: 0;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.timeline {
+  list-style: none;
+  margin: 0 0 0 6px;
+  padding: 0;
+  border-left: 1px solid var(--line-strong);
+}
+.timeline li {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0 8px 18px;
+  font-size: 14.5px;
+  overflow-wrap: anywhere;
+}
+.timeline li::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 15px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+.timeline time {
+  flex: none;
+  color: var(--faint);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.excerpt {
+  margin-top: 8px;
+  font-family: var(--font-story);
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: #ddd6c8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.row-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--surface-strong);
+  color: var(--gold);
+}
+.row-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.row-title,
+.row-detail {
+  display: block;
+}
+.row-detail {
+  white-space: normal;
+}
