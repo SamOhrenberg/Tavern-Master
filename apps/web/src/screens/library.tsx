@@ -150,3 +150,232 @@ export function LibraryScreen() {
     </main>
   );
 }
+
+const STATUS: Record<RuleDocument['status'], { label: string; tone: string; live: boolean }> = {
+  queued: { label: 'Queued', tone: '', live: true },
+  parsing: { label: 'Reading', tone: 'gold', live: true },
+  embedding: { label: 'Indexing', tone: 'arcane', live: true },
+  ready: { label: 'Ready', tone: 'jade', live: false },
+  failed: { label: 'Failed', tone: 'ember', live: false },
+};
+
+const size = (bytes: number) =>
+  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+export function SystemScreen() {
+  const { id = '' } = useParams();
+  const { admin, locked } = useCanManage();
+  const navigate = useNavigate();
+  const notify = useToast();
+  const systems = useQuery(() => api<{ systems: GameSystem[] }>('/systems'), []);
+  const docs = useQuery(() => api<{ documents: RuleDocument[] }>(`/systems/${id}/documents`), [id]);
+  const [busy, run] = useAction();
+  const [uploading, setUploading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [hits, setHits] = useState<RuleHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+
+  const system = systems.data?.systems.find((s) => s.id === id);
+  const list = docs.data?.documents ?? [];
+  const working = list.some((d) => STATUS[d.status].live);
+  const reloadDocs = docs.reload;
+  const reloadSystems = systems.reload;
+
+  // Ingestion happens in the background: poll while anything is in flight.
+  useEffect(() => {
+    if (!working) return;
+    const timer = window.setInterval(() => void reloadDocs(), 2500);
+    return () => {
+      window.clearInterval(timer);
+      void reloadSystems();
+    };
+  }, [working, reloadDocs, reloadSystems]);
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('title', file.name.replace(/\.[^.]+$/, ''));
+      form.append('file', file);
+      await api(`/systems/${id}/documents`, { form });
+      notify('Uploaded. Indexing has started.');
+      await reloadDocs();
+    } catch (err) {
+      notify(errorMessage(err), 'error');
+    } finally {
+      setUploading(false);
+      if (picker.current) picker.current.value = '';
+    }
+  };
+
+  const search = async (e: FormEvent) => {
+    e.preventDefault();
+    if (query.trim().length < 2) return;
+    setSearching(true);
+    try {
+      const res = await api<{ hits: RuleHit[] }>(
+        `/systems/${id}/search?q=${encodeURIComponent(query.trim())}`,
+      );
+      setHits(res.hits);
+    } catch (err) {
+      notify(errorMessage(err), 'error');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const act = (fn: () => Promise<unknown>, done: string) =>
+    run(async () => {
+      await fn();
+      await reloadDocs();
+    }, done);
+
+  return (
+    <main className="page">
+      <PageHead eyebrow="Game system" title={system?.name ?? 'Rules'} back="/library" />
+      {system?.description && <p className="muted system-lede">{system.description}</p>}
+      {admin && locked && <TwoFactorNotice />}
+
+      <div className="section-title">
+        <span>Rulebooks</span>
+        {list.length > 0 && <span>{list.length}</span>}
+      </div>
+      {docs.loading ? (
+        <Skeletons count={2} />
+      ) : list.length === 0 ? (
+        <Empty icon={<IconBook />} title="No rulebooks yet">
+          Upload a PDF, Markdown or text file. The DM can cite it within a minute or two.
+        </Empty>
+      ) : (
+        <div className="stack">
+          {list.map((d) => {
+            const st = STATUS[d.status];
+            return (
+              <div key={d.id} className="card doc">
+                <div className="row">
+                  <div className="grow">
+                    <h3 className="truncate">{d.title}</h3>
+                    <p className="small muted truncate">
+                      {size(d.sizeBytes)}
+                      {d.pageCount ? ` · ${d.pageCount} pages` : ''}
+                      {d.status === 'ready' ? ` · ${d.chunkCount} passages` : ''}
+                    </p>
+                  </div>
+                  <span className={`pill ${st.tone}`}>
+                    {st.live && <i className="live" />}
+                    {st.label}
+                  </span>
+                </div>
+                {d.status === 'failed' && (
+                  <p className="small danger doc-error">{d.error ?? 'Could not be read.'}</p>
+                )}
+                {admin && !locked && (
+                  <div className="row doc-actions">
+                    {d.status === 'failed' && (
+                      <button
+                        type="button"
+                        className="btn sm"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(() => api(`/documents/${d.id}/retry`, { method: 'POST' }), 'Trying again')
+                        }
+                      >
+                        Retry
+                      </button>
+                    )}
+                    <ConfirmButton
+                      className="btn sm ghost"
+                      confirmLabel="Delete?"
+                      disabled={busy}
+                      onConfirm={() =>
+                        void act(() => api(`/documents/${d.id}`, { method: 'DELETE' }), 'Rulebook removed')
+                      }
+                    >
+                      <IconTrash /> Remove
+                    </ConfirmButton>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {admin && !locked && (
+        <>
+          <input
+            ref={picker}
+            type="file"
+            className="sr-only"
+            accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
+            onChange={(e) => void upload(e.target.files?.[0])}
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            className="btn primary block upload"
+            disabled={uploading}
+            onClick={() => picker.current?.click()}
+          >
+            <IconUpload /> {uploading ? 'Uploading…' : 'Upload a rulebook'}
+          </button>
+        </>
+      )}
+
+      <div className="section-title">
+        <span>Ask the rulebooks</span>
+      </div>
+      <form className="add-friend" onSubmit={search}>
+        <input
+          className="input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="How does grappling work?"
+          maxLength={300}
+          enterKeyHint="search"
+          aria-label="Search the rules"
+        />
+        <button
+          type="submit"
+          className="btn"
+          disabled={searching || query.trim().length < 2}
+          aria-label="Search"
+        >
+          <IconSearch />
+        </button>
+      </form>
+      {hits && (
+        <div className="stack hits">
+          {hits.length === 0 && <p className="small muted">Nothing in these books matches that.</p>}
+          {hits.map((h) => (
+            <div key={h.chunkId} className="card hit">
+              <p className="small gold truncate">{ruleSource(h.document, h.heading, h.page)}</p>
+              <p className="excerpt">{h.text.length > 520 ? `${h.text.slice(0, 520)}…` : h.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {admin && !locked && system && (
+        <div className="danger-zone">
+          <ConfirmButton
+            className="btn danger block"
+            confirmLabel="Tap again to delete this system"
+            disabled={busy}
+            onConfirm={() =>
+              void run(async () => {
+                await api(`/systems/${id}`, { method: 'DELETE' });
+                navigate('/library', { replace: true });
+              }, 'System deleted')
+            }
+          >
+            Delete system
+          </ConfirmButton>
+        </div>
+      )}
+    </main>
+  );
+}
