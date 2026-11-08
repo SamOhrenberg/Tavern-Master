@@ -201,3 +201,244 @@ function Invites() {
     </>
   );
 }
+
+function PlayerSheet({
+  player,
+  onClose,
+  onChanged,
+}: {
+  player: Player;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const me = useMe();
+  const [budget, setBudget] = useState(
+    player.dailyTokenBudget === null ? '' : String(player.dailyTokenBudget),
+  );
+  const [busy, run] = useAction();
+  const self = player.id === me.id;
+  const patch = (body: Record<string, unknown>, done: string) =>
+    run(async () => {
+      await api(`/admin/users/${player.id}`, { method: 'PATCH', body });
+      onChanged();
+      onClose();
+    }, done);
+
+  return (
+    <Sheet title={player.displayName} onClose={onClose}>
+      <div className="stack">
+        <dl className="kv card">
+          <div className="kv-row">
+            <dt>Username</dt>
+            <dd className="mono">{player.username}</dd>
+          </div>
+          <div className="kv-row">
+            <dt>Last sign-in</dt>
+            <dd>{timeAgo(player.lastLoginAt)}</dd>
+          </div>
+          <div className="kv-row">
+            <dt>Two-factor</dt>
+            <dd>{player.totpEnabled ? 'On' : 'Off'}</dd>
+          </div>
+        </dl>
+        <Field label="Daily token budget" hint="Blank uses the server default. 0 means unlimited.">
+          <input
+            className="input"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={budget}
+            onChange={(e) => setBudget(e.target.value)}
+            placeholder="Server default"
+          />
+        </Field>
+        <button
+          type="button"
+          className="btn block"
+          disabled={busy}
+          onClick={() =>
+            void patch(
+              { dailyTokenBudget: budget.trim() === '' ? null : Number.parseInt(budget, 10) || 0 },
+              'Budget saved',
+            )
+          }
+        >
+          Save budget
+        </button>
+        {!self && (
+          <>
+            <button
+              type="button"
+              className="btn block"
+              disabled={busy}
+              onClick={() =>
+                void patch(
+                  { role: player.role === 'admin' ? 'user' : 'admin' },
+                  player.role === 'admin' ? 'Now a player' : 'Now an admin',
+                )
+              }
+            >
+              {player.role === 'admin' ? 'Make a regular player' : 'Make an admin'}
+            </button>
+            <ConfirmButton
+              className="btn danger block"
+              confirmLabel={player.status === 'active' ? 'Tap again to disable' : 'Tap again to restore'}
+              disabled={busy}
+              onConfirm={() =>
+                void patch(
+                  { status: player.status === 'active' ? 'disabled' : 'active' },
+                  player.status === 'active' ? 'Account disabled and signed out' : 'Account restored',
+                )
+              }
+            >
+              {player.status === 'active' ? 'Disable account' : 'Restore account'}
+            </ConfirmButton>
+          </>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+function Players() {
+  const users = useQuery(() => api<{ users: Player[] }>('/admin/users'), []);
+  const [open, setOpen] = useState<Player | null>(null);
+  if (users.loading) return <Skeletons />;
+  return (
+    <>
+      <div className="list">
+        {(users.data?.users ?? []).map((u) => (
+          <button key={u.id} type="button" onClick={() => setOpen(u)}>
+            <Avatar name={u.displayName} seed={u.id} />
+            <span className="grow">
+              <span className="truncate row-title">{u.displayName}</span>
+              <span className="small muted truncate row-detail">
+                @{u.username} · seen {timeAgo(u.lastLoginAt)}
+              </span>
+            </span>
+            {u.status === 'disabled' ? (
+              <span className="pill ember">Disabled</span>
+            ) : (
+              u.role === 'admin' && <span className="pill arcane">Admin</span>
+            )}
+            <IconChevron className="chev" />
+          </button>
+        ))}
+      </div>
+      {open && (
+        <PlayerSheet player={open} onClose={() => setOpen(null)} onChanged={() => void users.reload()} />
+      )}
+    </>
+  );
+}
+
+function Usage() {
+  const [span, setSpan] = useState<'24h' | '30d'>('24h');
+  const report = useQuery(() => api<UsageReport>(`/admin/usage?window=${span}`), [span]);
+  const rows = (items: { key: string; name: string; totals: UsageTotals }[]) =>
+    items.length === 0 ? (
+      <p className="small muted">Nothing in this window.</p>
+    ) : (
+      <dl className="kv card">
+        {items.map((r) => (
+          <div key={r.key} className="kv-row">
+            <dt className="truncate">{r.name}</dt>
+            <dd>
+              {formatTokens(total(r.totals))} · {formatUsd(r.totals.costUsd)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  return (
+    <>
+      <Segmented
+        value={span}
+        onChange={setSpan}
+        options={[
+          { value: '24h', label: 'Last 24 hours' },
+          { value: '30d', label: 'Last 30 days' },
+        ]}
+      />
+      <div className="section-title">
+        <span>By player</span>
+      </div>
+      {report.data ? (
+        rows(report.data.byUser.map((r) => ({ key: r.user.id, name: r.user.displayName, totals: r })))
+      ) : (
+        <Skeletons count={1} />
+      )}
+      <div className="section-title">
+        <span>By campaign</span>
+      </div>
+      {report.data ? (
+        rows(report.data.byCampaign.map((r) => ({ key: r.campaignId, name: r.name, totals: r })))
+      ) : (
+        <Skeletons count={1} />
+      )}
+      <p className="small faint cost-note">Costs are estimates from the price table, not a bill.</p>
+    </>
+  );
+}
+
+function Audit() {
+  const log = useQuery(() => api<{ entries: AuditEntry[] }>('/admin/audit'), []);
+  if (log.loading) return <Skeletons />;
+  const entries = log.data?.entries ?? [];
+  if (!entries.length) return <Empty icon={<IconAlert />} title="Nothing logged yet" />;
+  return (
+    <ul className="timeline">
+      {entries.map((e) => (
+        <li key={e.id}>
+          <span>
+            <b className="mono">{e.action}</b>
+            {e.actor && <span className="muted"> · {e.actor}</span>}
+          </span>
+          <time>{timeAgo(e.at)}</time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function AdminScreen() {
+  const me = useMe();
+  const [tab, setTab] = useState<Tab>('invites');
+
+  return (
+    <main className="page">
+      <PageHead eyebrow="Server" title="Admin" />
+      {me.totpRequired ? (
+        <>
+          <Link to="/you" className="banner">
+            <IconAlert />
+            <span className="grow">Turn on two-factor sign-in to use admin tools.</span>
+            <IconChevron className="chev" />
+          </Link>
+          <p className="small muted locked-note">
+            Admin accounts can invite people and change the rules library, so they need a second factor before
+            those tools unlock.
+          </p>
+        </>
+      ) : (
+        <>
+          <Segmented
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'invites', label: 'Invites' },
+              { value: 'players', label: 'Players' },
+              { value: 'usage', label: 'Usage' },
+              { value: 'audit', label: 'Audit' },
+            ]}
+          />
+          <div className="admin-body">
+            {tab === 'invites' && <Invites />}
+            {tab === 'players' && <Players />}
+            {tab === 'usage' && <Usage />}
+            {tab === 'audit' && <Audit />}
+          </div>
+        </>
+      )}
+    </main>
+  );
+}
