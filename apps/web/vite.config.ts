@@ -13,6 +13,8 @@ export default defineConfig({
     modulePreload: { polyfill: false },
   },
   server: {
+    // Listen on the LAN too, so a phone on the same Wi-Fi can open the dev build.
+    host: true,
     port: 5173,
     proxy: {
       '/api': { target: api },
