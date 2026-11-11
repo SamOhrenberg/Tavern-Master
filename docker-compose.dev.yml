@@ -1,7 +1,10 @@
 # Development helper: just Postgres with pgvector on localhost.
 #
-#   docker compose -f docker-compose.dev.yml up -d
-#   DATABASE_URL=postgres://tavern:tavern@localhost:5432/tavern
+#   docker compose -f docker-compose.dev.yml up -d     (or: npm run dev:db)
+#   DATABASE_URL=postgres://tavern:tavern@localhost:55432/tavern
+#
+# The port is deliberately not 5432, so it never collides with a Postgres
+# already installed on the machine. Change it with DEV_DB_PORT.
 name: tavern-dev
 
 services:
@@ -12,7 +15,7 @@ services:
       POSTGRES_PASSWORD: tavern
       POSTGRES_DB: tavern
     ports:
-      - '127.0.0.1:${DEV_DB_PORT:-5432}:5432'
+      - '127.0.0.1:${DEV_DB_PORT:-55432}:5432'
     volumes:
       - devdb:/var/lib/postgresql/data
     healthcheck:
