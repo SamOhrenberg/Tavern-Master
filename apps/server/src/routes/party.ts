@@ -1,0 +1,465 @@
+import { open, rm } from 'node:fs/promises';
+import type {
+  BuilderEvent,
+  BuilderThread,
+  CampaignDocKind,
+  CampaignDocument,
+  CharacterDraft,
+  DocumentStatus,
+  SheetTemplate,
+} from '@tavern/protocol';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { builderTurn, threadMessages } from '../agent/builder.js';
+import { readSheet, type SheetSource } from '../agent/sheets.js';
+import { config } from '../config.js';
+import { q, q1, tx } from '../db/pool.js';
+import { badRequest, conflict, forbidden, HttpError, notFound, parse } from '../errors.js';
+import { requireMember } from '../http/membership.js';
+import { enforceLimit, rateLimiters } from '../http/security.js';
+import { discard, receiveFile } from '../http/upload.js';
+import { enqueue } from '../jobs/queue.js';
+import { resolveLlm } from '../llm/index.js';
+import { budgetBlock, recordUsage } from '../llm/usage.js';
+import { log } from '../log.js';
+import {
+  canEdit,
+  characterSchema,
+  controlSchema,
+  createCharacter,
+  deleteCharacter,
+  loadAccess,
+  setControl,
+  updateCharacter,
+  type Control,
+} from '../party.js';
+import { getRoom } from '../realtime/room.js';
+import { parseDocument, sniff, sniffImage } from '../rules/parse.js';
+import { uploadPath } from '../storage.js';
+
+const uuid = z.string().uuid();
+const SHEET_MAX_BYTES = 10 * 1024 * 1024;
+/** Images go to the model as they are, and model APIs cap a single image at about this size. */
+const IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
+/** Roughly ten dense pages. A longer upload is a rulebook, not a character sheet. */
+const SHEET_MAX_CHARS = 40_000;
+
+type Params = { id: string };
+type CharParams = { id: string; characterId: string };
+type DocParams = { id: string; documentId: string };
+type ThreadParams = { id: string; threadId: string };
+
+interface DocRow {
+  id: string;
+  title: string;
+  size_bytes: number;
+  status: DocumentStatus;
+  error: string | null;
+  kind: CampaignDocKind | null;
+  audience: 'table' | 'gm';
+  summary: string;
+  uploaded_by: string | null;
+  username: string | null;
+  display_name: string | null;
+  created_at: Date;
+}
+const DOC_SQL = `SELECT d.id, d.title, d.size_bytes, d.status, d.error, d.kind, d.audience, d.summary,
+                        d.uploaded_by, u.username, u.display_name, d.created_at
+                   FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by`;
+
+const docKinds = z.enum(['rules', 'setting', 'adventure', 'character', 'handout', 'other']);
+
+async function readHead(path: string): Promise<Buffer> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(8192);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+export async function partyRoutes(app: FastifyInstance): Promise<void> {
+  // ---- characters ----
+
+  app.post<{ Params: Params }>('/api/campaigns/:id/characters', async (req) => {
+    const { campaignId, viewer } = await requireMember(req);
+    const body = parse(z.object({ character: characterSchema, control: controlSchema.optional() }), req.body);
+    const id = await createCharacter(campaignId, viewer, body.character, body.control);
+    getRoom(campaignId)?.partyChanged();
+    return { id };
+  });
+
+  app.put<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId', async (req) => {
+    const { campaignId, viewer } = await requireMember(req);
+    const characterId = parse(uuid, req.params.characterId);
+    await updateCharacter(campaignId, characterId, viewer, parse(characterSchema, req.body));
+    getRoom(campaignId)?.partyChanged();
+    return { ok: true };
+  });
+
+  /** Who runs a party member: players, the DM, or an AI of its own. The owner decides. */
+  app.put<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId/control', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const characterId = parse(uuid, req.params.characterId);
+    await setControl(campaignId, characterId, parse(controlSchema, req.body));
+    getRoom(campaignId)?.partyChanged();
+    return { ok: true };
+  });
+
+  app.delete<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId', async (req) => {
+    const { campaignId, viewer } = await requireMember(req);
+    const characterId = parse(uuid, req.params.characterId);
+    if (getRoom(campaignId)?.busy) throw conflict('Wait for the current turn to finish.');
+    await deleteCharacter(campaignId, characterId, viewer);
+    getRoom(campaignId)?.partyChanged();
+    return { ok: true };
+  });
+
+  /**
+   * Read an uploaded character sheet (PDF, text, or a photo) into a draft.
+   * Nothing is saved and the file is not kept: the player reviews the draft
+   * in the sheet editor and saves it from there.
+   */
+  app.post<{ Params: Params }>('/api/campaigns/:id/characters/import', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
+    const blocked = await budgetBlock(campaignId, [auth.user.id]);
+    if (blocked) throw conflict(blocked, 'over_budget');
+
+    const file = await receiveFile(req, SHEET_MAX_BYTES);
+    try {
+      const head = await readHead(file.path);
+      const source: SheetSource = {};
+      const image = sniffImage(head);
+      if (image) {
+        if (file.size > IMAGE_MAX_BYTES) throw badRequest('That photo is too large. Try one under 4 MB.');
+        const fh = await open(file.path, 'r');
+        try {
+          source.image = { mediaType: image, data: (await fh.readFile()).toString('base64') };
+        } finally {
+          await fh.close();
+        }
+      } else {
+        const kind = sniff(head, file.originalName);
+        if (!kind)
+          throw badRequest(
+            'Upload a PDF, a text or Markdown file, or a photo of the sheet.',
+            'bad_file_type',
+          );
+        const text = (await parseDocument(file.path, kind))
+          .map((p) => p.text)
+          .join('\n\n')
+          .trim();
+        if (text.length < 40) {
+          throw badRequest(
+            'No text could be read from that file. If it is a scan, upload a photo of the sheet instead.',
+            'unreadable_sheet',
+          );
+        }
+        if (text.length > SHEET_MAX_CHARS) {
+          throw badRequest(
+            'That file is too long to be a character sheet. Upload just the pages with the sheet on them.',
+            'too_long',
+          );
+        }
+        source.text = text;
+      }
+
+      const campaign = await q1<{ owner_id: string; system_name: string; sheet_template: SheetTemplate }>(
+        `SELECT c.owner_id, s.name AS system_name, s.sheet_template
+           FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
+        [campaignId],
+      );
+      if (!campaign) throw notFound();
+      const llm = await resolveLlm('utility', campaign.owner_id);
+      let draft: CharacterDraft;
+      try {
+        draft = await readSheet({
+          llm,
+          systemName: campaign.system_name,
+          template: campaign.sheet_template,
+          source,
+          signal: AbortSignal.timeout(120_000),
+          onUsage: (usage, model) =>
+            recordUsage({
+              task: 'sheet',
+              provider: llm.provider.name,
+              model,
+              keySource: llm.keySource,
+              campaignId,
+              userIds: [auth.user.id],
+              usage,
+            }),
+        });
+      } catch (err) {
+        if (err instanceof HttpError) throw err;
+        log().warn({ err, campaignId }, 'sheet could not be read');
+        throw new HttpError(
+          502,
+          'model_failed',
+          source.image
+            ? 'The AI could not read that photo. The configured model may not accept images; try a PDF or text file.'
+            : 'The AI could not read the sheet just now. Try again in a moment.',
+        );
+      }
+      return { draft };
+    } finally {
+      await discard(file);
+    }
+  });
+
+  // ---- the character-building guide ----
+
+  /** Open (or return to) a chat with the guide, about an existing character or a new one. */
+  app.post<{ Params: Params }>('/api/campaigns/:id/builder', async (req) => {
+    const { auth, campaignId, viewer } = await requireMember(req);
+    const body = parse(
+      z.object({ characterId: uuid.optional(), control: controlSchema.optional() }),
+      req.body,
+    );
+    let row: { id: string; character_id: string | null } | undefined;
+    if (body.characterId) {
+      if (!canEdit(viewer, await loadAccess(campaignId, body.characterId)))
+        throw forbidden('That character belongs to another player.');
+      row = await q1(
+        `SELECT id, character_id FROM builder_threads
+          WHERE campaign_id = $1 AND user_id = $2 AND character_id = $3 ORDER BY created_at DESC LIMIT 1`,
+        [campaignId, auth.user.id, body.characterId],
+      );
+      row ??= await q1(
+        `INSERT INTO builder_threads (campaign_id, user_id, character_id) VALUES ($1, $2, $3)
+         RETURNING id, character_id`,
+        [campaignId, auth.user.id, body.characterId],
+      );
+    } else {
+      const control: Control = body.control ?? {
+        kind: 'pc',
+        controller: 'player',
+        playerIds: [auth.user.id],
+      };
+      const own =
+        control.kind === 'pc' && control.controller === 'player' && control.playerIds.join() === auth.user.id;
+      if (!own && viewer.role !== 'owner')
+        throw forbidden('Only the campaign owner can add companions or assign characters.');
+      // An unfinished chat about the same kind of new character is picked up again.
+      row = await q1(
+        `SELECT id, character_id FROM builder_threads
+          WHERE campaign_id = $1 AND user_id = $2 AND character_id IS NULL AND intent = $3::jsonb
+            AND NOT EXISTS (SELECT 1 FROM builder_messages m WHERE m.thread_id = builder_threads.id
+                             AND m.created_at < now() - interval '7 days')
+          ORDER BY created_at DESC LIMIT 1`,
+        [campaignId, auth.user.id, JSON.stringify(control)],
+      );
+      row ??= await q1(
+        `INSERT INTO builder_threads (campaign_id, user_id, intent) VALUES ($1, $2, $3)
+         RETURNING id, character_id`,
+        [campaignId, auth.user.id, JSON.stringify(control)],
+      );
+    }
+    const thread: BuilderThread = {
+      id: row!.id,
+      characterId: row!.character_id,
+      messages: await threadMessages(row!.id),
+    };
+    return { thread };
+  });
+
+  /**
+   * Say something to the guide. The reply is streamed as newline-delimited
+   * JSON (`BuilderEvent`s): text as it is written, a line for each roll or
+   * save, then the stored message.
+   */
+  app.post<{ Params: ThreadParams }>('/api/campaigns/:id/builder/:threadId/messages', async (req, reply) => {
+    const { auth, campaignId, viewer } = await requireMember(req);
+    const threadId = parse(uuid, req.params.threadId);
+    const { text } = parse(z.object({ text: z.string().trim().min(1).max(2000) }), req.body);
+    enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
+    const thread = await q1<{ character_id: string | null; intent: Partial<Control> }>(
+      'SELECT character_id, intent FROM builder_threads WHERE id = $1 AND campaign_id = $2 AND user_id = $3',
+      [threadId, campaignId, auth.user.id],
+    );
+    if (!thread) throw notFound();
+    const control: Control = {
+      kind: thread.intent.kind ?? 'pc',
+      controller: thread.intent.controller ?? 'player',
+      playerIds: thread.intent.playerIds ?? [auth.user.id],
+    };
+
+    // From here on the response is a stream we write ourselves.
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, {
+      ...(reply.getHeaders() as Record<string, string>),
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-accel-buffering': 'no',
+    });
+    const send = (ev: BuilderEvent) => {
+      if (!res.writableEnded) res.write(`${JSON.stringify(ev)}\n`);
+    };
+    const gone = new AbortController();
+    res.on('close', () => gone.abort());
+    try {
+      const out = await builderTurn(
+        {
+          campaignId,
+          threadId,
+          viewer,
+          displayName: auth.user.displayName,
+          characterId: thread.character_id,
+          control,
+        },
+        text,
+        {
+          signal: AbortSignal.any([gone.signal, AbortSignal.timeout(240_000)]),
+          onText: (delta) => send({ type: 'delta', text: delta }),
+          onTool: (tool, summary) => send({ type: 'tool', tool, summary }),
+        },
+      );
+      if (out.stateChanged) getRoom(campaignId)?.partyChanged();
+      send({ type: 'done', message: out.message, characterId: out.characterId });
+    } catch (err) {
+      if (!(err instanceof HttpError)) log().error({ err, campaignId }, 'builder turn failed');
+      send({
+        type: 'error',
+        message: err instanceof HttpError ? err.message : 'The guide could not answer just now. Try again.',
+      });
+    } finally {
+      res.end();
+    }
+  });
+
+  // ---- campaign documents ----
+
+  app.get<{ Params: Params }>('/api/campaigns/:id/documents', async (req) => {
+    const { auth, role, campaignId } = await requireMember(req);
+    const rows = await q<DocRow>(`${DOC_SQL} WHERE d.campaign_id = $1 ORDER BY d.created_at`, [campaignId]);
+    const documents: CampaignDocument[] = rows.map((r) => {
+      const mine = r.uploaded_by === auth.user.id;
+      return {
+        id: r.id,
+        title: r.title,
+        sizeBytes: r.size_bytes,
+        status: r.status,
+        error: r.error,
+        kind: r.kind,
+        audience: r.audience,
+        // What a DM-only document holds is for the DM and whoever supplied it.
+        summary: r.audience === 'table' || mine ? r.summary : '',
+        uploadedBy: r.uploaded_by
+          ? { id: r.uploaded_by, username: r.username ?? '', displayName: r.display_name ?? 'Unknown' }
+          : null,
+        canEdit: mine || role === 'owner',
+        createdAt: r.created_at.toISOString(),
+      };
+    });
+    return { documents };
+  });
+
+  /** Any player can add material for this campaign: setting notes, an adventure, a backstory. */
+  app.post<{ Params: Params }>('/api/campaigns/:id/documents', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    const limit = config().MAX_CAMPAIGN_DOCUMENTS;
+    const campaign = await q1<{ system_id: string; n: number }>(
+      `SELECT c.system_id, (SELECT count(*)::int FROM documents d WHERE d.campaign_id = c.id) AS n
+         FROM campaigns c WHERE c.id = $1`,
+      [campaignId],
+    );
+    if (!campaign) throw notFound();
+    if (campaign.n >= limit) throw conflict(`A campaign holds at most ${limit} documents. Remove one first.`);
+
+    const file = await receiveFile(req);
+    try {
+      const kind = sniff(await readHead(file.path), file.originalName);
+      if (!kind)
+        throw badRequest(
+          'Only PDF, Markdown (.md) and plain-text (.txt) files are accepted.',
+          'bad_file_type',
+        );
+      const mime =
+        kind === 'pdf'
+          ? 'application/pdf'
+          : /\.txt$/i.test(file.originalName)
+            ? 'text/plain'
+            : 'text/markdown';
+      const title =
+        (file.fields.title ?? '').trim().slice(0, 120) || file.originalName.replace(/\.[^.]+$/, '');
+      const audience = file.fields.audience === 'gm' ? 'gm' : 'table';
+      const id = await tx(async (client) => {
+        const row = await q1<{ id: string }>(
+          `INSERT INTO documents (system_id, campaign_id, title, original_name, storage_name, mime, size_bytes,
+                                  sha256, uploaded_by, audience)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+          [
+            campaign.system_id,
+            campaignId,
+            title,
+            file.originalName,
+            file.storageName,
+            mime,
+            file.size,
+            file.sha256,
+            auth.user.id,
+            audience,
+          ],
+          client,
+        );
+        await enqueue('ingest_document', { documentId: row!.id }, {}, client);
+        return row!.id;
+      });
+      return { id };
+    } catch (err) {
+      await discard(file);
+      throw err;
+    }
+  });
+
+  /** The uploader or the owner may rename, reclassify, hide, retry or remove a document. */
+  async function ownDocument(req: Parameters<typeof requireMember>[0], documentId: string) {
+    const { auth, role, campaignId } = await requireMember(req);
+    const id = parse(uuid, documentId);
+    const doc = await q1<{ uploaded_by: string | null; storage_name: string; status: DocumentStatus }>(
+      'SELECT uploaded_by, storage_name, status FROM documents WHERE id = $1 AND campaign_id = $2',
+      [id, campaignId],
+    );
+    if (!doc) throw notFound();
+    if (doc.uploaded_by !== auth.user.id && role !== 'owner')
+      throw forbidden('Only whoever uploaded it, or the campaign owner, can change that document.');
+    return { id, doc };
+  }
+
+  app.patch<{ Params: DocParams }>('/api/campaigns/:id/documents/:documentId', async (req) => {
+    const { id } = await ownDocument(req, req.params.documentId);
+    const body = parse(
+      z.object({
+        title: z.string().trim().min(1).max(120).optional(),
+        audience: z.enum(['table', 'gm']).optional(),
+        kind: docKinds.optional(),
+      }),
+      req.body,
+    );
+    await q(
+      `UPDATE documents SET title = coalesce($2, title), audience = coalesce($3, audience),
+                            kind = coalesce($4, kind) WHERE id = $1`,
+      [id, body.title ?? null, body.audience ?? null, body.kind ?? null],
+    );
+    return { ok: true };
+  });
+
+  app.post<{ Params: DocParams }>('/api/campaigns/:id/documents/:documentId/retry', async (req) => {
+    const { id, doc } = await ownDocument(req, req.params.documentId);
+    if (doc.status !== 'failed') throw badRequest('That document is not waiting on a retry.');
+    await q(`UPDATE documents SET status = 'queued', error = NULL WHERE id = $1`, [id]);
+    await enqueue('ingest_document', { documentId: id });
+    return { ok: true };
+  });
+
+  app.delete<{ Params: DocParams }>('/api/campaigns/:id/documents/:documentId', async (req) => {
+    const { id, doc } = await ownDocument(req, req.params.documentId);
+    await q('DELETE FROM documents WHERE id = $1', [id]);
+    await rm(uploadPath(doc.storage_name), { force: true });
+    return { ok: true };
+  });
+}
