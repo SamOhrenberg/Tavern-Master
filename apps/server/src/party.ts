@@ -1,0 +1,334 @@
+import type { CharacterController, CharacterKind, InventoryItem } from '@tavern/protocol';
+import { z } from 'zod';
+import { q, q1, tx } from './db/pool.js';
+import { badRequest, conflict, forbidden, notFound } from './errors.js';
+
+/**
+ * The party: who is in it and who speaks for each member. Used by the REST
+ * routes and by the character-building guide, so both obey the same rules.
+ */
+
+export const MAX_PARTY = 12;
+/** How many characters a player may make for themselves. The owner is not limited. */
+const MAX_OWN = 3;
+const MAX_FIELDS = 40;
+
+const uuid = z.string().uuid();
+export const sheetKey = z
+  .string()
+  .trim()
+  .regex(/^[\w ]{1,40}$/, 'letters, digits and spaces only');
+export const sheetValue = z.union([z.string().max(1500), z.number().finite()]);
+export const inventorySchema = z
+  .array(
+    z.object({
+      name: z.string().trim().min(1).max(80),
+      qty: z.number().int().min(1).max(9999),
+      notes: z.string().max(200).optional(),
+    }),
+  )
+  .max(100);
+
+export const characterSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  maxHp: z.number().int().min(1).max(9999),
+  hp: z.number().int().min(0).max(9999).optional(),
+  sheet: z.record(sheetKey, sheetValue).refine((s) => Object.keys(s).length <= MAX_FIELDS, 'Too many fields'),
+  inventory: inventorySchema.optional(),
+  persona: z.string().max(2000).optional(),
+  privateNotes: z.string().max(4000).optional(),
+});
+export type CharacterBody = z.infer<typeof characterSchema>;
+
+export const controlSchema = z.object({
+  kind: z.enum(['pc', 'npc']),
+  controller: z.enum(['player', 'gm', 'agent']),
+  playerIds: z.array(uuid).max(8).default([]),
+});
+
+export interface Control {
+  kind: CharacterKind;
+  controller: CharacterController;
+  playerIds: string[];
+}
+
+/** The person making a request, as the campaign sees them. */
+export interface Viewer {
+  userId: string;
+  role: 'owner' | 'player';
+}
+
+export interface CharacterAccess {
+  id: string;
+  name: string;
+  controller: CharacterController;
+  playerIds: string[];
+}
+
+/** A change to part of a sheet, as the guide and the sheet reader produce it. */
+export interface DraftPatch {
+  name?: string;
+  max_hp?: number;
+  fields?: { field: string; value: string | number }[];
+  remove_fields?: string[];
+  inventory?: InventoryItem[];
+  persona?: string;
+}
+
+/**
+ * Who may write a sheet: the players who run the character. The owner looks
+ * after party members that no player runs (AI companions, and characters left
+ * behind by someone who is gone), but cannot rewrite another player's own.
+ */
+export function canEdit(viewer: Viewer, c: Pick<CharacterAccess, 'controller' | 'playerIds'>): boolean {
+  if (c.controller === 'player' && c.playerIds.includes(viewer.userId)) return true;
+  return viewer.role === 'owner' && (c.controller !== 'player' || c.playerIds.length === 0);
+}
+
+export async function loadAccess(campaignId: string, characterId: string): Promise<CharacterAccess> {
+  const row = await q1<{ id: string; name: string; controller: CharacterController; player_ids: string[] }>(
+    `SELECT c.id, c.name, c.controller,
+            coalesce((SELECT array_agg(p.user_id::text) FROM character_players p WHERE p.character_id = c.id), '{}')
+              AS player_ids
+       FROM characters c WHERE c.id = $1 AND c.campaign_id = $2`,
+    [characterId, campaignId],
+  );
+  if (!row) throw notFound('Character not found');
+  return {
+    id: row.id,
+    name: row.name,
+    controller: row.controller,
+    playerIds: row.controller === 'player' ? row.player_ids : [],
+  };
+}
+
+async function assertNameFree(campaignId: string, name: string, exceptId: string | null): Promise<void> {
+  const clash = await q1(
+    `SELECT 1 FROM characters WHERE campaign_id = $1 AND lower(name) = lower($2)
+        AND ($3::uuid IS NULL OR id <> $3)`,
+    [campaignId, name, exceptId],
+  );
+  if (clash) throw conflict(`There is already a ${name} in this party. Pick another name.`);
+}
+
+/** Players listed on a character must be at this table, and only player-run characters have any. */
+async function normalise(campaignId: string, control: Control): Promise<Control> {
+  if (control.controller !== 'player') return { ...control, playerIds: [] };
+  const ids = [...new Set(control.playerIds)];
+  if (ids.length) {
+    const rows = await q<{ user_id: string }>(
+      'SELECT user_id::text FROM campaign_members WHERE campaign_id = $1 AND user_id = ANY($2::uuid[])',
+      [campaignId, ids],
+    );
+    if (rows.length !== ids.length)
+      throw badRequest('Everyone who runs a character must be in the campaign.');
+  }
+  return { ...control, playerIds: ids };
+}
+
+/**
+ * Add a party member. A player makes characters for themselves; only the
+ * owner can add companions or hand a character to someone else.
+ */
+export async function createCharacter(
+  campaignId: string,
+  viewer: Viewer,
+  body: CharacterBody,
+  wanted?: Control,
+): Promise<string> {
+  const mine: Control = { kind: 'pc', controller: 'player', playerIds: [viewer.userId] };
+  let control = wanted ?? mine;
+  if (viewer.role !== 'owner') {
+    const same =
+      control.kind === 'pc' &&
+      control.controller === 'player' &&
+      control.playerIds.length === 1 &&
+      control.playerIds[0] === viewer.userId;
+    if (!same) throw forbidden('Only the campaign owner can add companions or assign characters.');
+  }
+  control = await normalise(campaignId, control);
+
+  const counts = await q1<{ party: number; own: number }>(
+    `SELECT count(*)::int AS party,
+            count(*) FILTER (WHERE EXISTS (SELECT 1 FROM character_players p
+                                            WHERE p.character_id = c.id AND p.user_id = $2))::int AS own
+       FROM characters c WHERE c.campaign_id = $1`,
+    [campaignId, viewer.userId],
+  );
+  if ((counts?.party ?? 0) >= MAX_PARTY) throw conflict(`A party holds at most ${MAX_PARTY} characters.`);
+  if (viewer.role !== 'owner' && (counts?.own ?? 0) >= MAX_OWN)
+    throw conflict(`You already run ${MAX_OWN} characters in this campaign.`);
+  await assertNameFree(campaignId, body.name, null);
+
+  return tx(async (client) => {
+    const row = await q1<{ id: string }>(
+      `INSERT INTO characters (campaign_id, name, kind, controller, sheet, hp, max_hp, inventory, persona,
+                               private_notes, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      [
+        campaignId,
+        body.name,
+        control.kind,
+        control.controller,
+        JSON.stringify(body.sheet),
+        Math.min(body.hp ?? body.maxHp, body.maxHp),
+        body.maxHp,
+        JSON.stringify(body.inventory ?? []),
+        body.persona ?? '',
+        body.privateNotes ?? '',
+        viewer.userId,
+      ],
+      client,
+    );
+    for (const userId of control.playerIds) {
+      await client.query(
+        'INSERT INTO character_players (character_id, campaign_id, user_id) VALUES ($1, $2, $3)',
+        [row!.id, campaignId, userId],
+      );
+    }
+    return row!.id;
+  });
+}
+
+/** Replace a sheet with what the editor sent. */
+export async function updateCharacter(
+  campaignId: string,
+  characterId: string,
+  viewer: Viewer,
+  body: CharacterBody,
+): Promise<void> {
+  const access = await loadAccess(campaignId, characterId);
+  if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
+  await assertNameFree(campaignId, body.name, characterId);
+  // Private notes belong to the players who run the character, so only they can change them.
+  const notes = access.playerIds.includes(viewer.userId) ? (body.privateNotes ?? null) : null;
+  await q(
+    `UPDATE characters
+        SET name = $3, sheet = $4, max_hp = $5,
+            hp = least(CASE WHEN $6 THEN $7 ELSE hp END, $5),
+            inventory = coalesce($8::jsonb, inventory),
+            persona = coalesce($9, persona),
+            private_notes = coalesce($10, private_notes), updated_at = now()
+      WHERE id = $1 AND campaign_id = $2`,
+    [
+      characterId,
+      campaignId,
+      body.name,
+      JSON.stringify(body.sheet),
+      body.maxHp,
+      body.hp !== undefined,
+      body.hp ?? 0,
+      body.inventory ? JSON.stringify(body.inventory) : null,
+      body.persona ?? null,
+      notes,
+    ],
+  );
+}
+
+/** Change who runs a party member. The caller checks that the viewer is the owner. */
+export async function setControl(campaignId: string, characterId: string, wanted: Control): Promise<void> {
+  await loadAccess(campaignId, characterId);
+  const control = await normalise(campaignId, wanted);
+  await tx(async (client) => {
+    await client.query(
+      'UPDATE characters SET kind = $3, controller = $4, updated_at = now() WHERE id = $1 AND campaign_id = $2',
+      [characterId, campaignId, control.kind, control.controller],
+    );
+    await client.query('DELETE FROM character_players WHERE character_id = $1', [characterId]);
+    for (const userId of control.playerIds) {
+      await client.query(
+        'INSERT INTO character_players (character_id, campaign_id, user_id) VALUES ($1, $2, $3)',
+        [characterId, campaignId, userId],
+      );
+    }
+  });
+}
+
+export async function deleteCharacter(
+  campaignId: string,
+  characterId: string,
+  viewer: Viewer,
+): Promise<void> {
+  const access = await loadAccess(campaignId, characterId);
+  const sole = access.playerIds.length === 1 && access.playerIds[0] === viewer.userId;
+  if (viewer.role !== 'owner' && !sole) throw forbidden('Only the campaign owner can remove that character.');
+  await q('DELETE FROM characters WHERE id = $1 AND campaign_id = $2', [characterId, campaignId]);
+}
+
+/**
+ * Apply a partial change from the guide: create the character if there is
+ * none yet, otherwise merge into the sheet that is there. Returns the id and
+ * the names of what changed.
+ */
+export async function applyDraft(
+  campaignId: string,
+  characterId: string | null,
+  viewer: Viewer,
+  patch: DraftPatch,
+  control?: Control,
+): Promise<{ id: string; created: boolean; changed: string[] }> {
+  const changed = [
+    ...(patch.name ? ['name'] : []),
+    ...(patch.max_hp ? ['hit points'] : []),
+    ...(patch.fields ?? []).map((f) => f.field),
+    ...(patch.remove_fields ?? []).map((f) => `-${f}`),
+    ...(patch.inventory ? ['inventory'] : []),
+    ...(patch.persona !== undefined ? ['persona'] : []),
+  ];
+  if (!changed.length) throw badRequest('Nothing to save.');
+
+  if (!characterId) {
+    if (!patch.name) throw badRequest('A new character needs a name before it can be saved.');
+    const sheet: Record<string, string | number> = {};
+    for (const { field, value } of patch.fields ?? []) sheet[field] = value;
+    if (Object.keys(sheet).length > MAX_FIELDS)
+      throw badRequest(`A sheet holds at most ${MAX_FIELDS} fields.`);
+    const id = await createCharacter(
+      campaignId,
+      viewer,
+      {
+        name: patch.name,
+        maxHp: patch.max_hp ?? 10,
+        sheet,
+        inventory: patch.inventory,
+        persona: patch.persona,
+      },
+      control,
+    );
+    return { id, created: true, changed };
+  }
+
+  const access = await loadAccess(campaignId, characterId);
+  if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
+  if (patch.name) await assertNameFree(campaignId, patch.name, characterId);
+  const row = await q1<{ sheet: Record<string, unknown>; hp: number; max_hp: number }>(
+    'SELECT sheet, hp, max_hp FROM characters WHERE id = $1',
+    [characterId],
+  );
+  const sheet = { ...(row?.sheet ?? {}) };
+  // Match an existing field whatever its capitalisation, so "level" updates "Level".
+  const keyFor = (field: string) =>
+    Object.keys(sheet).find((k) => k.toLowerCase() === field.toLowerCase()) ?? field;
+  for (const field of patch.remove_fields ?? []) delete sheet[keyFor(field)];
+  for (const { field, value } of patch.fields ?? []) sheet[keyFor(field)] = value;
+  if (Object.keys(sheet).length > MAX_FIELDS) throw badRequest(`A sheet holds at most ${MAX_FIELDS} fields.`);
+  const maxHp = patch.max_hp ?? row?.max_hp ?? 10;
+  // Someone at full health stays at full health when their maximum changes.
+  const hp = row && row.hp >= row.max_hp ? maxHp : Math.min(row?.hp ?? maxHp, maxHp);
+  await q(
+    `UPDATE characters
+        SET name = coalesce($2, name), sheet = $3, max_hp = $4, hp = $5,
+            inventory = coalesce($6::jsonb, inventory), persona = coalesce($7, persona), updated_at = now()
+      WHERE id = $1`,
+    [
+      characterId,
+      patch.name ?? null,
+      JSON.stringify(sheet),
+      maxHp,
+      hp,
+      patch.inventory ? JSON.stringify(patch.inventory) : null,
+      patch.persona ?? null,
+    ],
+  );
+  return { id: characterId, created: false, changed };
+}
