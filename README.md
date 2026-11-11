@@ -14,6 +14,8 @@ the party in structured state rather than in its memory.
   several players are gathered into one turn with clear attribution.
 - **Long campaigns.** Session summaries and a campaign memory keep the prompt
   small and the story consistent.
+- **An app on your phone.** The client is built phone-first and installs to
+  the Home Screen on iOS and Android, where it runs full screen.
 - **Bring any model.** Anthropic API, AWS Bedrock, Azure AI Foundry or any
   OpenAI-compatible endpoint, with per-task model routing, prompt caching,
   token budgets and cost tracking.
@@ -123,14 +125,51 @@ docker/            Dockerfile and reverse-proxy examples
 
 ## Development
 
+Requirements: Node 20.19 or newer, and Docker for the database.
+
 ```bash
 npm install
-docker compose -f docker-compose.dev.yml up -d   # Postgres with pgvector on :5432
-cp .env.example .env                             # then point DATABASE_URL at localhost
-npm run dev:server    # API + websocket on :8080
-npm run dev:worker    # background jobs + local embeddings
-npm run dev:web       # Vite dev server on :5173, proxied to the API
+npm run dev:db          # Postgres with pgvector on localhost:55432
+cp .env.example .env    # set SECRET_KEY, ENCRYPTION_KEY and ADMIN_PASSWORD
+```
+
+Set `LLM_PROVIDER=mock` in `.env` to work without an API key. Then create
+`.env.local` beside it for the settings that only apply to your machine; the
+dev scripts load it after `.env`, so it wins:
+
+```ini
+DATABASE_URL=postgres://tavern:tavern@localhost:55432/tavern
+DATA_DIR=../../data
+HOST=127.0.0.1
+BASE_URL=http://localhost:8080
+WORKER_URL=http://127.0.0.1:8081
+```
+
+```bash
+npm run dev     # API on :8080, the worker, and the web client on :5173
 npm test
+```
+
+Open <http://localhost:5173> and sign in as the admin from `.env`. The three
+processes can also be started one at a time with `npm run dev:server`,
+`npm run dev:worker` and `npm run dev:web`.
+
+### On a phone
+
+The dev server listens on your network, so a phone on the same Wi-Fi can open
+`http://<your computer's address>:5173` (Vite prints the address when it
+starts). The first visit in Safari shows how to add the app to the Home
+Screen; from there it opens full screen like any other app.
+
+Installing works over plain HTTP on a home network. The service worker, which
+makes the app open instantly from cache, needs HTTPS and so is only active
+behind a TLS-terminating proxy or on `localhost`.
+
+To try the production build instead of the dev server:
+
+```bash
+npm run build
+npm run start   # serves the API and the built client on :8080
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
