@@ -8,11 +8,12 @@ make self-hosting harder".
 
 - Node 20.19+ (22 recommended) and Docker.
 - `npm install` at the repo root installs all workspaces.
-- `docker compose -f docker-compose.dev.yml up -d` starts Postgres with
-  pgvector on `localhost:5432`.
-- `npm run dev:server`, `npm run dev:worker`, `npm run dev:web`.
+- `npm run dev:db` starts Postgres with pgvector on `localhost:55432`.
+- `npm run dev` starts the API, the worker and the web client together.
 
-Set `LLM_PROVIDER=mock` in `.env` to work without an API key.
+Set `LLM_PROVIDER=mock` in `.env` to work without an API key. Settings that
+only apply to your machine go in `.env.local`, which the dev scripts load
+after `.env`; the README lists the lines it needs.
 
 ## Layout
 
@@ -26,19 +27,38 @@ docker/            Dockerfile and reverse-proxy examples
 Inside `apps/server/src`:
 
 ```
-auth/       passwords, sessions, TOTP
+auth/       passwords, sessions, TOTP, invites
 security/   crypto helpers, rate limiter, response headers
 http/       request hooks: session lookup, CSRF, origin checks
 routes/     REST endpoints, one file per area
 db/         connection pool and migration runner
 llm/        provider interface and implementations, pricing, usage
-embeddings/ local and remote embedding providers
-ingest/     upload validation, parsing, chunking
-rag/        rules retrieval
-game/       dice, turn collection, state, DM tools and agent loop
-realtime/   websocket rooms
+rules/      upload parsing, chunking, embeddings, retrieval
+agent/      dice, game state, DM tools, prompt context, agent loop, summaries
+realtime/   websocket rooms, turn collection, chat messages
 jobs/       background queue
 ```
+
+Inside `apps/web/src`:
+
+```
+main.tsx    entry: providers, router, service worker registration
+routes.tsx  route table and the tab-bar shell
+app.tsx     session, toasts, data-loading hooks
+api.ts      fetch wrapper (CSRF token, error shape)
+ui.tsx      shared components: sheets, fields, avatars
+install.tsx the "Add to Home Screen" prompt
+screens/    one file per screen
+play/       the play screen's parts: socket, story feed, composer, sheets
+styles/     plain CSS; tokens in base.css
+```
+
+The client is designed for a phone first. Check changes at 393 px and 430 px
+wide before anything else, keep tap targets at 44 px or more, and keep form
+fields at 16 px text so iOS does not zoom the page on focus. The server's
+Content-Security-Policy allows no inline scripts or styles, so the production
+build (`npm run build && npm run start`) is the one to test against before a
+release.
 
 ## Before you open a pull request
 
