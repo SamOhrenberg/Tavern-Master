@@ -34,6 +34,34 @@ export interface GameSystem {
   sheetTemplate: SheetTemplate;
   documentCount: number;
   chunkCount: number;
+  /** How many of the system's library documents are setting/flavour material. */
+  settingDocumentCount: number;
+  /** Progress of the setting distillation (feature: setting packs). */
+  loreStatus: LoreStatus;
+  /** The distilled voice of this world, once read; null until ready. */
+  lore: SettingLore | null;
+}
+
+export type LoreStatus = 'none' | 'queued' | 'reading' | 'ready' | 'failed';
+
+/**
+ * A system's distilled "voice": how it sounds, how it moves, and the in-universe
+ * vocabulary and motifs a DM may lean on for colour. Flavour, never rules.
+ */
+export interface SettingLore {
+  version: 1;
+  /** A few sentences on how this world sounds. */
+  voice: string;
+  /** How scenes move; what a beat feels like. */
+  pacing: string;
+  /** In-universe vocabulary the DM may borrow. */
+  glossary: { term: string; meaning: string; soundsLike?: string }[];
+  /** Recurring devices, e.g. "System messages in boxes". */
+  presentation: string[];
+  /** Names, places and motifs safe to reference as known. */
+  touchstones: string[];
+  /** Spoilers / plot the DM must NOT pre-empt. */
+  cautions: string[];
 }
 
 export interface SheetTemplate {
@@ -53,6 +81,8 @@ export interface RuleDocument {
   pageCount: number | null;
   chunkCount: number;
   createdAt: string;
+  /** 'rules' (default) or 'setting'. Setting documents feed the system's lore, not its rules. */
+  kind: 'rules' | 'setting';
 }
 
 export interface RuleHit {
@@ -76,6 +106,9 @@ export interface Friend {
 
 // ---------- campaigns ----------
 
+/** 'prep' is the lobby before play: party, sheets, documents and wishes. */
+export type CampaignPhase = 'prep' | 'active';
+
 export interface CampaignSummary {
   id: string;
   name: string;
@@ -84,12 +117,14 @@ export interface CampaignSummary {
   systemName: string;
   ownerId: string;
   status: 'active' | 'archived';
+  phase: CampaignPhase;
   memberCount: number;
   role: 'owner' | 'player';
 }
 
 export interface CampaignMember extends UserRef {
   role: 'owner' | 'player';
+  /** The first character this member runs, if any. */
   characterName: string | null;
 }
 
@@ -98,11 +133,30 @@ export interface CampaignDetail extends CampaignSummary {
   scene: string;
   members: CampaignMember[];
   pendingInvites: { id: string; invitee: UserRef }[];
+  /** Your own wishes for the story. Only you and the GM read them. */
+  myWishes: string;
 }
 
 export interface CampaignSettings {
   gatherWindowSeconds: number;
   tone: string;
+  /** 'gm' lets the GM edit sheets itself as the story changes the characters. */
+  sheets: 'players' | 'gm';
+  /**
+   * Who runs the Dungeon Master: 'server' is the built-in one on the
+   * configured model; 'claude' is the owner's Claude app, through the connector.
+   */
+  dm: 'server' | 'claude';
+}
+
+/** A token that lets an MCP client, such as the Claude app, run your campaigns. Never includes the token. */
+export interface ConnectorToken {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** The campaign it last opened. */
+  campaignName: string | null;
 }
 
 export interface CampaignInvite {
@@ -118,10 +172,21 @@ export interface InventoryItem {
   notes?: string;
 }
 
+export type CharacterKind = 'pc' | 'npc';
+
+/**
+ * Who speaks for a party member: one or more players, the GM itself, or a
+ * separate AI that knows only what the character knows.
+ */
+export type CharacterController = 'player' | 'gm' | 'agent';
+
 export interface Character {
   id: string;
   campaignId: string;
-  userId: string;
+  kind: CharacterKind;
+  controller: CharacterController;
+  /** The players who run it. Empty unless `controller` is 'player'. */
+  playerIds: string[];
   name: string;
   sheet: Record<string, unknown>;
   hp: number;
@@ -129,21 +194,92 @@ export interface Character {
   tempHp: number;
   conditions: string[];
   inventory: InventoryItem[];
-  /** Only present for the owner. */
+  /** Personality, looks, history and goals. */
+  persona: string;
+  /** Only present for the players who run the character. */
   privateNotes?: string;
 }
 
-export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction';
+/** A sheet read from an upload, for the player to check before saving. */
+export interface CharacterDraft {
+  name: string;
+  maxHp: number;
+  sheet: Record<string, string | number>;
+  inventory: InventoryItem[];
+  persona: string;
+}
+
+// ---------- campaign documents ----------
+
+export type CampaignDocKind = 'rules' | 'setting' | 'adventure' | 'character' | 'handout' | 'other';
+
+export interface CampaignDocument {
+  id: string;
+  title: string;
+  sizeBytes: number;
+  status: DocumentStatus;
+  error: string | null;
+  /** null until the GM has catalogued it. */
+  kind: CampaignDocKind | null;
+  /** 'gm' keeps it away from the players' side of the table. */
+  audience: 'table' | 'gm';
+  /** The GM's own note on what it holds. Empty for a GM-only document you did not upload. */
+  summary: string;
+  uploadedBy: UserRef | null;
+  canEdit: boolean;
+  createdAt: string;
+}
+
+// ---------- character builder ----------
+
+export interface BuilderMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  rolls?: DiceRoll[];
+  createdAt: string;
+}
+
+export interface BuilderThread {
+  id: string;
+  characterId: string | null;
+  messages: BuilderMessage[];
+}
+
+/** One line of the builder's streamed reply. */
+export type BuilderEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool'; tool: string; summary: string }
+  | { type: 'done'; message: BuilderMessage; characterId: string | null }
+  | { type: 'error'; message: string };
+
+export type EntityKind =
+  | 'npc'
+  | 'location'
+  | 'quest'
+  | 'item'
+  | 'faction'
+  | 'event'
+  | 'term';
 
 export interface Entity {
   id: string;
   kind: EntityKind;
   name: string;
+  /** Other names the DM may use for this entry; drives codex search and linking. */
+  aliases: string[];
+  /** Player-visible one-liner for chips and cards. */
   summary: string;
+  /** Player-visible longer codex entry; '' when none has been written yet. */
+  article: string;
   status: string;
-  /** Present only once revealed (or for the campaign owner). */
+  /** Present only once revealed. Never sent while unrevealed, for anyone. */
   secret?: string;
+  /** DM-only extension of the article; shipped with `secret` once revealed. */
+  articleSecret?: string;
   secretRevealed: boolean;
+  /** ISO time players first met this entry, or null if not yet recorded. */
+  firstSeenAt: string | null;
 }
 
 export interface StateEvent {
@@ -176,6 +312,14 @@ export interface Citation {
   excerpt: string;
 }
 
+export type RollKind =
+  | 'attack' // to hit
+  | 'damage'
+  | 'check' // ability/skill check
+  | 'save'
+  | 'initiative'
+  | 'other';
+
 export interface DiceRoll {
   id: string;
   expression: string;
@@ -183,6 +327,18 @@ export interface DiceRoll {
   character: string | null;
   dice: { sides: number; value: number; kept: boolean }[];
   total: number;
+  /** What the roll is for. Defaults to 'other' for older rows / unspecified. */
+  kind: RollKind;
+}
+
+/** A codex entry the DM named in a line of narration, resolved server-side. */
+export interface EntityRef {
+  /** The exact text wrapped in the narration, e.g. "the Ashen Crown". */
+  text: string;
+  entityId: string;
+  /** Canonical entry name, which may differ from `text` when an alias was used. */
+  name: string;
+  kind: EntityKind;
 }
 
 export interface ChatMessage {
@@ -194,8 +350,20 @@ export interface ChatMessage {
   content: string;
   citations?: Citation[];
   rolls?: DiceRoll[];
+  /** Codex references the DM marked in `content` with `[[name]]`. */
+  refs?: EntityRef[];
   redacted?: boolean;
+  /** An action taken by an AI-run party member. */
+  ai?: boolean;
   createdAt: string;
+}
+
+/** A place in the turn order: a player-run character, or a player without one. */
+export interface TurnSeat {
+  id: string;
+  name: string;
+  userIds: string[];
+  characterId: string | null;
 }
 
 export interface TurnState {
@@ -203,16 +371,20 @@ export interface TurnState {
   number: number | null;
   /** Epoch milliseconds when the gather window closes. */
   deadline: number | null;
+  /** Seat ids. */
   expected: string[];
   acted: string[];
   passed: string[];
+  seats: TurnSeat[];
 }
 
 // ---------- websocket ----------
 
 export type ClientMessage =
-  | { type: 'action'; text: string }
+  | { type: 'action'; text: string; characterId?: string }
   | { type: 'ooc'; text: string }
+  /** A player rolling their own dice. `kind` and `characterId` are optional. */
+  | { type: 'roll'; expression: string; reason?: string; characterId?: string; kind?: RollKind }
   | { type: 'pass' }
   | { type: 'force' }
   | { type: 'ping' };
@@ -221,6 +393,8 @@ export type ServerMessage =
   | { type: 'hello'; you: UserRef; present: UserRef[]; turn: TurnState }
   | { type: 'presence'; present: UserRef[] }
   | { type: 'message'; message: ChatMessage }
+  /** A standalone dice roll (a player rolled), to animate and append to the log. */
+  | { type: 'roll'; roll: DiceRoll }
   | { type: 'turn'; turn: TurnState }
   | { type: 'dm_start'; turnId: string }
   | { type: 'dm_delta'; turnId: string; text: string }
