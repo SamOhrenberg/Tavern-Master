@@ -36,6 +36,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-tavern}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-tavern}
       DATA_DIR: /data
+      WORKER_URL: http://worker:8081
     ports:
       # Bound to loopback by default; a reverse proxy on the host can reach it.
       # Set APP_BIND=0.0.0.0 for direct LAN access, or remove the mapping and
@@ -50,6 +51,26 @@ services:
       db:
         condition: service_healthy
     mem_limit: ${WEB_MEM_LIMIT:-384m}
+
+  # Background jobs: reads uploaded rulebooks, builds the search index, writes
+  # session summaries. Never published; web reaches it on the internal network.
+  worker:
+    <<: *app
+    command: ['node', 'apps/server/dist/worker.js']
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-tavern}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-tavern}
+      DATA_DIR: /data
+      HEALTH_PORT: '8081'
+    volumes:
+      - ${UPLOADS_PATH:-uploads}:/data/uploads
+      - ${MODELS_PATH:-models}:/data/models
+    networks:
+      - internal
+      - egress
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: ${WORKER_MEM_LIMIT:-1g}
 
   db:
     <<: *hardening
@@ -95,7 +116,11 @@ networks:
   # No route in or out; db lives only here.
   internal:
     internal: true
+  # Outbound only, for the worker: the embedding model download and summaries.
+  # Kept apart from `edge` so the worker never shares a network with the proxy.
+  egress: {}
 
 volumes:
   pgdata: {}
   uploads: {}
+  models: {}
