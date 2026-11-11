@@ -42,25 +42,62 @@ interface ChunkRow {
 }
 
 /**
- * Hybrid search over ONE game system. `systemId` always comes from the
- * server's own records (the campaign row), never from model or client input,
- * which is what keeps one system's rules out of another's campaign.
+ * Which chunks a search may see, as a WHERE clause over `c` (chunks) and `d`
+ * (documents). Built only from the server's own records, so a scope is the
+ * one place that decides what a search can reach.
  */
-export async function searchRules(
-  systemId: string,
-  query: string,
-  k = 5,
-  emb: Embedder | undefined = embedder('web'),
-): Promise<RuleHit[]> {
+interface Scope {
+  where: string;
+  params: unknown[];
+}
+
+/**
+ * A library system's rulebooks, plus one campaign's own house-rule documents
+ * when given. Setting/flavour documents are excluded here: their voice is read
+ * separately and must never be retrieved as if it were a rule.
+ */
+export function rulesScope(systemId: string, campaignId?: string): Scope {
+  return campaignId
+    ? {
+        where: `c.system_id = $1 AND ((c.campaign_id IS NULL AND d.kind IS DISTINCT FROM 'setting')
+                 OR (c.campaign_id = $2 AND d.kind = 'rules'))`,
+        params: [systemId, campaignId],
+      }
+    : {
+        where: `c.system_id = $1 AND c.campaign_id IS NULL AND d.kind IS DISTINCT FROM 'setting'`,
+        params: [systemId],
+      };
+}
+
+/** A library system's setting/flavour documents only, kept apart from its rules. */
+export function settingScope(systemId: string): Scope {
+  return {
+    where: `c.system_id = $1 AND c.campaign_id IS NULL AND d.kind = 'setting'`,
+    params: [systemId],
+  };
+}
+
+/** One campaign's uploaded documents. `tableOnly` hides what was marked for the GM alone. */
+export function campaignScope(campaignId: string, tableOnly: boolean): Scope {
+  return {
+    where: `c.campaign_id = $1${tableOnly ? ` AND d.audience = 'table'` : ''}`,
+    params: [campaignId],
+  };
+}
+
+const FROM = 'FROM chunks c JOIN documents d ON d.id = c.document_id';
+
+async function hybrid(scope: Scope, query: string, k: number, emb: Embedder | undefined): Promise<RuleHit[]> {
   const lists: number[][] = [];
+  const n = scope.params.length;
 
   const tsq = keywordQuery(query);
   if (tsq) {
     const rows = await q<{ id: number }>(
-      `SELECT id FROM chunks, to_tsquery('english', $2) AS query
-        WHERE system_id = $1 AND tsv @@ query
-        ORDER BY ts_rank_cd(tsv, query) DESC, id LIMIT 20`,
-      [systemId, tsq],
+      `SELECT c.id ${FROM}, to_tsquery('english', $${n + 1}) AS query
+        WHERE ${scope.where} AND c.tsv @@ query
+        ORDER BY ts_rank_cd(c.tsv, query) DESC, c.id LIMIT 20`,
+      [...scope.params, tsq],
     );
     lists.push(rows.map((r) => r.id));
   }
@@ -70,10 +107,10 @@ export async function searchRules(
       const [vec] = await emb.embed([query], 'query');
       if (vec) {
         const rows = await q<{ id: number }>(
-          `SELECT id FROM chunks
-            WHERE system_id = $1 AND embedding_model = $2 AND embedding IS NOT NULL
-            ORDER BY embedding <=> $3::vector LIMIT 20`,
-          [systemId, emb.model, toVector(vec)],
+          `SELECT c.id ${FROM}
+            WHERE ${scope.where} AND c.embedding_model = $${n + 1} AND c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> $${n + 2}::vector LIMIT 20`,
+          [...scope.params, emb.model, toVector(vec)],
         );
         lists.push(rows.map((r) => r.id));
       }
@@ -85,11 +122,11 @@ export async function searchRules(
 
   const ranked = fuse(lists, k);
   if (!ranked.length) return [];
+  // The scope is applied again here, so an id can never widen what comes back.
   const rows = await q<ChunkRow>(
-    `SELECT c.id, c.heading, c.page_start, c.content, d.title
-       FROM chunks c JOIN documents d ON d.id = c.document_id
-      WHERE c.system_id = $1 AND c.id = ANY($2::bigint[])`,
-    [systemId, ranked.map((r) => r.id)],
+    `SELECT c.id, c.heading, c.page_start, c.content, d.title ${FROM}
+      WHERE ${scope.where} AND c.id = ANY($${n + 1}::bigint[])`,
+    [...scope.params, ranked.map((r) => r.id)],
   );
   const byId = new Map(rows.map((r) => [r.id, r]));
   return ranked.flatMap(({ id, score }) => {
@@ -98,4 +135,40 @@ export async function searchRules(
       ? [{ chunkId: r.id, document: r.title, heading: r.heading, page: r.page_start, text: r.content, score }]
       : [];
   });
+}
+
+/**
+ * Hybrid search over ONE game system. `systemId` and `campaignId` always come
+ * from the server's own records (the campaign row), never from model or
+ * client input, which is what keeps one table's material out of another's.
+ */
+export async function searchRules(
+  systemId: string,
+  query: string,
+  k = 5,
+  emb: Embedder | undefined = embedder('web'),
+  campaignId?: string,
+): Promise<RuleHit[]> {
+  return hybrid(rulesScope(systemId, campaignId), query, k, emb);
+}
+
+/** Hybrid search over a system's setting/flavour documents (voice and colour, not rules). */
+export async function searchSetting(
+  systemId: string,
+  query: string,
+  k = 4,
+  emb: Embedder | undefined = embedder('web'),
+): Promise<RuleHit[]> {
+  return hybrid(settingScope(systemId), query, k, emb);
+}
+
+/** Hybrid search over the documents uploaded to one campaign. */
+export async function searchCampaignDocs(
+  campaignId: string,
+  query: string,
+  k = 4,
+  tableOnly = false,
+  emb: Embedder | undefined = embedder('web'),
+): Promise<RuleHit[]> {
+  return hybrid(campaignScope(campaignId, tableOnly), query, k, emb);
 }
