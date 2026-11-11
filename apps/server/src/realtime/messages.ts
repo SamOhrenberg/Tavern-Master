@@ -1,4 +1,4 @@
-import type { ChatMessage, Citation, DiceRoll, MessageKind } from '@tavern/protocol';
+import type { ChatMessage, Citation, DiceRoll, EntityRef, MessageKind } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
 
 interface Row {
@@ -10,7 +10,13 @@ interface Row {
   display_name: string | null;
   character_name: string | null;
   content: string;
-  meta: { citations?: Citation[]; rolls?: DiceRoll[]; redacted?: boolean };
+  meta: {
+    citations?: Citation[];
+    rolls?: DiceRoll[];
+    refs?: EntityRef[];
+    redacted?: boolean;
+    ai?: boolean;
+  };
   created_at: Date;
 }
 
@@ -30,7 +36,9 @@ function toChat(r: Row): ChatMessage {
     content: r.content,
     ...(r.meta.citations?.length ? { citations: r.meta.citations } : {}),
     ...(r.meta.rolls?.length ? { rolls: r.meta.rolls } : {}),
+    ...(r.meta.refs?.length ? { refs: r.meta.refs } : {}),
     ...(r.meta.redacted ? { redacted: true } : {}),
+    ...(r.meta.ai ? { ai: true } : {}),
     createdAt: r.created_at.toISOString(),
   };
 }
