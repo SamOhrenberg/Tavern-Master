@@ -48,6 +48,8 @@ COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./web
 COPY apps/server/package.json ./apps/server/package.json
 COPY apps/server/migrations ./apps/server/migrations
+# The starter rules excerpt, read once when the library is empty.
+COPY apps/server/seed ./apps/server/seed
 COPY package.json ./package.json
 
 # Writable state lives under /data only; the root filesystem can be read-only.
