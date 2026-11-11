@@ -13,10 +13,13 @@
     "apps/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:db": "docker compose -f docker-compose.dev.yml up -d --wait",
     "dev:server": "npm run dev -w @tavern/server",
     "dev:worker": "npm run dev:worker -w @tavern/server",
     "dev:web": "npm run dev -w @tavern/web",
     "build": "npm run build -w @tavern/server && npm run build -w @tavern/web",
+    "start": "npm run start -w @tavern/server",
     "test": "npm run test -w @tavern/server",
     "typecheck": "npm run typecheck -w @tavern/server && npm run typecheck -w @tavern/web",
     "lint": "eslint .",
