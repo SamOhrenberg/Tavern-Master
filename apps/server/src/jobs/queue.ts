@@ -1,6 +1,6 @@
 import { q, q1, type Queryable } from '../db/pool.js';
 
-export type JobKind = 'ingest_document' | 'summarize_campaign';
+export type JobKind = 'ingest_document' | 'summarize_campaign' | 'distil_lore';
 
 export interface Job<P = Record<string, unknown>> {
   id: number;

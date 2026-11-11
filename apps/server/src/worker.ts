@@ -9,6 +9,7 @@ import { claim, complete, fail, JOBS_CHANNEL, requeueStale, type Job } from './j
 import { log } from './log.js';
 import { embedder, internalToken } from './rules/embed.js';
 import { ingestDocument } from './rules/ingest.js';
+import { distilLore } from './rules/lore.js';
 import { safeEqual } from './security/crypto.js';
 import { ensureDataDirs, modelsDir, uploadsDir } from './storage.js';
 
@@ -17,11 +18,18 @@ let stopping = false;
 let wake: (() => void) | undefined;
 
 async function handle(job: Job): Promise<void> {
-  const payload = job.payload as { documentId?: string; campaignId?: string; sessionId?: string };
+  const payload = job.payload as {
+    documentId?: string;
+    campaignId?: string;
+    sessionId?: string;
+    systemId?: string;
+  };
   if (job.kind === 'ingest_document' && payload.documentId) {
     await ingestDocument(payload.documentId, embedder('worker'));
   } else if (job.kind === 'summarize_campaign' && payload.campaignId) {
     await summarizeCampaign(payload.campaignId, payload.sessionId);
+  } else if (job.kind === 'distil_lore' && payload.systemId) {
+    await distilLore(payload.systemId);
   } else {
     throw new Error(`unknown job kind ${job.kind}`);
   }
