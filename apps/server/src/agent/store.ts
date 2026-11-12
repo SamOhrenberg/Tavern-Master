@@ -1,6 +1,14 @@
-import type { Citation, DiceRoll, EntityKind, InventoryItem, RuleHit } from '@tavern/protocol';
+import type {
+  CharacterController,
+  CharacterKind,
+  Citation,
+  DiceRoll,
+  EntityKind,
+  InventoryItem,
+  RuleHit,
+} from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
-import { searchRules } from '../rules/retrieve.js';
+import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
 
 /** A player taking part in the turn being resolved. Built by the server, never by the model. */
 export interface Actor {
@@ -27,32 +35,44 @@ export interface TurnContext {
 
 export interface CharRow {
   id: string;
-  userId: string;
   name: string;
+  kind: CharacterKind;
+  controller: CharacterController;
+  /** The players who run it; empty for AI-run characters. */
+  playerIds: string[];
   hp: number;
   maxHp: number;
   tempHp: number;
   conditions: string[];
   inventory: InventoryItem[];
   sheet: Record<string, unknown>;
+  persona: string;
 }
 
 export interface EntityRow {
   id: string;
   kind: EntityKind;
   name: string;
+  aliases: string[];
   summary: string;
+  article: string;
   status: string;
   secret: string | null;
+  articleSecret: string | null;
   secretRevealed: boolean;
+  firstSeenAt: string | null;
+  inCodex: boolean;
 }
 
 export interface EntityInput {
   kind: EntityKind;
   name: string;
+  aliases?: string[];
   summary?: string;
+  article?: string;
   status?: string;
   secret?: string;
+  articleSecret?: string;
 }
 
 export interface StateEventInput {
@@ -63,15 +83,36 @@ export interface StateEventInput {
   diff?: Record<string, unknown>;
 }
 
-/** The persistence the DM's tools need. Tests swap in an in-memory version. */
+export interface NoteRow {
+  title: string;
+  content: string;
+  updatedAt: Date;
+}
+
+/** One thing found in the campaign's own history. */
+export interface RecallHit {
+  where: string;
+  text: string;
+}
+
+/** The persistence the GM's tools need. Tests swap in an in-memory version. */
 export interface GameStore {
-  searchRules(systemId: string, query: string, k: number): Promise<RuleHit[]>;
+  /** Library rulebooks of one system, plus that campaign's own house-rule documents. */
+  searchRules(systemId: string, query: string, k: number, campaignId?: string): Promise<RuleHit[]>;
+  /** Documents uploaded to this campaign. `tableOnly` leaves out anything marked for the GM alone. */
+  searchDocuments(campaignId: string, query: string, k: number, tableOnly: boolean): Promise<RuleHit[]>;
+  /** The system's setting/flavour material: voice and colour, never rules. */
+  searchSetting(systemId: string, query: string, k: number): Promise<RuleHit[]>;
   characters(campaignId: string): Promise<CharRow[]>;
   /** Writes vitals and inventory only. Name, sheet and private notes are not writable here. */
   saveCharacter(c: CharRow): Promise<void>;
+  /** Writes the sheet fields and maximum hit points. Only reachable when the GM keeps the sheets. */
+  saveSheet(c: CharRow): Promise<void>;
   entities(campaignId: string): Promise<EntityRow[]>;
   upsertEntity(campaignId: string, e: EntityInput): Promise<{ id: string; created: boolean }>;
   revealSecret(campaignId: string, kind: EntityKind, name: string): Promise<string | undefined>;
+  /** Stamp when players first met these entries, the first time each is referenced. */
+  markFirstSeen(campaignId: string, entityIds: string[], messageId: number): Promise<void>;
   flags(campaignId: string): Promise<Record<string, unknown>>;
   setFlag(campaignId: string, key: string, value: unknown): Promise<void>;
   scene(campaignId: string): Promise<string>;
@@ -80,41 +121,59 @@ export interface GameStore {
     campaignId: string,
     m: { kind: 'fact' | 'thread' | 'promise'; content: string; importance: number },
   ): Promise<void>;
+  notes(campaignId: string): Promise<NoteRow[]>;
+  /** Create or replace a notebook page. Empty content removes it. */
+  writeNote(campaignId: string, title: string, content: string): Promise<'created' | 'updated' | 'removed'>;
+  /** Search what was actually said and done in past play. */
+  recall(campaignId: string, query: string, k: number): Promise<RecallHit[]>;
   recordRoll(ctx: TurnContext, roll: Omit<DiceRoll, 'id'>): Promise<string>;
   recordEvent(ctx: TurnContext, ev: StateEventInput): Promise<void>;
 }
 
 interface CharDb {
   id: string;
-  user_id: string;
   name: string;
+  kind: CharacterKind;
+  controller: CharacterController;
+  player_ids: string[];
   hp: number;
   max_hp: number;
   temp_hp: number;
   conditions: string[];
   inventory: InventoryItem[];
   sheet: Record<string, unknown>;
+  persona: string;
 }
 
+export const MAX_NOTES = 24;
+
 export const pgStore: GameStore = {
-  searchRules: (systemId, query, k) => searchRules(systemId, query, k),
+  searchRules: (systemId, query, k, campaignId) => searchRules(systemId, query, k, undefined, campaignId),
+  searchDocuments: (campaignId, query, k, tableOnly) => searchCampaignDocs(campaignId, query, k, tableOnly),
+  searchSetting: (systemId, query, k) => searchSetting(systemId, query, k),
 
   async characters(campaignId) {
     const rows = await q<CharDb>(
-      `SELECT id, user_id, name, hp, max_hp, temp_hp, conditions, inventory, sheet
-         FROM characters WHERE campaign_id = $1 ORDER BY created_at`,
+      `SELECT c.id, c.name, c.kind, c.controller, c.hp, c.max_hp, c.temp_hp, c.conditions, c.inventory,
+              c.sheet, c.persona,
+              coalesce((SELECT array_agg(p.user_id::text ORDER BY p.user_id)
+                          FROM character_players p WHERE p.character_id = c.id), '{}') AS player_ids
+         FROM characters c WHERE c.campaign_id = $1 ORDER BY c.created_at, c.id`,
       [campaignId],
     );
     return rows.map((r) => ({
       id: r.id,
-      userId: r.user_id,
       name: r.name,
+      kind: r.kind,
+      controller: r.controller,
+      playerIds: r.controller === 'player' ? r.player_ids : [],
       hp: r.hp,
       maxHp: r.max_hp,
       tempHp: r.temp_hp,
       conditions: r.conditions,
       inventory: r.inventory,
       sheet: r.sheet,
+      persona: r.persona,
     }));
   },
 
@@ -125,9 +184,19 @@ export const pgStore: GameStore = {
     );
   },
 
+  async saveSheet(c) {
+    await q(
+      `UPDATE characters SET sheet = $2, max_hp = $3, hp = least(hp, $3), updated_at = now() WHERE id = $1`,
+      [c.id, JSON.stringify(c.sheet), c.maxHp],
+    );
+  },
+
   async entities(campaignId) {
     const rows = await q(
-      `SELECT id, kind, name, summary, status, secret, secret_revealed FROM entities
+      `SELECT id, kind, name, aliases, summary, article, status, secret, article_secret,
+              secret_revealed, first_seen_message_id, in_codex,
+              (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at
+         FROM entities
         WHERE campaign_id = $1 ORDER BY kind, name`,
       [campaignId],
     );
@@ -135,22 +204,39 @@ export const pgStore: GameStore = {
       id: r.id,
       kind: r.kind,
       name: r.name,
+      aliases: Array.isArray(r.aliases) ? r.aliases : [],
       summary: r.summary,
+      article: r.article,
       status: r.status,
       secret: r.secret,
+      articleSecret: r.article_secret,
       secretRevealed: r.secret_revealed,
+      firstSeenAt: r.first_seen_at ? r.first_seen_at.toISOString() : null,
+      inCodex: r.in_codex,
     }));
   },
 
   async upsertEntity(campaignId, e) {
     const row = await q1<{ id: string; created: boolean }>(
-      `INSERT INTO entities (campaign_id, kind, name, summary, status, secret)
-       VALUES ($1, $2, $3, coalesce($4, ''), coalesce($5, ''), $6)
+      `INSERT INTO entities (campaign_id, kind, name, aliases, summary, article, status, secret, article_secret)
+       VALUES ($1, $2, $3, coalesce($4, '[]'::jsonb), coalesce($5, ''), coalesce($6, ''), coalesce($7, ''), $8, $9)
        ON CONFLICT (campaign_id, kind, lower(name)) DO UPDATE
-         SET summary = coalesce($4, entities.summary), status = coalesce($5, entities.status),
-             secret = coalesce($6, entities.secret), updated_at = now()
+         SET aliases = coalesce($4, entities.aliases), summary = coalesce($5, entities.summary),
+             article = coalesce($6, entities.article), status = coalesce($7, entities.status),
+             secret = coalesce($8, entities.secret), article_secret = coalesce($9, entities.article_secret),
+             updated_at = now()
        RETURNING id, (xmax = 0) AS created`,
-      [campaignId, e.kind, e.name, e.summary ?? null, e.status ?? null, e.secret ?? null],
+      [
+        campaignId,
+        e.kind,
+        e.name,
+        e.aliases ? JSON.stringify(e.aliases) : null,
+        e.summary ?? null,
+        e.article ?? null,
+        e.status ?? null,
+        e.secret ?? null,
+        e.articleSecret ?? null,
+      ],
     );
     return row!;
   },
@@ -162,6 +248,15 @@ export const pgStore: GameStore = {
       [campaignId, kind, name],
     );
     return row?.secret ?? undefined;
+  },
+
+  async markFirstSeen(campaignId, entityIds, messageId) {
+    if (entityIds.length === 0) return;
+    await q(
+      `UPDATE entities SET first_seen_message_id = $3
+        WHERE campaign_id = $1 AND id = ANY($2::uuid[]) AND first_seen_message_id IS NULL`,
+      [campaignId, entityIds, messageId],
+    );
   },
 
   async flags(campaignId) {
@@ -199,10 +294,74 @@ export const pgStore: GameStore = {
     ]);
   },
 
+  async notes(campaignId) {
+    const rows = await q<{ title: string; content: string; updated_at: Date }>(
+      'SELECT title, content, updated_at FROM gm_notes WHERE campaign_id = $1 ORDER BY created_at',
+      [campaignId],
+    );
+    return rows.map((r) => ({ title: r.title, content: r.content, updatedAt: r.updated_at }));
+  },
+
+  async writeNote(campaignId, title, content) {
+    if (!content.trim()) {
+      await q('DELETE FROM gm_notes WHERE campaign_id = $1 AND lower(title) = lower($2)', [
+        campaignId,
+        title,
+      ]);
+      return 'removed';
+    }
+    const row = await q1<{ created: boolean }>(
+      `INSERT INTO gm_notes (campaign_id, title, content) VALUES ($1, $2, $3)
+       ON CONFLICT (campaign_id, lower(title)) DO UPDATE SET content = $3, updated_at = now()
+       RETURNING (xmax = 0) AS created`,
+      [campaignId, title, content],
+    );
+    return row?.created ? 'created' : 'updated';
+  },
+
+  async recall(campaignId, query, k) {
+    const tsq = keywordQuery(query);
+    if (!tsq) return [];
+    // The predicate matches the partial index on messages exactly.
+    const rows = await q<{
+      kind: 'action' | 'dm';
+      who: string | null;
+      turn: number | null;
+      session: number | null;
+      snippet: string;
+    }>(
+      `SELECT hit.kind, hit.who, t.number AS turn, s.number AS session,
+              ts_headline('english', hit.content, to_tsquery('english', $2),
+                          'MaxFragments=2, MaxWords=45, MinWords=20, StartSel="", StopSel="", FragmentDelimiter=" … "')
+                AS snippet
+         FROM (SELECT m.id, m.kind, m.content, m.turn_id, m.session_id,
+                      coalesce(m.character_name, u.display_name) AS who
+                 FROM messages m LEFT JOIN users u ON u.id = m.user_id
+                WHERE m.campaign_id = $1 AND m.kind IN ('action', 'dm')
+                  AND to_tsvector('english', m.content) @@ to_tsquery('english', $2)
+                ORDER BY ts_rank_cd(to_tsvector('english', m.content), to_tsquery('english', $2)) DESC, m.id DESC
+                LIMIT $3) hit
+         LEFT JOIN turns t ON t.id = hit.turn_id
+         LEFT JOIN play_sessions s ON s.id = hit.session_id
+        ORDER BY hit.id`,
+      [campaignId, tsq, k],
+    );
+    return rows.map((r) => ({
+      where: [
+        r.session ? `session ${r.session}` : '',
+        r.turn ? `turn ${r.turn}` : '',
+        r.kind === 'dm' ? 'narration' : (r.who ?? 'a player'),
+      ]
+        .filter(Boolean)
+        .join(', '),
+      text: r.snippet,
+    }));
+  },
+
   async recordRoll(ctx, roll) {
     const row = await q1<{ id: string }>(
-      `INSERT INTO dice_rolls (campaign_id, turn_id, expression, detail, total, reason, character_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      `INSERT INTO dice_rolls (campaign_id, turn_id, expression, detail, total, reason, character_name, kind)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
       [
         ctx.campaignId,
         ctx.turnId,
@@ -211,6 +370,7 @@ export const pgStore: GameStore = {
         roll.total,
         roll.reason,
         roll.character,
+        roll.kind,
       ],
     );
     return row!.id;
