@@ -11,7 +11,8 @@ import { config } from '../config.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireAdmin, requireUser } from '../http/security.js';
-import { enqueue } from '../jobs/queue.js';
+import { enqueue, hasPending } from '../jobs/queue.js';
+import { editLoreSchema } from '../rules/lore.js';
 import { sniffFile } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from '../storage.js';
@@ -59,6 +60,7 @@ interface DocRow {
   page_count: number | null;
   chunk_count: number;
   created_at: Date;
+  kind: string | null;
 }
 const toDoc = (r: DocRow): RuleDocument => ({
   id: r.id,
@@ -72,17 +74,21 @@ const toDoc = (r: DocRow): RuleDocument => ({
   pageCount: r.page_count,
   chunkCount: r.chunk_count,
   createdAt: r.created_at.toISOString(),
+  // Library documents are rules unless marked as setting/flavour.
+  kind: r.kind === 'setting' ? 'setting' : 'rules',
 });
 const DOC_COLS =
-  'id, system_id, title, original_name, mime, size_bytes, status, error, page_count, chunk_count, created_at';
+  'id, system_id, title, original_name, mime, size_bytes, status, error, page_count, chunk_count, created_at, kind';
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/systems', async (req) => {
     requireUser(req);
     const rows = await q(
-      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template,
-              (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id) AS docs,
-              (SELECT count(*)::int FROM chunks c WHERE c.system_id = s.id) AS chunks
+      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status,
+              (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id AND d.campaign_id IS NULL) AS docs,
+              (SELECT count(*)::int FROM documents d
+                 WHERE d.system_id = s.id AND d.campaign_id IS NULL AND d.kind = 'setting') AS setting_docs,
+              (SELECT count(*)::int FROM chunks c WHERE c.system_id = s.id AND c.campaign_id IS NULL) AS chunks
          FROM game_systems s ORDER BY s.name`,
     );
     const systems: GameSystem[] = rows.map((r) => ({
@@ -93,6 +99,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       sheetTemplate: r.sheet_template,
       documentCount: r.docs,
       chunkCount: r.chunks,
+      settingDocumentCount: r.setting_docs,
+      loreStatus: r.lore_status,
+      lore: r.lore ?? null,
     }));
     return { systems };
   });
@@ -142,7 +151,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     requireUser(req);
     const id = parse(uuid, req.params.id);
     const rows = await q<DocRow>(
-      `SELECT ${DOC_COLS} FROM documents WHERE system_id = $1 ORDER BY created_at`,
+      // The library lists rulebooks only. A campaign's own documents stay with that campaign.
+      `SELECT ${DOC_COLS} FROM documents WHERE system_id = $1 AND campaign_id IS NULL ORDER BY created_at`,
       [id],
     );
     return { documents: rows.map(toDoc) };
@@ -157,6 +167,33 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     return { hits: await searchRules(id, query, 5) };
   });
 
+  /**
+   * Correct the distilled setting voice by hand. The DM reads this block as
+   * flavour (never rules), so a human can fix what the reader misheard. The
+   * edit is clamped like the reader's own output and marks the lore ready.
+   * Note: re-uploading or re-tagging setting material re-runs distillation,
+   * which overwrites manual edits.
+   */
+  app.put<{ Params: { id: string } }>('/api/systems/:id/lore', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const lore = parse(editLoreSchema, req.body);
+    const row = await q1<{ id: string }>(
+      `UPDATE game_systems
+          SET lore = $2, lore_status = 'ready', lore_error = NULL, lore_at = now()
+        WHERE id = $1 RETURNING id`,
+      [id, JSON.stringify(lore)],
+    );
+    if (!row) throw notFound();
+    await audit('system.lore_edited', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+    });
+    return { lore };
+  });
+
   app.post<{ Params: { id: string } }>('/api/systems/:id/documents', async (req) => {
     const auth = requireAdmin(req);
     const systemId = parse(uuid, req.params.id);
@@ -169,6 +206,11 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const titleField = part.fields.title;
     const rawTitle = titleField && 'value' in titleField ? String(titleField.value) : '';
     const title = rawTitle.trim().slice(0, 120) || originalName.replace(/\.[^.]+$/, '');
+    // A library document is rules by default; setting/flavour material is opt-in.
+    const kindField = part.fields.kind;
+    const docKind = (kindField && 'value' in kindField ? String(kindField.value) : '') === 'setting'
+      ? 'setting'
+      : null;
 
     // Stored outside the web root under a random name; the client's file name
     // is kept only as a label.
@@ -201,9 +243,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
 
       const doc = await tx(async (client) => {
         const row = await q1<DocRow>(
-          `INSERT INTO documents (system_id, title, original_name, storage_name, mime, size_bytes, sha256, uploaded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${DOC_COLS}`,
-          [systemId, title, originalName, storageName, mime, size, hash.digest('hex'), auth.user.id],
+          `INSERT INTO documents (system_id, title, original_name, storage_name, mime, size_bytes, sha256, uploaded_by, kind)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${DOC_COLS}`,
+          [systemId, title, originalName, storageName, mime, size, hash.digest('hex'), auth.user.id, docKind],
           client,
         );
         await enqueue('ingest_document', { documentId: row!.id }, {}, client);
@@ -227,7 +269,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     requireAdmin(req);
     const id = parse(uuid, req.params.id);
     const rows = await q(
-      `UPDATE documents SET status = 'queued', error = NULL WHERE id = $1 AND status = 'failed' RETURNING id`,
+      `UPDATE documents SET status = 'queued', error = NULL
+        WHERE id = $1 AND status = 'failed' AND campaign_id IS NULL RETURNING id`,
       [id],
     );
     if (!rows.length) throw notFound();
@@ -235,15 +278,49 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
+  /** Mark a library document as rules or setting/flavour, and refresh the system's lore. */
+  app.patch<{ Params: { id: string } }>('/api/documents/:id', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const kind = parse(z.enum(['rules', 'setting']), (req.body as { kind?: unknown })?.kind);
+    const row = await q1<DocRow>(
+      `UPDATE documents SET kind = $2 WHERE id = $1 AND campaign_id IS NULL RETURNING ${DOC_COLS}`,
+      [id, kind === 'setting' ? 'setting' : null],
+    );
+    if (!row) throw notFound();
+    // The system's setting corpus changed, so its distilled voice is now stale.
+    if (!(await hasPending('distil_lore', 'systemId', row.system_id))) {
+      await enqueue('distil_lore', { systemId: row.system_id });
+      await q(`UPDATE game_systems SET lore_status = 'queued' WHERE id = $1 AND lore_status <> 'reading'`, [
+        row.system_id,
+      ]);
+    }
+    await audit('document.updated', {
+      actorId: auth.user.id,
+      targetType: 'document',
+      targetId: id,
+      ip: req.ip,
+      meta: { kind },
+    });
+    return { document: toDoc(row) };
+  });
+
   app.delete<{ Params: { id: string } }>('/api/documents/:id', async (req) => {
     const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
-    const row = await q1<{ storage_name: string }>(
-      'DELETE FROM documents WHERE id = $1 RETURNING storage_name',
+    const row = await q1<{ storage_name: string; kind: string | null; system_id: string }>(
+      'DELETE FROM documents WHERE id = $1 AND campaign_id IS NULL RETURNING storage_name, kind, system_id',
       [id],
     );
     if (!row) throw notFound();
     await rm(uploadPath(row.storage_name), { force: true });
+    // Removing setting material leaves the system's distilled voice stale.
+    if (row.kind === 'setting' && !(await hasPending('distil_lore', 'systemId', row.system_id))) {
+      await enqueue('distil_lore', { systemId: row.system_id });
+      await q(`UPDATE game_systems SET lore_status = 'queued' WHERE id = $1 AND lore_status <> 'reading'`, [
+        row.system_id,
+      ]);
+    }
     await audit('document.deleted', {
       actorId: auth.user.id,
       targetType: 'document',
