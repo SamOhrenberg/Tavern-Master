@@ -1,8 +1,10 @@
 import type { Block, ChatProvider, ChatRequest, StopReason, StreamEvent } from './types.js';
 
+type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
 interface OpenAiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | Part[] | null;
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
 }
@@ -56,7 +58,14 @@ function toMessages(req: ChatRequest): OpenAiMessage[] {
         if (b.type === 'tool_result')
           out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content });
       }
-      if (text) out.push({ role: 'user', content: text });
+      const images = m.content.flatMap((b): Part[] =>
+        b.type === 'image'
+          ? [{ type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.data}` } }]
+          : [],
+      );
+      if (images.length)
+        out.push({ role: 'user', content: [...images, { type: 'text', text: text || ' ' }] });
+      else if (text) out.push({ role: 'user', content: text });
     }
   }
   return out;

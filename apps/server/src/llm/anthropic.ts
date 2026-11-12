@@ -7,7 +7,7 @@ import type { Block, ChatProvider, ChatRequest, StopReason, StreamEvent } from '
 type MessageParam = Anthropic.Messages.MessageParam;
 type ContentParam = Anthropic.Messages.ContentBlockParam;
 
-const EPHEMERAL = { type: 'ephemeral' } as const;
+type CacheControl = { type: 'ephemeral'; ttl?: '1h' };
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 /** Models with adaptive thinking and the effort parameter (4.6 and later). */
@@ -20,7 +20,7 @@ function supportsFallback(model: string): boolean {
   return /^claude-(fable-5|opus-5|sonnet-5-5)/.test(model);
 }
 
-function toContent(blocks: Block[], provider: string, cacheLast: boolean): ContentParam[] {
+function toContent(blocks: Block[], provider: string, cache: CacheControl | undefined): ContentParam[] {
   const out: ContentParam[] = [];
   for (const b of blocks) {
     if (b.type === 'text') {
@@ -29,14 +29,16 @@ function toContent(blocks: Block[], provider: string, cacheLast: boolean): Conte
       out.push({ type: 'tool_use', id: b.id, name: b.name, input: b.input });
     } else if (b.type === 'tool_result') {
       out.push({ type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, is_error: b.isError });
+    } else if (b.type === 'image') {
+      out.push({ type: 'image', source: { type: 'base64', media_type: b.mediaType, data: b.data } });
     } else if (b.provider === provider) {
       // Reasoning blocks go back exactly as they arrived.
       out.push(b.data as ContentParam);
     }
   }
   const last = out[out.length - 1];
-  if (cacheLast && last && last.type !== 'thinking' && last.type !== 'redacted_thinking') {
-    (last as { cache_control?: typeof EPHEMERAL }).cache_control = EPHEMERAL;
+  if (cache && last && last.type !== 'thinking' && last.type !== 'redacted_thinking') {
+    (last as { cache_control?: CacheControl }).cache_control = cache;
   }
   return out;
 }
@@ -54,16 +56,24 @@ export interface AnthropicOptions {
   client: Pick<Anthropic, 'messages' | 'beta'>;
   /** Let the API retry a declined request on another model (first-party API only). */
   refusalFallback?: boolean;
+  /** Keep cached prompt prefixes for an hour instead of five minutes (first-party API only). */
+  longCache?: boolean;
 }
 
 /** Claude through the Messages API. Bedrock and Foundry reuse it with their own client. */
 export function anthropicProvider(opts: AnthropicOptions): ChatProvider {
   const { name, client } = opts;
+  const cacheControl: CacheControl = opts.longCache
+    ? { type: 'ephemeral', ttl: '1h' }
+    : { type: 'ephemeral' };
   return {
     name,
     async *stream(req: ChatRequest): AsyncIterable<StreamEvent> {
       const messages: MessageParam[] = req.messages
-        .map((m) => ({ role: m.role, content: toContent(m.content, name, !!m.cache) }))
+        .map((m) => ({
+          role: m.role,
+          content: toContent(m.content, name, m.cache ? cacheControl : undefined),
+        }))
         .filter((m) => m.content.length > 0);
       const adaptive = isAdaptiveModel(req.model);
       const params: Anthropic.Messages.MessageStreamParams = {
@@ -74,7 +84,7 @@ export function anthropicProvider(opts: AnthropicOptions): ChatProvider {
           .map((s) => ({
             type: 'text' as const,
             text: s.text,
-            ...(s.cache ? { cache_control: EPHEMERAL } : {}),
+            ...(s.cache ? { cache_control: cacheControl } : {}),
           })),
         messages,
         ...(req.tools?.length
@@ -142,11 +152,16 @@ type ProviderEnv = Pick<
   | 'ANTHROPIC_FOUNDRY_API_KEY'
 >;
 
-export function firstPartyProvider(apiKey: string, refusalFallback: boolean): ChatProvider {
+export function firstPartyProvider(
+  apiKey: string,
+  refusalFallback: boolean,
+  longCache = false,
+): ChatProvider {
   return anthropicProvider({
     name: 'anthropic',
     client: new Anthropic({ apiKey, maxRetries: 2 }),
     refusalFallback,
+    longCache,
   });
 }
 

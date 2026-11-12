@@ -7,7 +7,11 @@ import { mockProvider } from './mock.js';
 import { openAiProvider } from './openai.js';
 import type { ChatProvider, Effort } from './types.js';
 
-export type LlmTask = 'narration' | 'utility';
+/**
+ * narration: the GM. utility: summaries, cataloguing, reading uploaded sheets.
+ * companion: a party member with its own AI. prep: the character-building guide.
+ */
+export type LlmTask = 'narration' | 'utility' | 'companion' | 'prep';
 
 export interface ResolvedLlm {
   provider: ChatProvider;
@@ -45,7 +49,11 @@ function instanceProvider(): ChatProvider {
       break;
     case 'anthropic':
       if (!cfg.ANTHROPIC_API_KEY) throw new LlmNotConfigured('The server has no ANTHROPIC_API_KEY set.');
-      instance = firstPartyProvider(cfg.ANTHROPIC_API_KEY, cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default');
+      instance = firstPartyProvider(
+        cfg.ANTHROPIC_API_KEY,
+        cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default',
+        cfg.LLM_CACHE_TTL === '1h',
+      );
       break;
     case 'bedrock':
       instance = bedrockProvider(cfg);
@@ -76,8 +84,19 @@ interface KeyRow {
  */
 export async function resolveLlm(task: LlmTask, ownerId?: string | null): Promise<ResolvedLlm> {
   const cfg = config();
-  const effort = task === 'narration' ? cfg.LLM_EFFORT_NARRATION : cfg.LLM_EFFORT_UTILITY;
-  const defaultModel = task === 'narration' ? cfg.LLM_MODEL_NARRATION : cfg.LLM_MODEL_UTILITY;
+  // Companions and the guide write a few sentences at a time; low effort keeps them cheap.
+  const effort: Effort =
+    task === 'narration' ? cfg.LLM_EFFORT_NARRATION : task === 'utility' ? cfg.LLM_EFFORT_UTILITY : 'low';
+  // Tasks that fall back to the narration model when nothing more specific is set.
+  const heavy = task === 'narration' || task === 'prep';
+  const defaultModel =
+    task === 'companion'
+      ? (cfg.LLM_MODEL_COMPANION ?? cfg.LLM_MODEL_UTILITY)
+      : task === 'prep'
+        ? (cfg.LLM_MODEL_PREP ?? cfg.LLM_MODEL_NARRATION)
+        : heavy
+          ? cfg.LLM_MODEL_NARRATION
+          : cfg.LLM_MODEL_UTILITY;
 
   if (ownerId && !override && cfg.LLM_PROVIDER !== 'mock') {
     const row = await q1<KeyRow>(
@@ -87,11 +106,15 @@ export async function resolveLlm(task: LlmTask, ownerId?: string | null): Promis
     if (row) {
       try {
         const apiKey = decryptSecret(row.key_enc);
-        const chosen = task === 'narration' ? row.model_narration : row.model_utility;
+        const chosen = heavy ? row.model_narration : row.model_utility;
         if (row.provider === 'anthropic') {
-          const fallbackModel = task === 'narration' ? 'claude-opus-5-5' : 'claude-haiku-5-5';
+          const fallbackModel = heavy ? 'claude-opus-5-5' : 'claude-haiku-5-5';
           return {
-            provider: firstPartyProvider(apiKey, cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default'),
+            provider: firstPartyProvider(
+              apiKey,
+              cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default',
+              cfg.LLM_CACHE_TTL === '1h',
+            ),
             model: chosen ?? (defaultModel.startsWith('claude-') ? defaultModel : fallbackModel),
             effort,
             keySource: 'byo',

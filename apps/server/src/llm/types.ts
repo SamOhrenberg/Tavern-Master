@@ -11,11 +11,15 @@ export type Block =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  /** A picture for the model to read (a photographed character sheet). Base64, no data: prefix. */
+  | { type: 'image'; mediaType: ImageType; data: string }
   /**
    * Provider-specific content (for example reasoning blocks) that must be sent
    * back unchanged while a tool loop is in progress. Other providers drop it.
    */
   | { type: 'opaque'; provider: string; data: unknown };
+
+export type ImageType = 'image/png' | 'image/jpeg' | 'image/webp';
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -34,6 +38,8 @@ export interface ChatRequest {
   maxTokens: number;
   effort?: Effort;
   signal?: AbortSignal;
+  /** What the call is for. Real providers ignore it; the scripted one uses it to pick a script. */
+  task?: string;
 }
 
 export type StopReason = 'end' | 'tool_use' | 'max_tokens' | 'refusal';
