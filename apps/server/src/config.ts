@@ -69,6 +69,11 @@ const schema = z.object({
   LLM_MODEL_UTILITY: z.string().default('claude-haiku-5-5'),
   LLM_EFFORT_NARRATION: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
   LLM_EFFORT_UTILITY: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
+  // AI-run companions and the character-building guide. Empty means "the
+  // utility model" and "the narration model" respectively.
+  LLM_MODEL_COMPANION: optional,
+  LLM_MODEL_PREP: optional,
+  LLM_CACHE_TTL: z.enum(['5m', '1h']).default('5m'),
   LLM_MAX_OUTPUT_TOKENS: int(16000, 256),
   LLM_PRICES_JSON: optional,
   ANTHROPIC_API_KEY: optional,
@@ -95,7 +100,16 @@ const schema = z.object({
   AGENT_MAX_TOOL_ROUNDS: int(8, 1, 30),
   SUMMARY_TRIGGER_TOKENS: int(6000, 500),
   SUMMARY_KEEP_MESSAGES: int(8, 2),
+  // Notes written since the GM's brief was compiled ride in the uncached tail
+  // of the prompt; past this many tokens the brief is rebuilt instead.
+  BRIEF_REFRESH_TOKENS: int(1200, 100),
+  ARC_AFTER_SESSIONS: int(10, 4),
+  MEMORY_CONSOLIDATE_AT: int(40, 10),
+  MAX_CAMPAIGN_DOCUMENTS: int(20, 0),
   DEFAULT_GATHER_WINDOW_SECONDS: int(60, 5, 600),
+  // With the Claude app as DM, how long a gathered turn waits for it before
+  // the table is given the floor back.
+  CONNECTOR_TURN_TIMEOUT_MINUTES: int(120, 5, 1440),
 
   // --- budgets (tokens per rolling 24h; 0 disables) ---
   USER_DAILY_TOKEN_BUDGET: int(8_000_000),
