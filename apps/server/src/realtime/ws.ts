@@ -9,8 +9,15 @@ import { closeRoomIfEmpty, openRoom } from './room.js';
 
 const text = z.string().trim().min(1).max(2000);
 const clientMessage = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('action'), text }),
+  z.object({ type: z.literal('action'), text, characterId: z.string().uuid().optional() }),
   z.object({ type: z.literal('ooc'), text }),
+  z.object({
+    type: z.literal('roll'),
+    expression: z.string().trim().min(1).max(64),
+    reason: z.string().trim().max(120).optional(),
+    characterId: z.string().uuid().optional(),
+    kind: z.enum(['attack', 'damage', 'check', 'save', 'initiative', 'other']).optional(),
+  }),
   z.object({ type: z.literal('pass') }),
   z.object({ type: z.literal('force') }),
   z.object({ type: z.literal('ping') }),
@@ -21,9 +28,12 @@ const clientMessage = z.discriminatedUnion('type', [
  * Asked again for every message, so revoking a session or removing a member
  * takes effect on an already-open socket.
  */
-async function membership(campaignId: string, sessionId: string): Promise<'owner' | 'player' | undefined> {
-  const row = await q1<{ role: 'owner' | 'player' }>(
-    `SELECT m.role
+async function membership(
+  campaignId: string,
+  sessionId: string,
+): Promise<{ role: 'owner' | 'player'; phase: 'prep' | 'active' } | undefined> {
+  return q1<{ role: 'owner' | 'player'; phase: 'prep' | 'active' }>(
+    `SELECT m.role, c.phase
        FROM sessions s
        JOIN users u ON u.id = s.user_id AND u.status = 'active'
        JOIN campaign_members m ON m.user_id = s.user_id AND m.campaign_id = $1
@@ -31,7 +41,6 @@ async function membership(campaignId: string, sessionId: string): Promise<'owner
       WHERE s.id = $2 AND s.revoked_at IS NULL AND s.expires_at > now()`,
     [campaignId, sessionId],
   );
-  return row?.role;
 }
 
 export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
@@ -50,7 +59,9 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
 
       const user = { id: auth.user.id, username: auth.user.username, displayName: auth.user.displayName };
       const room = await openRoom(campaignId.data);
-      room.join(socket, user);
+      void room.join(socket, user);
+      // A campaign that has just begun gets its opening scene as soon as someone is there to read it.
+      void room.maybeOpen();
 
       socket.on('close', () => {
         room.leave(socket);
@@ -70,8 +81,17 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
           const msg = parsed.data;
           if (msg.type === 'ping') return send({ type: 'pong' });
 
-          const role = await membership(room.campaignId, auth.sessionId);
-          if (!role) return socket.close(4403, 'access removed');
+          const member = await membership(room.campaignId, auth.sessionId);
+          if (!member) return socket.close(4403, 'access removed');
+          const { role } = member;
+          // The lobby has table talk, but the story has not begun.
+          if (member.phase === 'prep' && msg.type !== 'ooc') {
+            return send({
+              type: 'error',
+              code: 'not_started',
+              message: 'The campaign has not started yet.',
+            });
+          }
 
           if (msg.type === 'action') {
             // Each action can cost a model call, so it has its own tighter limit.
@@ -83,7 +103,7 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
                 message: `Slow down a little. Try again in ${limit.retryAfter}s.`,
               });
             }
-            await room.action(user, msg.text);
+            await room.action(user, msg.text, msg.characterId);
           } else if (msg.type === 'ooc') {
             if (!rateLimiters().api.take(`chat:${user.id}`, 5).ok) {
               return send({
@@ -93,6 +113,21 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
               });
             }
             await room.ooc(user, msg.text);
+          } else if (msg.type === 'roll') {
+            // A cheap action, but still rate-limited so the button cannot be spammed.
+            if (!rateLimiters().api.take(`roll:${user.id}`, 3).ok) {
+              return send({
+                type: 'error',
+                code: 'rate_limited',
+                message: 'You are rolling too quickly.',
+              });
+            }
+            await room.roll(user, {
+              expression: msg.expression,
+              reason: msg.reason,
+              characterId: msg.characterId,
+              kind: msg.kind,
+            });
           } else if (msg.type === 'pass') {
             room.pass(user);
           } else if (msg.type === 'force') {
