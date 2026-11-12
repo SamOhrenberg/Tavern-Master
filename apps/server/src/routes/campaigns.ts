@@ -4,19 +4,26 @@ import type {
   CampaignSettings,
   CampaignSummary,
   Character,
+  Entity,
   GameState,
 } from '@tavern/protocol';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { rm } from 'node:fs/promises';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { entityMatches, scopeEntity } from '../agent/codex.js';
 import { pgStore } from '../agent/store.js';
-import type { AuthContext } from '../auth/sessions.js';
 import { config } from '../config.js';
+import { projectInstructions } from '../connector/instructions.js';
+import { CONNECTOR_PATH } from '../connector/mcp.js';
+import { dmModeOf } from '../connector/mode.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
+import { requireMember } from '../http/membership.js';
 import { requireUser } from '../http/security.js';
 import { usageTotals } from '../llm/usage.js';
 import { listMessages } from '../realtime/messages.js';
 import { endSession, getRoom } from '../realtime/room.js';
+import { uploadPath } from '../storage.js';
 import { areFriends } from './friends.js';
 
 const uuid = z.string().uuid();
@@ -27,66 +34,29 @@ const createSchema = z.object({
   systemId: uuid,
   premise: z.string().trim().max(2000).default(''),
   tone: z.string().trim().max(300).default(''),
+  sheets: z.enum(['players', 'gm']).default('players'),
+  dm: z.enum(['server', 'claude']).default('server'),
 });
 const patchSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   premise: z.string().trim().max(2000).optional(),
   tone: z.string().trim().max(300).optional(),
   gatherWindowSeconds: z.number().int().min(5).max(600).optional(),
+  sheets: z.enum(['players', 'gm']).optional(),
+  dm: z.enum(['server', 'claude']).optional(),
   status: z.enum(['active', 'archived']).optional(),
 });
-const sheetValue = z.union([z.string().max(1500), z.number().finite()]);
-const characterSchema = z.object({
-  name: z.string().trim().min(1).max(60),
-  maxHp: z.number().int().min(1).max(9999),
-  hp: z.number().int().min(0).max(9999).optional(),
-  sheet: z
-    .record(z.string().regex(/^[\w ]{1,40}$/), sheetValue)
-    .refine((s) => Object.keys(s).length <= 40, 'Too many fields'),
-  inventory: z
-    .array(
-      z.object({
-        name: z.string().trim().min(1).max(80),
-        qty: z.number().int().min(1).max(9999),
-        notes: z.string().max(200).optional(),
-      }),
-    )
-    .max(100)
-    .optional(),
-  privateNotes: z.string().max(4000).optional(),
-});
-
-interface Membership {
-  auth: AuthContext;
-  role: 'owner' | 'player';
-  campaignId: string;
-}
-
-/** Every campaign route goes through this: no membership, no data (and no hint the campaign exists). */
-async function requireMember(
-  req: FastifyRequest<{ Params: { id: string } }>,
-  ownerOnly = false,
-): Promise<Membership> {
-  const auth = requireUser(req);
-  const campaignId = parse(uuid, req.params.id);
-  const row = await q1<{ role: 'owner' | 'player' }>(
-    'SELECT role FROM campaign_members WHERE campaign_id = $1 AND user_id = $2',
-    [campaignId, auth.user.id],
-  );
-  if (!row) throw notFound('Campaign not found');
-  if (ownerOnly && row.role !== 'owner') throw forbidden('Only the campaign owner can do that.');
-  return { auth, role: row.role, campaignId };
-}
-
 function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
   return {
     gatherWindowSeconds: raw.gatherWindowSeconds ?? config().DEFAULT_GATHER_WINDOW_SECONDS,
     tone: raw.tone ?? '',
+    sheets: raw.sheets === 'gm' ? 'gm' : 'players',
+    dm: dmModeOf(raw),
   };
 }
 
 const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, c.owner_id, c.status,
-                            c.settings, c.scene, m.role,
+                            c.phase, c.settings, c.scene, m.role, m.wishes,
                             (SELECT count(*)::int FROM campaign_members x WHERE x.campaign_id = c.id) AS member_count
                        FROM campaigns c
                        JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1
@@ -101,6 +71,7 @@ function toSummary(r: Record<string, unknown>): CampaignSummary {
     systemName: r.system_name as string,
     ownerId: r.owner_id as string,
     status: r.status as 'active' | 'archived',
+    phase: r.phase as 'prep' | 'active',
     memberCount: r.member_count as number,
     role: r.role as 'owner' | 'player',
   };
@@ -121,7 +92,13 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const id = await tx(async (client) => {
       const row = await q1<{ id: string }>(
         `INSERT INTO campaigns (system_id, owner_id, name, premise, settings) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [body.systemId, auth.user.id, body.name, body.premise, JSON.stringify({ tone: body.tone })],
+        [
+          body.systemId,
+          auth.user.id,
+          body.name,
+          body.premise,
+          JSON.stringify({ tone: body.tone, sheets: body.sheets, dm: body.dm }),
+        ],
         client,
       );
       await client.query(
@@ -138,9 +115,11 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const row = await q1(`${SUMMARY_SQL} WHERE c.id = $2`, [auth.user.id, campaignId]);
     if (!row) throw notFound();
     const members = await q(
-      `SELECT u.id, u.username, u.display_name, m.role, ch.name AS character
+      `SELECT u.id, u.username, u.display_name, m.role,
+              (SELECT ch.name FROM characters ch JOIN character_players p ON p.character_id = ch.id
+                WHERE ch.campaign_id = m.campaign_id AND p.user_id = m.user_id AND ch.controller = 'player'
+                ORDER BY ch.created_at LIMIT 1) AS character
          FROM campaign_members m JOIN users u ON u.id = m.user_id
-         LEFT JOIN characters ch ON ch.campaign_id = m.campaign_id AND ch.user_id = m.user_id
         WHERE m.campaign_id = $1 ORDER BY m.joined_at`,
       [campaignId],
     );
@@ -167,6 +146,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         id: p.id,
         invitee: { id: p.uid, username: p.username, displayName: p.display_name },
       })),
+      myWishes: row.wishes,
     };
     return { campaign: detail };
   });
@@ -177,6 +157,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const settings: Partial<CampaignSettings> = {};
     if (body.tone !== undefined) settings.tone = body.tone;
     if (body.gatherWindowSeconds !== undefined) settings.gatherWindowSeconds = body.gatherWindowSeconds;
+    if (body.sheets !== undefined) settings.sheets = body.sheets;
+    if (body.dm !== undefined) settings.dm = body.dm;
     await q(
       `UPDATE campaigns SET name = coalesce($2, name), premise = coalesce($3, premise),
                             status = coalesce($4, status), settings = settings || $5::jsonb WHERE id = $1`,
@@ -184,6 +166,51 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     );
     const room = getRoom(campaignId);
     if (room && body.gatherWindowSeconds) room.collector.windowMs = body.gatherWindowSeconds * 1000;
+    // A turn left waiting for the Claude app goes back to the table rather than sitting there.
+    if (body.dm === 'server') room?.desk.drop();
+    room?.broadcast({ type: 'state_changed' });
+    if (body.dm === 'server') void room?.maybeOpen();
+    return { ok: true };
+  });
+
+  /** What the owner needs to run this campaign from the Claude app. */
+  app.get<{ Params: { id: string } }>('/api/campaigns/:id/connector', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const row = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
+    if (!row) throw notFound('Campaign not found');
+    return {
+      url: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
+      projectInstructions: projectInstructions(row.name),
+    };
+  });
+
+  /**
+   * Leave the lobby and begin. The DM plans the story and writes the opening
+   * scene as soon as the table is connected; nothing here waits for it.
+   */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/start', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const rows = await q(
+      `UPDATE campaigns SET phase = 'active', started_at = now()
+        WHERE id = $1 AND phase = 'prep' AND status = 'active' RETURNING id`,
+      [campaignId],
+    );
+    if (!rows.length) throw conflict('This campaign has already begun.');
+    const room = getRoom(campaignId);
+    room?.broadcast({ type: 'state_changed' });
+    void room?.maybeOpen();
+    return { ok: true };
+  });
+
+  /** What you hope the story holds. Read by you and by the DM, and by nobody else at the table. */
+  app.put<{ Params: { id: string } }>('/api/campaigns/:id/wishes', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    const { wishes } = parse(z.object({ wishes: z.string().trim().max(1200) }), req.body);
+    await q('UPDATE campaign_members SET wishes = $3 WHERE campaign_id = $1 AND user_id = $2', [
+      campaignId,
+      auth.user.id,
+      wishes,
+    ]);
     return { ok: true };
   });
 
@@ -191,7 +218,12 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const { campaignId } = await requireMember(req, true);
     const room = getRoom(campaignId);
     for (const u of room?.present() ?? []) room?.kick(u.id);
+    const files = await q<{ storage_name: string }>(
+      'SELECT storage_name FROM documents WHERE campaign_id = $1',
+      [campaignId],
+    );
     await q('DELETE FROM campaigns WHERE id = $1', [campaignId]);
+    for (const f of files) await rm(uploadPath(f.storage_name), { force: true });
     return { ok: true };
   });
 
@@ -272,7 +304,9 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         [campaignId, target],
       );
       if (!rows.length) throw badRequest('The owner cannot leave; delete or archive the campaign instead.');
+      // Their characters stay in the party, unassigned, for the owner to hand on.
       getRoom(campaignId)?.kick(target);
+      getRoom(campaignId)?.partyChanged();
       return { ok: true };
     },
   );
@@ -300,15 +334,19 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           `SELECT id, turn_id, actor, tool, summary, created_at FROM state_events WHERE campaign_id = $1 ORDER BY id DESC LIMIT 40`,
           [campaignId],
         ),
-        q1<{ private_notes: string }>(
-          'SELECT private_notes FROM characters WHERE campaign_id = $1 AND user_id = $2',
+        q<{ id: string; private_notes: string }>(
+          `SELECT c.id, c.private_notes FROM characters c JOIN character_players p ON p.character_id = c.id
+            WHERE c.campaign_id = $1 AND p.user_id = $2`,
           [campaignId, auth.user.id],
         ),
       ]);
+      const myNotes = new Map(notes.map((n) => [n.id, n.private_notes]));
       const characters: Character[] = chars.map((c) => ({
         id: c.id,
         campaignId,
-        userId: c.userId,
+        kind: c.kind,
+        controller: c.controller,
+        playerIds: c.playerIds,
         name: c.name,
         sheet: c.sheet,
         hp: c.hp,
@@ -316,23 +354,16 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         tempHp: c.tempHp,
         conditions: c.conditions,
         inventory: c.inventory,
-        // Private notes go to their author only.
-        ...(c.userId === auth.user.id ? { privateNotes: notes?.private_notes ?? '' } : {}),
+        persona: c.persona,
+        // Private notes go only to the players who run the character.
+        ...(c.playerIds.includes(auth.user.id) ? { privateNotes: myNotes.get(c.id) ?? '' } : {}),
       }));
       return {
         state: {
           scene,
           characters,
           // Unrevealed secrets never leave the server, not even for the owner, who is usually a player too.
-          entities: entities.map((e) => ({
-            id: e.id,
-            kind: e.kind,
-            name: e.name,
-            summary: e.summary,
-            status: e.status,
-            secretRevealed: e.secretRevealed,
-            ...(e.secret && e.secretRevealed ? { secret: e.secret } : {}),
-          })),
+          entities: entities.map(scopeEntity),
           flags,
           events: events.map((e) => ({
             id: e.id,
@@ -347,34 +378,37 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /** Create or edit your own character. Nobody can write another player's sheet through the API. */
-  app.put<{ Params: { id: string } }>('/api/campaigns/:id/character', async (req) => {
-    const { auth, campaignId } = await requireMember(req);
-    const body = parse(characterSchema, req.body);
-    const hp = Math.min(body.hp ?? body.maxHp, body.maxHp);
-    await q(
-      `INSERT INTO characters (campaign_id, user_id, name, sheet, hp, max_hp, inventory, private_notes)
-       VALUES ($1, $2, $3, $4, $5, $6, coalesce($7::jsonb, '[]'), coalesce($8, ''))
-       ON CONFLICT (campaign_id, user_id) DO UPDATE
-         SET name = $3, sheet = $4, max_hp = $6,
-             hp = least(CASE WHEN $9 THEN $5 ELSE characters.hp END, $6),
-             inventory = coalesce($7::jsonb, characters.inventory),
-             private_notes = coalesce($8, characters.private_notes), updated_at = now()`,
-      [
-        campaignId,
-        auth.user.id,
-        body.name,
-        JSON.stringify(body.sheet),
-        hp,
-        body.maxHp,
-        body.inventory ? JSON.stringify(body.inventory) : null,
-        body.privateNotes ?? null,
-        body.hp !== undefined,
-      ],
-    );
-    getRoom(campaignId)?.broadcast({ type: 'state_changed' });
-    return { ok: true };
-  });
+  // The browsable codex: every player-visible entry the world has grown, scoped
+  // so secrets never leak. `?kind=` filters to one kind, `?q=` is a text search
+  // over name, aliases, summary and article. Bookkeeping entities (in_codex=false)
+  // are left out.
+  app.get<{ Params: { id: string }; Querystring: { kind?: string; q?: string } }>(
+    '/api/campaigns/:id/codex',
+    async (req): Promise<{ entries: Entity[] }> => {
+      const { campaignId } = await requireMember(req);
+      const kind = req.query.kind
+        ? parse(z.enum(['npc', 'location', 'quest', 'item', 'faction', 'event', 'term']), req.query.kind)
+        : null;
+      const query = typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : '';
+      const rows = await pgStore.entities(campaignId);
+      const entries = rows
+        .filter((e) => e.inCodex && (!kind || e.kind === kind) && entityMatches(e, query))
+        .map(scopeEntity);
+      return { entries };
+    },
+  );
+
+  app.get<{ Params: { id: string; entityId: string } }>(
+    '/api/campaigns/:id/codex/:entityId',
+    async (req): Promise<{ entry: Entity }> => {
+      const { campaignId } = await requireMember(req);
+      const entityId = parse(uuid, req.params.entityId);
+      const rows = await pgStore.entities(campaignId);
+      const found = rows.find((e) => e.id === entityId && e.inCodex);
+      if (!found) throw notFound('No such codex entry');
+      return { entry: scopeEntity(found) };
+    },
+  );
 
   app.post<{ Params: { id: string } }>('/api/campaigns/:id/end-session', async (req) => {
     const { campaignId } = await requireMember(req, true);
