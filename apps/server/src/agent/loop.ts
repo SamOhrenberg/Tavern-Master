@@ -3,10 +3,14 @@ import type { Usage } from '../llm/pricing.js';
 import type { Block, Message, StreamEvent } from '../llm/types.js';
 import type { Rng } from './dice.js';
 import type { GameStore, TurnContext } from './store.js';
-import { dispatchTool, toolDefs } from './tools.js';
+import { dispatchTool, toolDefs, TOOLS, type ToolSpec } from './tools.js';
 
 export interface AgentRun {
   llm: ResolvedLlm;
+  /** The tools this run may use. Defaults to the GM's standard set. */
+  tools?: ToolSpec[];
+  /** What the run is for, passed through to the provider as a label. */
+  task?: string;
   system: { text: string; cache?: boolean }[];
   messages: Message[];
   ctx: TurnContext;
@@ -33,7 +37,7 @@ const REFUSAL_TEXT =
   'The narrator falters and sets the scene aside. (The model declined to continue this thread; try approaching it differently.)';
 
 /** What players may see about a tool call. Never includes hidden state. */
-function publicSummary(tool: string, input: unknown, result: string): string {
+export function publicSummary(tool: string, input: unknown, result: string): string {
   switch (tool) {
     case 'roll_dice':
       return result;
@@ -44,7 +48,15 @@ function publicSummary(tool: string, input: unknown, result: string): string {
     case 'reveal_secret':
       return 'A secret comes to light';
     case 'remember':
+    case 'write_note':
+      // What the GM writes down for itself is never shown.
       return 'Made a note for later';
+    case 'recall':
+      return 'Checked the chronicle';
+    case 'search_documents':
+      return 'Consulted the campaign documents';
+    case 'search_setting':
+      return 'Drew on the setting';
     default:
       return result.slice(0, 160);
   }
@@ -60,7 +72,8 @@ function publicSummary(tool: string, input: unknown, result: string): string {
 export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
   const { llm, ctx, store } = run;
   const messages = [...run.messages];
-  const tools = toolDefs();
+  const specs = run.tools ?? TOOLS;
+  const tools = toolDefs(specs);
   const texts: string[] = [];
   let toolCalls = 0;
   let truncated = false;
@@ -76,6 +89,7 @@ export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
       maxTokens: run.maxTokens,
       effort: llm.effort,
       signal: run.signal,
+      task: run.task,
     })) {
       if (ev.type === 'text') {
         if (!roundText && texts.length) run.onText?.('\n\n');
@@ -104,7 +118,7 @@ export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
     const results: Block[] = [];
     for (const call of calls) {
       toolCalls++;
-      const outcome = await dispatchTool(call.name, call.input, ctx, store, run.rng);
+      const outcome = await dispatchTool(call.name, call.input, ctx, store, run.rng, specs);
       results.push({
         type: 'tool_result',
         toolUseId: call.id,
