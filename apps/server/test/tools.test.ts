@@ -40,14 +40,23 @@ describe('tool dispatch', () => {
     const ctx = context();
     const out = await dispatchTool(
       'roll_dice',
-      { expression: '1d20+2', reason: 'attack', character: 'Thorn' },
+      { expression: '1d20+2', reason: 'Longsword to hit', character: 'Thorn', kind: 'attack' },
       ctx,
       new FakeStore(),
       () => 15,
     );
-    expect(out).toEqual({ isError: false, content: 'Rolled for Thorn (attack): 1d20+2 → [15] +2 = 17' });
+    expect(out).toEqual({
+      isError: false,
+      content: 'Rolled for Thorn (Longsword to hit): 1d20+2 → [15] +2 = 17',
+    });
     expect(ctx.rolls).toHaveLength(1);
-    expect(ctx.rolls[0]).toMatchObject({ total: 17, character: 'Thorn', expression: '1d20+2' });
+    expect(ctx.rolls[0]).toMatchObject({ total: 17, character: 'Thorn', expression: '1d20+2', kind: 'attack' });
+  });
+
+  it('defaults a roll with no kind to "other"', async () => {
+    const ctx = context();
+    await dispatchTool('roll_dice', { expression: '1d6', reason: 'something' }, ctx, new FakeStore(), () => 4);
+    expect(ctx.rolls[0]).toMatchObject({ kind: 'other' });
   });
 
   it('reports bad arguments and unknown tools to the model instead of throwing', async () => {
@@ -85,9 +94,25 @@ describe('tool dispatch', () => {
     expect(ctx.citations).toHaveLength(1);
   });
 
+  it('draws on setting material for colour without minting a citation', async () => {
+    const store = new FakeStore();
+    store.settingDocs = {
+      'sys-a': [hit(5, 'The System welcomes you to the Crawl.', 'Carl Chronicles')],
+      'sys-b': [hit(9, 'A different world entirely.', 'Other Book')],
+    };
+    const ctx = context({ systemId: 'sys-a' });
+    const out = await dispatchTool('search_setting', { query: 'the crawl', systemId: 'sys-b' }, ctx, store);
+    expect(store.settingSearches).toEqual([{ systemId: 'sys-a', query: 'the crawl' }]);
+    expect(out.content).toContain('Crawl');
+    expect(out.content).not.toContain('Other Book');
+    // Flavour, not rules: no [R#] marker is minted.
+    expect(out.content).not.toMatch(/\[R\d+\]/);
+    expect(ctx.citations).toHaveLength(0);
+  });
+
   it('applies damage through temp HP and clamps hit points', async () => {
     const store = new FakeStore();
-    store.chars = [character({ id: 'c1', userId: 'u-ann', name: 'Thorn', hp: 8, maxHp: 10, tempHp: 3 })];
+    store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn', hp: 8, maxHp: 10, tempHp: 3 })];
     const ctx = context();
     await dispatchTool(
       'update_character',
@@ -110,8 +135,14 @@ describe('tool dispatch', () => {
   it('will not kill or rob a character whose player is not in the turn', async () => {
     const store = new FakeStore();
     store.chars = [
-      character({ id: 'c1', userId: 'u-ann', name: 'Thorn', inventory: [{ name: 'Rope', qty: 1 }] }),
-      character({ id: 'c2', userId: 'u-bob', name: 'Mira', hp: 7, inventory: [{ name: 'Gold', qty: 50 }] }),
+      character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn', inventory: [{ name: 'Rope', qty: 1 }] }),
+      character({
+        id: 'c2',
+        playerIds: ['u-bob'],
+        name: 'Mira',
+        hp: 7,
+        inventory: [{ name: 'Gold', qty: 50 }],
+      }),
     ];
     const ctx = context(); // only Ann is acting
 
@@ -181,7 +212,7 @@ describe('tool dispatch', () => {
 describe('agent loop with a mocked model', () => {
   it('runs requested tools, feeds results back and returns the narration', async () => {
     const store = new FakeStore();
-    store.chars = [character({ id: 'c1', userId: 'u-ann', name: 'Thorn' })];
+    store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn' })];
     const provider = scripted([
       [
         { type: 'text', text: 'Thorn lunges.' },
