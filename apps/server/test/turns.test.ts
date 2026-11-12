@@ -22,11 +22,11 @@ describe('turn aggregation', () => {
   it('resolves a solo player immediately', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann']);
-    expect(collector.submit({ userId: 'ann', text: 'I open the door' })).toBe('opened');
+    expect(collector.submit({ seat: 'ann', userId: 'ann', text: 'I open the door' })).toBe('opened');
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({
       reason: 'all_ready',
-      actions: [{ userId: 'ann', text: 'I open the door' }],
+      actions: [{ seat: 'ann', userId: 'ann', text: 'I open the door' }],
     });
     expect(collector.phase).toBe('resolving');
   });
@@ -34,7 +34,7 @@ describe('turn aggregation', () => {
   it('waits for everyone present, then sends one batch', () => {
     const { collector, closed, cancelled } = setup();
     collector.setPresent(['ann', 'bob']);
-    collector.submit({ userId: 'ann', text: 'I draw my sword' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I draw my sword' });
     expect(closed).toHaveLength(0);
     expect(collector.snapshot(1)).toMatchObject({
       status: 'collecting',
@@ -43,7 +43,7 @@ describe('turn aggregation', () => {
       expected: ['ann', 'bob'],
     });
 
-    expect(collector.submit({ userId: 'bob', text: 'I cast light' })).toBe('added');
+    expect(collector.submit({ seat: 'bob', userId: 'bob', text: 'I cast light' })).toBe('added');
     expect(closed).toHaveLength(1);
     expect(closed[0]!.actions.map((a) => a.userId)).toEqual(['ann', 'bob']);
     expect(cancelled()).toBe(1);
@@ -52,7 +52,7 @@ describe('turn aggregation', () => {
   it('closes on timeout with whoever acted', () => {
     const { collector, closed, timeout } = setup();
     collector.setPresent(['ann', 'bob']);
-    collector.submit({ userId: 'ann', text: 'I wait' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I wait' });
     timeout();
     expect(closed[0]).toMatchObject({ reason: 'timeout', passed: [] });
     expect(closed[0]!.actions).toHaveLength(1);
@@ -62,7 +62,7 @@ describe('turn aggregation', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
     expect(collector.pass('bob')).toBe(false); // nothing to pass on yet
-    collector.submit({ userId: 'ann', text: 'I sneak ahead' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I sneak ahead' });
     expect(collector.pass('ann')).toBe(false); // already acted
     expect(collector.pass('bob')).toBe(true);
     expect(closed[0]).toMatchObject({ reason: 'all_ready', passed: ['bob'] });
@@ -71,7 +71,7 @@ describe('turn aggregation', () => {
   it('does not wait for a player who leaves', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
-    collector.submit({ userId: 'ann', text: 'I run' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I run' });
     collector.setPresent(['ann']);
     expect(closed).toHaveLength(1);
   });
@@ -80,7 +80,7 @@ describe('turn aggregation', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob', 'cy']);
     expect(collector.force()).toBe(false);
-    collector.submit({ userId: 'ann', text: 'Go' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'Go' });
     expect(collector.force()).toBe(true);
     expect(closed[0]!.reason).toBe('forced');
   });
@@ -88,24 +88,48 @@ describe('turn aggregation', () => {
   it('holds actions sent while the DM is resolving for the next turn', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
-    collector.submit({ userId: 'ann', text: 'one' });
-    collector.submit({ userId: 'bob', text: 'two' });
-    expect(collector.submit({ userId: 'bob', text: 'three' })).toBe('queued');
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'one' });
+    collector.submit({ seat: 'bob', userId: 'bob', text: 'two' });
+    expect(collector.submit({ seat: 'bob', userId: 'bob', text: 'three' })).toBe('queued');
     expect(closed).toHaveLength(1);
 
     const held = collector.resolved();
-    expect(held).toEqual([{ userId: 'bob', text: 'three' }]);
+    expect(held).toEqual([{ seat: 'bob', userId: 'bob', text: 'three' }]);
     expect(collector.phase).toBe('idle');
     expect(collector.submit(held[0]!)).toBe('opened');
     expect(closed).toHaveLength(1); // ann has not acted in the new turn
   });
 
+  it('waits for each character of a player who runs two', () => {
+    const { collector, closed } = setup();
+    // Ann runs Thorn and Mira; nobody else is here.
+    collector.setPresent(['thorn', 'mira']);
+    collector.submit({ seat: 'thorn', userId: 'ann', text: 'Thorn kicks the door' });
+    expect(closed).toHaveLength(0);
+    expect(collector.snapshot(1)).toMatchObject({ acted: ['thorn'], expected: ['thorn', 'mira'] });
+    collector.submit({ seat: 'mira', userId: 'ann', text: 'Mira readies a spell' });
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.actions.map((a) => a.seat)).toEqual(['thorn', 'mira']);
+  });
+
+  it('holds the floor for the opening scene and keeps what is sent meanwhile', () => {
+    const { collector, closed } = setup();
+    collector.setPresent(['ann']);
+    expect(collector.hold()).toBe(true);
+    expect(collector.hold()).toBe(false);
+    expect(collector.snapshot(null)).toMatchObject({ status: 'resolving', acted: [] });
+    expect(collector.submit({ seat: 'ann', userId: 'ann', text: 'I look around' })).toBe('queued');
+    expect(closed).toHaveLength(0);
+    expect(collector.resolved()).toEqual([{ seat: 'ann', userId: 'ann', text: 'I look around' }]);
+    expect(collector.phase).toBe('idle');
+  });
+
   it('keeps several messages from one player in the same turn', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
-    collector.submit({ userId: 'ann', text: 'I shout a warning' });
-    collector.submit({ userId: 'ann', text: 'and dive behind the cart' });
-    collector.submit({ userId: 'bob', text: 'I loose an arrow' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I shout a warning' });
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'and dive behind the cart' });
+    collector.submit({ seat: 'bob', userId: 'bob', text: 'I loose an arrow' });
     expect(closed[0]!.actions.map((a) => a.text)).toEqual([
       'I shout a warning',
       'and dive behind the cart',
