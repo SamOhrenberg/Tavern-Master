@@ -1,4 +1,4 @@
-import type { CampaignMember, TurnState } from '@tavern/protocol';
+import type { Character, TurnState } from '@tavern/protocol';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { IconChat, IconCheck, IconSend, IconSwords } from '../icons';
 import { Avatar } from '../ui';
@@ -13,19 +13,28 @@ const coarse = () => window.matchMedia('(pointer: coarse)').matches;
  * the keyboard open between messages.
  */
 export function Composer({
-  characterName,
+  characters,
+  actingAs,
+  onActAs,
+  acted,
   resolving,
   draft,
   onDraft,
   onSend,
 }: {
-  characterName: string | null;
+  /** The characters this player runs. With more than one, they pick who acts. */
+  characters: Character[];
+  actingAs: Character | undefined;
+  onActAs: (id: string) => void;
+  /** Ids of this player's characters that have already acted this turn. */
+  acted: string[];
   resolving: boolean;
   draft: string;
   onDraft: (text: string) => void;
   onSend: (mode: Mode, text: string) => boolean;
 }) {
   const [mode, setMode] = useState<Mode>('act');
+  const characterName = actingAs?.name ?? null;
   const field = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -60,39 +69,59 @@ export function Composer({
           : 'What do you do?';
 
   return (
-    <div className={`composer ${mode}`}>
-      <button
-        type="button"
-        className="mode-toggle"
-        onClick={() => setMode(mode === 'act' ? 'talk' : 'act')}
-        aria-label={mode === 'act' ? 'Switch to table talk' : 'Switch to acting in the story'}
-      >
-        {mode === 'act' ? <IconSwords /> : <IconChat />}
-        <span>{mode === 'act' ? 'Act' : 'Talk'}</span>
-      </button>
-      <textarea
-        ref={field}
-        className="composer-field"
-        rows={1}
-        value={draft}
-        onChange={(e) => onDraft(e.target.value)}
-        onKeyDown={onKey}
-        placeholder={placeholder}
-        maxLength={2000}
-        enterKeyHint={coarse() ? 'enter' : 'send'}
-        aria-label={mode === 'act' ? 'Your action' : 'Table talk'}
-      />
-      <button
-        type="button"
-        className="send"
-        disabled={!draft.trim()}
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={send}
-        aria-label="Send"
-      >
-        <IconSend />
-      </button>
-    </div>
+    <>
+      {mode === 'act' && characters.length > 1 && (
+        <div className="act-as" role="radiogroup" aria-label="Act as">
+          {characters.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              role="radio"
+              aria-checked={c.id === actingAs?.id}
+              className={c.id === actingAs?.id ? 'on' : ''}
+              onClick={() => onActAs(c.id)}
+            >
+              <Avatar name={c.name} seed={c.id} small />
+              <span className="truncate">{c.name}</span>
+              {acted.includes(c.id) && <IconCheck />}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className={`composer ${mode}`}>
+        <button
+          type="button"
+          className="mode-toggle"
+          onClick={() => setMode(mode === 'act' ? 'talk' : 'act')}
+          aria-label={mode === 'act' ? 'Switch to table talk' : 'Switch to acting in the story'}
+        >
+          {mode === 'act' ? <IconSwords /> : <IconChat />}
+          <span>{mode === 'act' ? 'Act' : 'Talk'}</span>
+        </button>
+        <textarea
+          ref={field}
+          className="composer-field"
+          rows={1}
+          value={draft}
+          onChange={(e) => onDraft(e.target.value)}
+          onKeyDown={onKey}
+          placeholder={placeholder}
+          maxLength={2000}
+          enterKeyHint={coarse() ? 'enter' : 'send'}
+          aria-label={mode === 'act' ? 'Your action' : 'Table talk'}
+        />
+        <button
+          type="button"
+          className="send"
+          disabled={!draft.trim()}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={send}
+          aria-label="Send"
+        >
+          <IconSend />
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -110,14 +139,12 @@ function useCountdown(deadline: number | null): number | null {
 /** While a turn is gathering: who has acted, who the table is waiting for, and how long is left. */
 export function TurnBar({
   turn,
-  members,
   meId,
   isOwner,
   onPass,
   onForce,
 }: {
   turn: TurnState;
-  members: CampaignMember[];
   meId: string;
   isOwner: boolean;
   onPass: () => void;
@@ -126,17 +153,20 @@ export function TurnBar({
   const seconds = useCountdown(turn.status === 'collecting' ? turn.deadline : null);
   if (turn.status !== 'collecting') return null;
 
-  const nameOf = (id: string) => {
-    const m = members.find((x) => x.id === id);
-    return m?.characterName ?? m?.displayName ?? 'Someone';
-  };
+  // The table waits on seats: each player-run character, or a player without one.
+  const seat = (id: string) => turn.seats.find((s) => s.id === id);
+  const nameOf = (id: string) => seat(id)?.name ?? 'Someone';
+  const isMine = (id: string) => !!seat(id)?.userIds.includes(meId);
   const waiting = turn.expected.filter((id) => !turn.acted.includes(id) && !turn.passed.includes(id));
-  const mineOpen = waiting.includes(meId);
-  const others = waiting.filter((id) => id !== meId);
+  const mine = waiting.filter(isMine);
+  const mineOpen = mine.length > 0;
+  const others = waiting.filter((id) => !isMine(id));
   const status = mineOpen
-    ? others.length
-      ? 'The table is acting. Add yours, or pass.'
-      : 'Everyone else is ready. Your move.'
+    ? turn.acted.some(isMine)
+      ? `${mine.map(nameOf).join(' and ')} can still act, or pass.`
+      : others.length
+        ? 'The table is acting. Add yours, or pass.'
+        : 'Everyone else is ready. Your move.'
     : `Waiting for ${others.map(nameOf).slice(0, 2).join(' and ')}${others.length > 2 ? ` +${others.length - 2}` : ''}`;
   const clock =
     seconds === null ? '' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;

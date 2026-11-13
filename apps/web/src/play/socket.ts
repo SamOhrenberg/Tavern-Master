@@ -1,4 +1,11 @@
-import type { ChatMessage, ClientMessage, ServerMessage, TurnState, UserRef } from '@tavern/protocol';
+import type {
+  ChatMessage,
+  ClientMessage,
+  DiceRoll,
+  ServerMessage,
+  TurnState,
+  UserRef,
+} from '@tavern/protocol';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type Link = 'connecting' | 'open' | 'reconnecting' | 'denied';
@@ -21,6 +28,8 @@ export interface Table {
 
 interface Handlers {
   onMessage: (message: ChatMessage) => void;
+  /** A standalone player roll arrived, to animate and append to the log. */
+  onRoll: (roll: DiceRoll) => void;
   onStateChanged: () => void;
   onError: (text: string) => void;
   /** The socket came back after a drop: history may have gaps. */
@@ -28,7 +37,15 @@ interface Handlers {
   onSignedOut: () => void;
 }
 
-const IDLE: TurnState = { status: 'idle', number: null, deadline: null, expected: [], acted: [], passed: [] };
+const IDLE: TurnState = {
+  status: 'idle',
+  number: null,
+  deadline: null,
+  expected: [],
+  acted: [],
+  passed: [],
+  seats: [],
+};
 
 /**
  * One campaign's live connection. Reconnects with backoff, and checks the
@@ -73,6 +90,9 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
         case 'message':
           if (msg.message.kind === 'dm') setStream(null);
           h.current.onMessage(msg.message);
+          break;
+        case 'roll':
+          h.current.onRoll(msg.roll);
           break;
         case 'dm_start':
           setStream({ turnId: msg.turnId, text: '', tools: [] });

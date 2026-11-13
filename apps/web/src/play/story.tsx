@@ -1,28 +1,55 @@
-import type { ChatMessage, Citation, DiceRoll } from '@tavern/protocol';
+import type { ChatMessage, Citation, DiceRoll, EntityRef } from '@tavern/protocol';
 import { Fragment, memo, type ReactNode } from 'react';
 import { IconAlert, IconD20 } from '../icons';
 import { Avatar, ruleSource } from '../ui';
 import type { DmStream } from './socket';
 
 type OnCite = (ref: string) => void;
+type OnRef = (entityId: string) => void;
 
-/** Bold, italics and rule citations inside one line of narration. */
-function inline(text: string, onCite: OnCite | undefined, key: string): ReactNode[] {
+/** The interactive markup a line of narration may carry: citations and codex links. */
+interface Marks {
+  onCite?: OnCite;
+  onRef?: OnRef;
+  refs?: EntityRef[];
+}
+
+/** Bold, italics, rule citations and codex links inside one line of narration. */
+function inline(text: string, m: Marks, key: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[R\d+\])/g;
+  const re = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[\[[^\]\n]+\]\]|\[R\d+\])/g;
   let last = 0;
   let n = 0;
-  for (const m of text.matchAll(re)) {
-    const at = m.index ?? 0;
+  for (const match of text.matchAll(re)) {
+    const at = match.index ?? 0;
     if (at > last) out.push(text.slice(last, at));
-    const tok = m[0];
+    const tok = match[0];
     const k = `${key}-${n++}`;
     if (tok.startsWith('**')) out.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
-    else if (tok.startsWith('[')) {
+    else if (tok.startsWith('[[')) {
+      const inner = tok.slice(2, -2);
+      const ref = m.refs?.find((r) => r.text.toLowerCase() === inner.toLowerCase());
+      out.push(
+        ref && m.onRef ? (
+          <button
+            key={k}
+            type="button"
+            className="ref"
+            onClick={() => m.onRef!(ref.entityId)}
+            title={ref.name}
+          >
+            {inner}
+          </button>
+        ) : (
+          // No resolved entry (or mid-stream): read it as plain text.
+          <Fragment key={k}>{inner}</Fragment>
+        ),
+      );
+    } else if (tok.startsWith('[')) {
       const ref = tok.slice(1, -1);
       out.push(
-        onCite ? (
-          <button key={k} type="button" className="cite" onClick={() => onCite(ref)}>
+        m.onCite ? (
+          <button key={k} type="button" className="cite" onClick={() => m.onCite!(ref)}>
             {ref}
           </button>
         ) : (
@@ -38,11 +65,11 @@ function inline(text: string, onCite: OnCite | undefined, key: string): ReactNod
   return out;
 }
 
-function lines(block: string, onCite: OnCite | undefined, key: string): ReactNode[] {
+function lines(block: string, m: Marks, key: string): ReactNode[] {
   return block.split('\n').map((line, i) => (
     <Fragment key={`${key}-l${i}`}>
       {i > 0 && <br />}
-      {inline(line, onCite, `${key}-l${i}`)}
+      {inline(line, m, `${key}-l${i}`)}
     </Fragment>
   ));
 }
@@ -52,7 +79,18 @@ function lines(block: string, onCite: OnCite | undefined, key: string): ReactNod
  * lists, headings and quotes. Built as React nodes, so model output is never
  * treated as HTML.
  */
-export function Story({ text, onCite }: { text: string; onCite?: OnCite }) {
+export function Story({
+  text,
+  onCite,
+  onRef,
+  refs,
+}: {
+  text: string;
+  onCite?: OnCite;
+  onRef?: OnRef;
+  refs?: EntityRef[];
+}) {
+  const m: Marks = { onCite, onRef, refs };
   const blocks = text
     .replace(/\r/g, '')
     .split(/\n{2,}/)
@@ -65,12 +103,12 @@ export function Story({ text, onCite }: { text: string; onCite?: OnCite }) {
         const rows = block.split('\n');
         if (/^(-{3,}|\*{3,})$/.test(block)) return <hr key={key} />;
         if (/^#{1,4}\s/.test(block))
-          return <h3 key={key}>{inline(block.replace(/^#+\s*/, ''), onCite, key)}</h3>;
+          return <h3 key={key}>{inline(block.replace(/^#+\s*/, ''), m, key)}</h3>;
         if (rows.every((r) => /^\s*[-*•]\s+/.test(r))) {
           return (
             <ul key={key}>
               {rows.map((r, j) => (
-                <li key={j}>{inline(r.replace(/^\s*[-*•]\s+/, ''), onCite, `${key}-${j}`)}</li>
+                <li key={j}>{inline(r.replace(/^\s*[-*•]\s+/, ''), m, `${key}-${j}`)}</li>
               ))}
             </ul>
           );
@@ -79,15 +117,15 @@ export function Story({ text, onCite }: { text: string; onCite?: OnCite }) {
           return (
             <ol key={key}>
               {rows.map((r, j) => (
-                <li key={j}>{inline(r.replace(/^\s*\d+[.)]\s+/, ''), onCite, `${key}-${j}`)}</li>
+                <li key={j}>{inline(r.replace(/^\s*\d+[.)]\s+/, ''), m, `${key}-${j}`)}</li>
               ))}
             </ol>
           );
         }
         if (rows.every((r) => r.startsWith('>'))) {
-          return <blockquote key={key}>{lines(block.replace(/^>\s?/gm, ''), onCite, key)}</blockquote>;
+          return <blockquote key={key}>{lines(block.replace(/^>\s?/gm, ''), m, key)}</blockquote>;
         }
-        return <p key={key}>{lines(block, onCite, key)}</p>;
+        return <p key={key}>{lines(block, m, key)}</p>;
       })}
     </>
   );
@@ -95,16 +133,26 @@ export function Story({ text, onCite }: { text: string; onCite?: OnCite }) {
 
 const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
+const ROLL_KIND_LABEL: Record<string, string> = {
+  attack: 'To hit',
+  damage: 'Damage',
+  check: 'Check',
+  save: 'Save',
+  initiative: 'Initiative',
+};
+
 /** One roll the server made: what it was for, the faces, and the total. */
 export function RollChip({ roll }: { roll: DiceRoll }) {
   const d20 = roll.dice.find((d) => d.kept && d.sides === 20);
   const tone = d20?.value === 20 ? ' crit' : d20?.value === 1 ? ' fumble' : '';
+  const kindLabel = roll.kind ? ROLL_KIND_LABEL[roll.kind] : undefined;
   return (
     <div className={`roll${tone}`}>
       <IconD20 />
       <div className="grow">
         <div className="roll-why truncate">
           {roll.character && <b>{roll.character} · </b>}
+          {kindLabel && <span className={`roll-kind ${roll.kind}`}>{kindLabel}</span>}
           {roll.reason || 'Roll'}
         </div>
         <div className="roll-math">
@@ -144,6 +192,10 @@ const TOOL_LABEL: Record<string, string> = {
   set_flag: 'Recording what happened',
   set_scene: 'Setting the scene',
   remember: 'Committing it to memory',
+  write_note: 'Writing in the notebook',
+  recall: 'Leafing back through the chronicle',
+  search_documents: 'Consulting the campaign documents',
+  edit_sheet: 'Updating a character sheet',
 };
 
 /** The reply in flight: tool activity first, then the words as they arrive. */
@@ -166,7 +218,9 @@ export function LiveDm({ stream }: { stream: DmStream }) {
         !latest && (
           <div className="dm-tool">
             <span className="live-dot" />
-            <span>Weighing your actions…</span>
+            <span>
+              {stream.turnId === 'opening' ? 'Preparing the opening scene…' : 'Weighing your actions…'}
+            </span>
           </div>
         )
       )}
@@ -180,9 +234,17 @@ interface ItemProps {
   /** Hide the name row when the previous message came from the same player. */
   joined: boolean;
   onCite: (citation: Citation) => void;
+  /** Open the codex entry a narration link points to. */
+  onRef?: (entityId: string) => void;
 }
 
-export const MessageItem = memo(function MessageItem({ message: m, mine, joined, onCite }: ItemProps) {
+export const MessageItem = memo(function MessageItem({
+  message: m,
+  mine,
+  joined,
+  onCite,
+  onRef,
+}: ItemProps) {
   if (m.kind === 'dm') {
     const cite = (ref: string) => {
       const hit = m.citations?.find((c) => c.ref === ref);
@@ -199,7 +261,7 @@ export const MessageItem = memo(function MessageItem({ message: m, mine, joined,
           </div>
         )}
         <div className="story">
-          <Story text={m.content} onCite={cite} />
+          <Story text={m.content} onCite={cite} onRef={onRef} refs={m.refs} />
         </div>
         {m.citations && m.citations.length > 0 && (
           <div className="sources">
@@ -225,7 +287,8 @@ export const MessageItem = memo(function MessageItem({ message: m, mine, joined,
     );
   }
 
-  const player = m.user?.displayName ?? 'Someone';
+  // An action with no author came from a party member that an AI plays.
+  const player = m.user?.displayName ?? (m.ai ? 'AI companion' : 'Someone');
   if (m.kind === 'ooc') {
     return (
       <div className={`msg ooc${mine ? ' mine' : ''}`}>
@@ -237,9 +300,9 @@ export const MessageItem = memo(function MessageItem({ message: m, mine, joined,
 
   const who = m.characterName ?? player;
   return (
-    <div className={`msg action${mine ? ' mine' : ''}${joined ? ' joined' : ''}`}>
+    <div className={`msg action${mine ? ' mine' : ''}${joined ? ' joined' : ''}${m.ai ? ' ai' : ''}`}>
       {!mine && (
-        <div className="action-avatar">{!joined && <Avatar name={who} seed={m.user?.id} small />}</div>
+        <div className="action-avatar">{!joined && <Avatar name={who} seed={m.user?.id ?? who} small />}</div>
       )}
       <div className="action-body">
         {!joined && (
