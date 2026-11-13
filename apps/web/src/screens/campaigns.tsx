@@ -35,6 +35,7 @@ function CampaignCard({ c }: { c: CampaignSummary }) {
             Yours
           </span>
         )}
+        {c.phase === 'prep' && c.status === 'active' && <span className="pill jade">Getting ready</span>}
         {c.status === 'archived' && <span className="pill">Archived</span>}
       </div>
     </Link>
@@ -48,6 +49,7 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
   const [systemId, setSystemId] = useState('');
   const [premise, setPremise] = useState('');
   const [tone, setTone] = useState('');
+  const [sheets, setSheets] = useState<'players' | 'gm'>('players');
   const [busy, run] = useAction();
 
   const list = systems.data?.systems ?? [];
@@ -57,7 +59,7 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
     e.preventDefault();
     void run(async () => {
       const res = await api<{ id: string }>('/campaigns', {
-        body: { name, systemId: chosen, premise, tone },
+        body: { name, systemId: chosen, premise, tone, sheets },
       });
       navigate(`/c/${res.id}`);
     });
@@ -86,7 +88,10 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
             ))}
           </select>
         </Field>
-        <Field label="Premise" hint="A few lines to set the world and the opening. Optional.">
+        <Field
+          label="Premise"
+          hint="A few lines to set the world and the opening. Leave it empty and the DM will invent the story."
+        >
           <textarea
             className="textarea"
             rows={4}
@@ -99,9 +104,29 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
         <Field label="Tone" hint="For example: grim and tense, or light-hearted with puns.">
           <input className="input" value={tone} onChange={(e) => setTone(e.target.value)} maxLength={300} />
         </Field>
+        <Field
+          label="Character sheets"
+          hint={
+            sheets === 'gm'
+              ? 'The DM updates sheets itself as characters level up and change.'
+              : 'The DM tracks hit points, conditions and inventory; players edit the rest.'
+          }
+        >
+          <select
+            className="select"
+            value={sheets}
+            onChange={(e) => setSheets(e.target.value as 'players' | 'gm')}
+          >
+            <option value="players">Players keep them</option>
+            <option value="gm">The DM keeps them</option>
+          </select>
+        </Field>
         <button type="submit" className="btn primary block" disabled={busy || !chosen}>
-          Begin the adventure
+          Gather the party
         </button>
+        <p className="small faint center">
+          Next you invite friends, build characters and add any documents. The story starts when you say so.
+        </p>
       </form>
     </Sheet>
   );
@@ -181,7 +206,8 @@ export function CampaignsScreen() {
         <div className="form-error">{campaigns.error}</div>
       ) : active.length === 0 ? (
         <Empty icon={<IconCampfire />} title="The fire is lit, the table is empty">
-          Start a campaign and invite a friend, or play solo. The Dungeon Master is ready when you are.
+          Start a campaign and invite a friend, or play solo with AI companions. The Dungeon Master is ready
+          when you are.
         </Empty>
       ) : (
         <div className="stack">
