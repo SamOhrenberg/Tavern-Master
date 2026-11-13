@@ -534,6 +534,12 @@
   backdrop-filter: blur(3px);
   animation: fade-in 0.22s ease;
 }
+/* With the on-screen keyboard up, end the scrim at the keyboard's top edge so
+   a sheet's last row (a chat composer, a save button) is not hidden under it. */
+.kb .scrim {
+  bottom: auto;
+  height: var(--vvh, 100dvh);
+}
 .sheet {
   position: relative;
   display: flex;

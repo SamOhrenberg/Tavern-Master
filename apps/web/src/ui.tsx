@@ -93,12 +93,18 @@ export function Sheet({
   children,
   tall,
   header,
+  footer,
+  action,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   tall?: boolean;
   header?: ReactNode;
+  /** Pinned under the scrolling body (a chat's composer). */
+  footer?: ReactNode;
+  /** A control beside the close button. */
+  action?: ReactNode;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -117,12 +123,14 @@ export function Sheet({
         <div className="sheet-grab" />
         <header className="sheet-head">
           <h2 className="truncate">{title}</h2>
+          {action}
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
             <IconClose />
           </button>
         </header>
         {header}
         <div className="sheet-body">{children}</div>
+        {footer && <div className="sheet-foot">{footer}</div>}
       </section>
     </div>,
     document.body,

@@ -65,5 +65,58 @@ export async function api<T>(path: string, opts: Options = {}): Promise<T> {
   throw new ApiFailure(res.status, code, message);
 }
 
+/**
+ * POST and read the reply as it is written: one JSON value per line. Used for
+ * the character guide, whose answer streams in like the DM's does.
+ */
+export async function apiStream<T>(path: string, body: unknown, onEvent: (event: T) => void): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+      body: JSON.stringify(body),
+      credentials: 'same-origin',
+    });
+  } catch {
+    throw new ApiFailure(0, 'offline', 'Could not reach the server. Check your connection.');
+  }
+  if (!res.ok || !res.body) {
+    let code = 'error';
+    let message = `Request failed (${res.status})`;
+    try {
+      const json = (await res.json()) as ApiError;
+      code = json.error.code;
+      message = json.error.message;
+    } catch {
+      // non-JSON error body
+    }
+    if (res.status === 401) onUnauthorized?.();
+    throw new ApiFailure(res.status, code, message);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const flush = (line: string) => {
+    if (!line.trim()) return;
+    try {
+      onEvent(JSON.parse(line) as T);
+    } catch {
+      // a partial or foreign line; nothing to do with it
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      flush(buffer.slice(0, nl));
+      buffer = buffer.slice(nl + 1);
+    }
+    if (done) break;
+  }
+  flush(buffer);
+}
+
 export const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : 'Something went wrong.';
