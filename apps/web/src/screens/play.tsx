@@ -1,16 +1,27 @@
-import type { CampaignDetail, ChatMessage, Citation, GameState, GameSystem } from '@tavern/protocol';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type {
+  CampaignDetail,
+  ChatMessage,
+  Citation,
+  DiceRoll,
+  Entity,
+  GameState,
+  GameSystem,
+} from '@tavern/protocol';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
-import { useAuth, useMe, useQuery, useToast, useVisualViewport } from '../app';
+import { useAuth, useMe, useQuery, useToast, useVisualViewport, type Query } from '../app';
 import { IconBack, IconChevron, IconDots, IconScroll, IconSparkle, IconUsers } from '../icons';
-import { CharacterSheet } from '../play/character';
+import { CastPanels, runsIt, type CastPanel } from '../play/cast';
+import { CodexSheet } from '../play/codex';
 import { Composer, TurnBar, type Mode } from '../play/composer';
+import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
 import { ManageSheet } from '../play/manage';
 import { PartySheet } from '../play/party';
 import { useTable } from '../play/socket';
 import { LiveDm, MessageItem } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
+import { Prep } from './prep';
 
 const PAGE = 60;
 const OPENERS = [
@@ -28,32 +39,74 @@ function merge(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
 export function PlayScreen() {
   const { id = '' } = useParams();
   // Keyed so moving between campaigns starts from a clean slate.
-  return <Play key={id} id={id} />;
+  return <Table key={id} id={id} />;
 }
 
-function Play({ id }: { id: string }) {
-  const me = useMe();
-  const { setMe } = useAuth();
-  const notify = useToast();
-  const navigate = useNavigate();
+/** One campaign: its lobby while it is being prepared, the story once it has begun. */
+function Table({ id }: { id: string }) {
   useVisualViewport(true);
-
   const campaign = useQuery(() => api<{ campaign: CampaignDetail }>(`/campaigns/${id}`), [id]);
   const state = useQuery(() => api<{ state: GameState }>(`/campaigns/${id}/state`), [id]);
   const systems = useQuery(() => api<{ systems: GameSystem[] }>('/systems'), []);
 
+  const c = campaign.data?.campaign;
+  if (campaign.error) {
+    return (
+      <main className="page">
+        <Empty icon={<IconScroll />} title="This table is not open to you">
+          {campaign.error}
+        </Empty>
+        <Link to="/" className="btn block back-home">
+          Back to your campaigns
+        </Link>
+      </main>
+    );
+  }
+  if (!c) {
+    return (
+      <main className="page">
+        <Loading />
+      </main>
+    );
+  }
+  const template = systems.data?.systems.find((s) => s.id === c.systemId)?.sheetTemplate;
+  const shared = { id, campaign, state, template };
+  // Keyed by phase so beginning the campaign swaps the lobby for a fresh play screen.
+  return c.phase === 'prep' ? <Prep key="prep" {...shared} /> : <Play key="play" {...shared} />;
+}
+
+export interface TableProps {
+  id: string;
+  campaign: Query<{ campaign: CampaignDetail }>;
+  state: Query<{ state: GameState }>;
+  template: GameSystem['sheetTemplate'] | undefined;
+}
+
+function Play({ id, campaign, state, template }: TableProps) {
+  const me = useMe();
+  const { setMe } = useAuth();
+  const notify = useToast();
+  const navigate = useNavigate();
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Standalone player rolls, each pinned after the message that was newest when it arrived.
+  const [rolls, setRolls] = useState<{ roll: DiceRoll; afterId: number }[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [draft, setDraft] = useState('');
-  const [panel, setPanel] = useState<'party' | 'manage' | 'character' | null>(null);
+  const [panel, setPanel] = useState<'party' | 'manage' | null>(null);
+  const [cast, setCast] = useState<CastPanel>(null);
+  const [actAs, setActAs] = useState<string | null>(null);
   const [citation, setCitation] = useState<Citation | null>(null);
+  const [entry, setEntry] = useState<Entity | null>(null);
   const [unseen, setUnseen] = useState(false);
 
   const feed = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const restore = useRef<number | null>(null);
+  // The newest message id, so an arriving roll can anchor after it without a render dependency.
+  const latestId = useRef(0);
 
   const loadLatest = useCallback(async () => {
     try {
@@ -78,6 +131,10 @@ function Play({ id }: { id: string }) {
     onMessage: (m) => {
       setMessages((prev) => merge(prev, [m]));
       if (!pinned.current && m.user?.id !== me.id) setUnseen(true);
+    },
+    onRoll: (roll) => {
+      setRolls((rs) => [...rs, { roll, afterId: latestId.current }]);
+      if (!pinned.current) setUnseen(true);
     },
     onStateChanged: () => {
       void reloadState();
@@ -107,6 +164,17 @@ function Play({ id }: { id: string }) {
     if (pinned.current) setUnseen(false);
   };
 
+  useEffect(() => {
+    latestId.current = messages[messages.length - 1]?.id ?? 0;
+  }, [messages]);
+
+  // Rolls grouped by the message they were anchored after (0 = before any message).
+  const rollsAfter = useMemo(() => {
+    const map = new Map<number, DiceRoll[]>();
+    for (const { roll, afterId } of rolls) map.set(afterId, [...(map.get(afterId) ?? []), roll]);
+    return map;
+  }, [rolls]);
+
   useLayoutEffect(() => {
     const el = feed.current;
     if (!el) return;
@@ -117,7 +185,7 @@ function Play({ id }: { id: string }) {
     } else if (pinned.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, table.stream, table.turn.status, loaded]);
+  }, [messages, rolls, table.stream, table.turn.status, loaded]);
 
   useEffect(() => {
     // The keyboard opening shrinks the feed; keep the newest line in view.
@@ -143,18 +211,52 @@ function Play({ id }: { id: string }) {
     }
   };
 
+  const game = state.data?.state;
+  // Open the scoped codex entry a narration link points to, from the state we already hold.
+  const entities = game?.entities;
+  const openRef = useCallback(
+    (entityId: string) => {
+      const found = entities?.find((e) => e.id === entityId);
+      if (found) setEntry(found);
+    },
+    [entities],
+  );
+  // The characters this player speaks for, and which of them the next action is for.
+  // Their own character comes first, ahead of companions and characters they share.
+  const mine = (game?.characters ?? [])
+    .filter((ch) => runsIt(ch, me.id))
+    .sort(
+      (x, y) =>
+        Number(x.kind === 'npc') - Number(y.kind === 'npc') || x.playerIds.length - y.playerIds.length,
+    );
+  const acted = mine.filter((ch) => table.turn.acted.includes(ch.id)).map((ch) => ch.id);
+  const actingAs = mine.find((ch) => ch.id === actAs) ?? mine.find((ch) => !acted.includes(ch.id)) ?? mine[0];
+
   const send = (mode: Mode, text: string): boolean => {
-    const ok = table.send({ type: mode === 'act' ? 'action' : 'ooc', text });
+    const ok = table.send(
+      mode === 'act' ? { type: 'action', text, characterId: actingAs?.id } : { type: 'ooc', text },
+    );
+    if (!ok) notify('Not connected to the table. Reconnecting…', 'error');
+    else {
+      toBottom();
+      // Having acted with one character, move on to the next that has not.
+      if (mode === 'act') setActAs(null);
+    }
+    return ok;
+  };
+
+  const roll = (req: RollReq): boolean => {
+    const ok = table.send({ type: 'roll', ...req });
     if (!ok) notify('Not connected to the table. Reconnecting…', 'error');
     else toBottom();
     return ok;
   };
 
-  if (campaign.error || table.link === 'denied') {
+  if (table.link === 'denied') {
     return (
       <main className="page">
         <Empty icon={<IconScroll />} title="This table is not open to you">
-          {campaign.error ?? 'You are no longer part of this campaign.'}
+          You are no longer part of this campaign.
         </Empty>
         <Link to="/" className="btn block back-home">
           Back to your campaigns
@@ -170,10 +272,8 @@ function Play({ id }: { id: string }) {
     );
   }
 
-  const game = state.data?.state;
-  const mine = game?.characters.find((ch) => ch.userId === me.id);
-  const template = systems.data?.systems.find((s) => s.id === c.systemId)?.sheetTemplate;
   const archived = c.status === 'archived';
+  const opening = table.turn.status === 'resolving' && messages.length === 0;
   const others = table.present.filter((u) => u.id !== me.id).length;
   const subtitle = archived
     ? 'Archived'
@@ -235,7 +335,7 @@ function Play({ id }: { id: string }) {
           )}
           {!loaded ? (
             <Loading />
-          ) : messages.length === 0 ? (
+          ) : messages.length === 0 && rolls.length === 0 && !opening ? (
             <div className="opening">
               <IconSparkle />
               <h2>{c.name}</h2>
@@ -254,19 +354,30 @@ function Play({ id }: { id: string }) {
               )}
             </div>
           ) : (
-            messages.map((m, i) => {
-              const prev = messages[i - 1];
-              const joined = m.kind === 'action' && prev?.kind === 'action' && prev.user?.id === m.user?.id;
-              return (
-                <MessageItem
-                  key={m.id}
-                  message={m}
-                  mine={m.user?.id === me.id}
-                  joined={joined}
-                  onCite={setCitation}
-                />
-              );
-            })
+            <>
+              {(rollsAfter.get(0) ?? []).map((r) => (
+                <AnimatedRoll key={r.id} roll={r} />
+              ))}
+              {messages.map((m, i) => {
+                const prev = messages[i - 1];
+                const joined =
+                  m.kind === 'action' && prev?.kind === 'action' && prev.user?.id === m.user?.id;
+                return (
+                  <Fragment key={m.id}>
+                    <MessageItem
+                      message={m}
+                      mine={m.user?.id === me.id}
+                      joined={joined}
+                      onCite={setCitation}
+                      onRef={openRef}
+                    />
+                    {(rollsAfter.get(m.id) ?? []).map((r) => (
+                      <AnimatedRoll key={r.id} roll={r} />
+                    ))}
+                  </Fragment>
+                );
+              })}
+            </>
           )}
           {table.stream && <LiveDm stream={table.stream} />}
           {!table.stream && table.turn.status === 'resolving' && (
@@ -285,8 +396,8 @@ function Play({ id }: { id: string }) {
           <p className="archived-note">This campaign is archived. Its story stays here to read.</p>
         ) : (
           <>
-            {loaded && game && !mine && (
-              <button type="button" className="char-nudge" onClick={() => setPanel('character')}>
+            {loaded && game && mine.length === 0 && (
+              <button type="button" className="char-nudge" onClick={() => setCast({ kind: 'add' })}>
                 <IconSparkle />
                 <span className="grow">
                   <b>Create your character</b>
@@ -297,14 +408,17 @@ function Play({ id }: { id: string }) {
             )}
             <TurnBar
               turn={table.turn}
-              members={c.members}
               meId={me.id}
               isOwner={c.role === 'owner'}
               onPass={() => table.send({ type: 'pass' })}
               onForce={() => table.send({ type: 'force' })}
             />
+            <DiceTray character={actingAs} onRoll={roll} />
             <Composer
-              characterName={mine?.name ?? null}
+              characters={mine}
+              actingAs={actingAs}
+              onActAs={setActAs}
+              acted={acted}
               resolving={table.turn.status === 'resolving'}
               draft={draft}
               onDraft={setDraft}
@@ -321,23 +435,24 @@ function Play({ id }: { id: string }) {
           template={template}
           meId={me.id}
           present={table.present}
-          onEdit={() => setPanel('character')}
-          onClose={() => setPanel(null)}
-        />
-      )}
-      {panel === 'character' && (
-        <CharacterSheet
-          campaignId={id}
-          template={template}
-          character={mine}
-          onClose={() => setPanel(null)}
-          onSaved={() => {
-            void reloadState();
-            void reloadCampaign();
+          onOpen={(next) => {
             setPanel(null);
+            setCast(next);
           }}
+          onClose={() => setPanel(null)}
         />
       )}
+      <CastPanels
+        panel={cast}
+        setPanel={setCast}
+        campaign={c}
+        state={game}
+        template={template}
+        onChanged={() => {
+          void reloadState();
+          void reloadCampaign();
+        }}
+      />
       {panel === 'manage' && (
         <ManageSheet
           campaign={c}
@@ -353,6 +468,7 @@ function Play({ id }: { id: string }) {
           <p className="excerpt">{citation.excerpt}</p>
         </Sheet>
       )}
+      {entry && <CodexSheet entity={entry} onClose={() => setEntry(null)} />}
     </div>
   );
 }
