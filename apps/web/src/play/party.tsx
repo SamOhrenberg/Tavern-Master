@@ -7,9 +7,21 @@ import type {
   SheetTemplate,
   UserRef,
 } from '@tavern/protocol';
-import { useState, type ReactNode } from 'react';
-import { IconBackpack, IconMap, IconScroll, IconShield, IconSparkle, IconUsers } from '../icons';
+import { useMemo, useState, type ReactNode } from 'react';
+import {
+  IconBackpack,
+  IconBook,
+  IconClock,
+  IconMap,
+  IconPlus,
+  IconScroll,
+  IconSearch,
+  IconShield,
+  IconSparkle,
+  IconUsers,
+} from '../icons';
 import { Avatar, Empty, HpBar, Segmented, Sheet, timeAgo } from '../ui';
+import { CastActions, playedBy, runsIt, type CastPanel } from './cast';
 
 type Tab = 'party' | 'world' | 'journal';
 
@@ -19,47 +31,64 @@ const KINDS: { kind: EntityKind; label: string; icon: ReactNode }[] = [
   { kind: 'location', label: 'Places', icon: <IconMap /> },
   { kind: 'item', label: 'Items of note', icon: <IconBackpack /> },
   { kind: 'faction', label: 'Factions', icon: <IconShield /> },
+  { kind: 'event', label: 'Events', icon: <IconClock /> },
+  { kind: 'term', label: 'Lore', icon: <IconBook /> },
 ];
+
+/** True if an entry matches a free-text codex query (name, aliases, summary, article). */
+function entityMatches(e: Entity, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return [e.name, e.summary, e.article, ...e.aliases].join('\n').toLowerCase().includes(needle);
+}
 
 const show = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 
-function CharacterCard({
+/** A party member: who plays them, how they are doing, and their sheet. */
+export function CharacterCard({
   ch,
-  player,
+  campaign,
   template,
-  mine,
-  here,
-  onEdit,
+  meId,
+  present,
+  onOpen,
 }: {
   ch: Character;
-  player: string;
+  campaign: CampaignDetail;
   template: SheetTemplate | undefined;
-  mine: boolean;
-  here: boolean;
-  onEdit: () => void;
+  meId: string;
+  present: UserRef[];
+  onOpen: (panel: CastPanel) => void;
 }) {
+  const mine = runsIt(ch, meId);
+  const here = ch.playerIds.some((id) => present.some((u) => u.id === id));
   const abilities = (template?.abilities ?? []).filter((a) => show(ch.sheet[a]) !== '');
   const fields = (template?.fields ?? []).filter((f) => show(ch.sheet[f.key]) !== '');
   const brief = fields.filter((f) => show(ch.sheet[f.key]).length <= 24).slice(0, 3);
   const long = fields.filter((f) => !brief.includes(f));
+  // Whatever else is on the sheet: fields the DM, the guide or an upload added.
+  const known = new Set([...(template?.abilities ?? []), ...(template?.fields ?? []).map((f) => f.key)]);
+  const extra = Object.keys(ch.sheet).filter((k) => !known.has(k) && show(ch.sheet[k]) !== '');
 
   return (
     <div className={`card char${mine ? ' mine' : ''}`}>
       <div className="row">
-        <Avatar name={ch.name} seed={ch.userId} />
+        <Avatar name={ch.name} seed={ch.id} />
         <div className="grow">
           <h3 className="truncate">{ch.name}</h3>
           <p className="small muted truncate">
             {here && <i className="here" />}
-            {mine ? 'You' : player}
-            {brief.length > 0 && ` · ${brief.map((f) => show(ch.sheet[f.key])).join(' · ')}`}
+            {playedBy(ch, campaign, meId)}
+            {brief.length > 0 &&
+              ` · ${brief
+                // A bare number means nothing without its label ("Level 3", not "3").
+                .map(
+                  (f) => (/^-?\d+$/.test(show(ch.sheet[f.key])) ? `${f.label} ` : '') + show(ch.sheet[f.key]),
+                )
+                .join(' · ')}`}
           </p>
         </div>
-        {mine && (
-          <button type="button" className="btn sm" onClick={onEdit}>
-            Edit
-          </button>
-        )}
+        {ch.kind === 'npc' && <span className="pill arcane">Companion</span>}
       </div>
 
       <HpBar hp={ch.hp} max={ch.maxHp} temp={ch.tempHp} />
@@ -85,13 +114,29 @@ function CharacterCard({
         </div>
       )}
 
-      {(long.length > 0 || ch.inventory.length > 0 || (mine && ch.privateNotes)) && (
+      {(long.length > 0 ||
+        extra.length > 0 ||
+        ch.inventory.length > 0 ||
+        ch.persona ||
+        (mine && ch.privateNotes)) && (
         <details className="more">
           <summary>Sheet and pack</summary>
+          {ch.persona && (
+            <div className="sheet-field">
+              <span className="label">Who they are</span>
+              <p>{ch.persona}</p>
+            </div>
+          )}
           {long.map((f) => (
             <div key={f.key} className="sheet-field">
               <span className="label">{f.label}</span>
               <p>{show(ch.sheet[f.key])}</p>
+            </div>
+          ))}
+          {extra.map((k) => (
+            <div key={k} className="sheet-field">
+              <span className="label">{k}</span>
+              <p>{show(ch.sheet[k])}</p>
             </div>
           ))}
           {ch.inventory.length > 0 && (
@@ -118,6 +163,7 @@ function CharacterCard({
           )}
         </details>
       )}
+      <CastActions character={ch} campaign={campaign} onOpen={onOpen} />
     </div>
   );
 }
@@ -129,7 +175,19 @@ function EntityRow({ e }: { e: Entity }) {
         <b className="grow">{e.name}</b>
         {e.status && <span className="pill">{e.status}</span>}
       </div>
+      {e.aliases.length > 0 && <p className="small muted aliases">Also known as {e.aliases.join(', ')}</p>}
       {e.summary && <p className="small muted">{e.summary}</p>}
+      {e.article && (
+        <details className="article">
+          <summary>Read more</summary>
+          <p>{e.article}</p>
+          {e.articleSecret && (
+            <p className="secret">
+              <IconSparkle /> {e.articleSecret}
+            </p>
+          )}
+        </details>
+      )}
       {e.secret && (
         <p className="small secret">
           <IconSparkle /> {e.secret}
@@ -146,7 +204,7 @@ export function PartySheet({
   template,
   meId,
   present,
-  onEdit,
+  onOpen,
   onClose,
 }: {
   campaign: CampaignDetail;
@@ -154,12 +212,20 @@ export function PartySheet({
   template: SheetTemplate | undefined;
   meId: string;
   present: UserRef[];
-  onEdit: () => void;
+  /** Open one of the party sheets (add, edit, guide, who plays). */
+  onOpen: (panel: CastPanel) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('party');
-  const ordered = [...state.characters].sort((a, b) => Number(b.userId === meId) - Number(a.userId === meId));
-  const without = campaign.members.filter((m) => !state.characters.some((ch) => ch.userId === m.id));
+  const [codexQuery, setCodexQuery] = useState('');
+  const matches = useMemo(
+    () => state.entities.filter((e) => entityMatches(e, codexQuery)),
+    [state.entities, codexQuery],
+  );
+  const ordered = [...state.characters].sort((a, b) => Number(runsIt(b, meId)) - Number(runsIt(a, meId)));
+  const without = campaign.members.filter(
+    (m) => m.id !== meId && !state.characters.some((ch) => runsIt(ch, m.id)),
+  );
   const flags = Object.entries(state.flags);
 
   return (
@@ -187,29 +253,28 @@ export function PartySheet({
             <CharacterCard
               key={ch.id}
               ch={ch}
-              player={campaign.members.find((m) => m.id === ch.userId)?.displayName ?? 'A player'}
+              campaign={campaign}
               template={template}
-              mine={ch.userId === meId}
-              here={present.some((u) => u.id === ch.userId)}
-              onEdit={onEdit}
+              meId={meId}
+              present={present}
+              onOpen={onOpen}
             />
           ))}
-          {without.map((m) =>
-            m.id === meId ? (
-              <button key={m.id} type="button" className="btn primary block" onClick={onEdit}>
-                Create your character
-              </button>
-            ) : (
-              <div key={m.id} className="card char pending">
-                <div className="row">
-                  <Avatar name={m.displayName} seed={m.id} />
-                  <div className="grow">
-                    <h3 className="truncate">{m.displayName}</h3>
-                    <p className="small muted">Has not made a character yet</p>
-                  </div>
+          {without.map((m) => (
+            <div key={m.id} className="card char pending">
+              <div className="row">
+                <Avatar name={m.displayName} seed={m.id} />
+                <div className="grow">
+                  <h3 className="truncate">{m.displayName}</h3>
+                  <p className="small muted">Has not made a character yet</p>
                 </div>
               </div>
-            ),
+            </div>
+          ))}
+          {campaign.status === 'active' && (
+            <button type="button" className="btn block" onClick={() => onOpen({ kind: 'add' })}>
+              <IconPlus /> Add to the party
+            </button>
           )}
         </div>
       )}
@@ -222,8 +287,22 @@ export function PartySheet({
               <p className="scene">{state.scene}</p>
             </div>
           )}
+          {state.entities.length > 0 && (
+            <div className="codex-search">
+              <IconSearch />
+              <input
+                className="input"
+                value={codexQuery}
+                onChange={(ev) => setCodexQuery(ev.target.value)}
+                placeholder="Search the codex"
+                maxLength={120}
+                enterKeyHint="search"
+                aria-label="Search the codex"
+              />
+            </div>
+          )}
           {KINDS.map(({ kind, label, icon }) => {
-            const list = state.entities.filter((e) => e.kind === kind);
+            const list = matches.filter((e) => e.kind === kind);
             if (!list.length) return null;
             return (
               <section key={kind}>
@@ -242,9 +321,12 @@ export function PartySheet({
               </section>
             );
           })}
+          {state.entities.length > 0 && matches.length === 0 && (
+            <p className="small muted empty-hint">Nothing in the codex matches “{codexQuery}”.</p>
+          )}
           {!state.scene && state.entities.length === 0 && (
             <Empty icon={<IconMap />} title="Uncharted">
-              People, places and quests appear here as the Dungeon Master brings them into the story.
+              People, places, events and lore appear here as the Dungeon Master brings them into the story.
             </Empty>
           )}
         </div>
