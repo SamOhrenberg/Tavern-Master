@@ -1,11 +1,11 @@
 import type { PendingSheet } from '@tavern/protocol';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast } from '../app';
 import { IconBack, IconBook, IconDots, IconPlus, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
-import { DmChip, dmAbsent, dmLine } from '../play/claude';
+import { ClaudeSetupSheet, DmChip, dmAbsent, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
 import { ManageSheet } from '../play/manage';
 import { CharacterCard } from '../play/party';
@@ -30,6 +30,15 @@ export function Prep({ id, campaign, state, template }: TableProps) {
 
   const [cast, setCast] = useState<CastPanel>(null);
   const [guideSignal, setGuideSignal] = useState(0);
+  const [settingUp, setSettingUp] = useState(false);
+  const [params, setParams] = useSearchParams();
+
+  // Straight from creating a Claude campaign: open the setup, once.
+  useEffect(() => {
+    if (params.get('setup') !== 'claude') return;
+    if (owner && c.dm === 'claude') setSettingUp(true);
+    setParams({}, { replace: true });
+  }, [params, setParams, owner, c.dm]);
   const [managing, setManaging] = useState(false);
   const [wishes, setWishes] = useState(c.myWishes);
   const [busy, run] = useAction();
@@ -104,14 +113,25 @@ export function Prep({ id, campaign, state, template }: TableProps) {
         </button>
         <div className="grow play-title">
           <h1 className="truncate">{c.name}</h1>
-          <p className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}>
-            <i />
-            {table.link !== 'open'
-              ? 'Joining the table…'
-              : claude
-                ? `${dmLine(dm)} · ${people}`
-                : `Getting ready · ${people}`}
-          </p>
+          {owner && claude ? (
+            <button
+              type="button"
+              className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}
+              onClick={() => setSettingUp(true)}
+            >
+              <i />
+              {table.link !== 'open' ? 'Joining the table…' : `${dmLine(dm)} · ${people}`}
+            </button>
+          ) : (
+            <p className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}>
+              <i />
+              {table.link !== 'open'
+                ? 'Joining the table…'
+                : claude
+                  ? `${dmLine(dm)} · ${people}`
+                  : `Getting ready · ${people}`}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -143,6 +163,15 @@ export function Prep({ id, campaign, state, template }: TableProps) {
                 <h3 className="grow">Dungeon Master</h3>
               </div>
               <DmChip dm={dm} />
+              {owner && (
+                <button
+                  type="button"
+                  className={`btn block${dm.state === 'never' ? ' primary' : ''}`}
+                  onClick={() => setSettingUp(true)}
+                >
+                  {dm.state === 'never' ? 'Connect Claude' : 'Claude setup'}
+                </button>
+              )}
               {!owner && (
                 <p className="small muted">
                   {host?.displayName ?? 'The host'} runs the Dungeon Master from Claude.
@@ -358,8 +387,21 @@ export function Prep({ id, campaign, state, template }: TableProps) {
           campaign={c}
           present={table.present}
           busy={false}
+          dm={dm}
+          onClaudeSetup={() => {
+            setManaging(false);
+            setSettingUp(true);
+          }}
           onChanged={() => void reloadCampaign()}
           onClose={() => setManaging(false)}
+        />
+      )}
+      {settingUp && (
+        <ClaudeSetupSheet
+          campaign={c}
+          dm={dm}
+          onChanged={() => void reloadCampaign()}
+          onClose={() => setSettingUp(false)}
         />
       )}
     </div>

@@ -18,7 +18,7 @@ import { Composer, TurnBar, type Mode } from '../play/composer';
 import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
 import { ManageSheet } from '../play/manage';
 import { PartySheet } from '../play/party';
-import { dmAbsent, dmLine } from '../play/claude';
+import { ClaudeSetupSheet, dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
 import { LiveDm, MessageItem } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
@@ -103,6 +103,7 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [entry, setEntry] = useState<Entity | null>(null);
   const [unseen, setUnseen] = useState(false);
   const [guideSignal, setGuideSignal] = useState(0);
+  const [settingUp, setSettingUp] = useState(false);
   const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
@@ -315,10 +316,21 @@ function Play({ id, campaign, state, template }: TableProps) {
         </button>
         <div className="grow play-title">
           <h1 className="truncate">{c.name}</h1>
-          <p className={`truncate play-sub${table.link === 'open' && !archived ? ' on' : ''}`}>
-            <i />
-            {subtitle}
-          </p>
+          {claude && c.role === 'owner' && !archived ? (
+            <button
+              type="button"
+              className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}
+              onClick={() => setSettingUp(true)}
+            >
+              <i />
+              {subtitle}
+            </button>
+          ) : (
+            <p className={`truncate play-sub${table.link === 'open' && !archived ? ' on' : ''}`}>
+              <i />
+              {subtitle}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -496,8 +508,21 @@ function Play({ id, campaign, state, template }: TableProps) {
           campaign={c}
           present={table.present}
           busy={table.turn.status !== 'idle'}
+          dm={dm}
+          onClaudeSetup={() => {
+            setPanel(null);
+            setSettingUp(true);
+          }}
           onChanged={() => void reloadCampaign()}
           onClose={() => setPanel(null)}
+        />
+      )}
+      {settingUp && (
+        <ClaudeSetupSheet
+          campaign={c}
+          dm={dm}
+          onChanged={() => void reloadCampaign()}
+          onClose={() => setSettingUp(false)}
         />
       )}
       {citation && (
