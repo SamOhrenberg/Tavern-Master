@@ -2,6 +2,8 @@ import type {
   ChatMessage,
   ClientMessage,
   DiceRoll,
+  DmStatus,
+  PendingSheet,
   ServerMessage,
   TurnState,
   UserRef,
@@ -22,6 +24,8 @@ export interface Table {
   present: UserRef[];
   turn: TurnState;
   stream: DmStream | null;
+  /** Where the campaign's AI is; null until the table has said hello. */
+  dm: DmStatus | null;
   /** Returns false when the socket is not open and nothing was sent. */
   send: (msg: ClientMessage) => boolean;
 }
@@ -35,6 +39,10 @@ interface Handlers {
   /** The socket came back after a drop: history may have gaps. */
   onReconnect: () => void;
   onSignedOut: () => void;
+  /** Your guide chat has a new reply. */
+  onGuide?: (threadId: string) => void;
+  /** An uploaded sheet of yours moved on. */
+  onSheet?: (id: string, status: PendingSheet['status']) => void;
 }
 
 const IDLE: TurnState = {
@@ -57,6 +65,7 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
   const [present, setPresent] = useState<UserRef[]>([]);
   const [turn, setTurn] = useState<TurnState>(IDLE);
   const [stream, setStream] = useState<DmStream | null>(null);
+  const [dm, setDm] = useState<DmStatus | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const h = useRef(handlers);
   h.current = handlers;
@@ -77,6 +86,7 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
           setLink('open');
           setPresent(msg.present);
           setTurn(msg.turn);
+          setDm(msg.dm);
           if (msg.turn.status !== 'resolving') setStream(null);
           if (wasOpen) h.current.onReconnect();
           wasOpen = true;
@@ -116,6 +126,15 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
           break;
         case 'state_changed':
           h.current.onStateChanged();
+          break;
+        case 'dm_status':
+          setDm(msg.dm);
+          break;
+        case 'guide':
+          h.current.onGuide?.(msg.threadId);
+          break;
+        case 'sheet':
+          h.current.onSheet?.(msg.id, msg.status);
           break;
         case 'error':
           h.current.onError(msg.message);
@@ -198,5 +217,5 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
     return true;
   }, []);
 
-  return { link, present, turn, stream, send };
+  return { link, present, turn, stream, dm, send };
 }

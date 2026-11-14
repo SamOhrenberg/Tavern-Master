@@ -946,3 +946,55 @@
 .guide-msg .live-dot {
   background: var(--arcane);
 }
+
+/* ---------- Claude at the table ---------- */
+.dm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 28px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.dm-chip i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.dm-chip.listening {
+  color: var(--text);
+}
+.dm-chip.listening i {
+  background: var(--jade);
+  box-shadow: 0 0 0 3px rgba(98, 211, 162, 0.18);
+}
+.dm-chip.working {
+  color: var(--text);
+}
+.dm-chip.working i {
+  background: var(--gold);
+  animation: pulse 1s infinite;
+}
+.dm-chip-count {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-size: 12px;
+}
+.dm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dm-card h3 {
+  font-size: 15.5px;
+}
+.give-back {
+  align-self: flex-start;
+  margin-top: 10px;
+}

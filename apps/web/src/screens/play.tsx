@@ -10,7 +10,7 @@ import type {
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
-import { useAuth, useMe, useQuery, useToast, useVisualViewport, type Query } from '../app';
+import { useAction, useAuth, useMe, useQuery, useToast, useVisualViewport, type Query } from '../app';
 import { IconBack, IconChevron, IconDots, IconScroll, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
@@ -18,6 +18,7 @@ import { Composer, TurnBar, type Mode } from '../play/composer';
 import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
 import { ManageSheet } from '../play/manage';
 import { PartySheet } from '../play/party';
+import { dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
 import { LiveDm, MessageItem } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
@@ -101,6 +102,7 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [citation, setCitation] = useState<Citation | null>(null);
   const [entry, setEntry] = useState<Entity | null>(null);
   const [unseen, setUnseen] = useState(false);
+  const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -275,15 +277,28 @@ function Play({ id, campaign, state, template }: TableProps) {
   const archived = c.status === 'archived';
   const opening = table.turn.status === 'resolving' && messages.length === 0;
   const others = table.present.filter((u) => u.id !== me.id).length;
+  const claude = c.dm === 'claude';
+  const dm = table.dm ?? c.dmStatus;
+  const host = c.members.find((m) => m.role === 'owner')?.displayName ?? 'The host';
+  const people = others === 0 ? 'just you' : `${others} other${others > 1 ? 's' : ''} here`;
   const subtitle = archived
     ? 'Archived'
     : table.link !== 'open'
       ? table.link === 'connecting'
         ? 'Joining the table…'
         : 'Reconnecting…'
-      : others === 0
-        ? 'Just you at the table'
-        : `You and ${others} other${others > 1 ? 's' : ''} at the table`;
+      : claude
+        ? `${dmLine(dm)} · ${people}`
+        : others === 0
+          ? 'Just you at the table'
+          : `You and ${others} other${others > 1 ? 's' : ''} at the table`;
+  // A turn is waiting for a Claude that is not there to take it.
+  const stalled = claude && !table.stream && table.turn.status === 'resolving' && dmAbsent(dm);
+
+  const giveBack = () =>
+    run(async () => {
+      await api(`/campaigns/${id}/desk/release`, { method: 'POST' });
+    }, 'The turn was handed back. Act again when Claude is here.');
 
   return (
     <div className="play">
@@ -340,10 +355,12 @@ function Play({ id, campaign, state, template }: TableProps) {
               <IconSparkle />
               <h2>{c.name}</h2>
               <p className="story-lede">
-                {c.premise ||
-                  'Every tale starts with someone doing something. The Dungeon Master is listening.'}
+                {claude
+                  ? 'Claude will write the opening scene when it is at the table.'
+                  : c.premise ||
+                    'Every tale starts with someone doing something. The Dungeon Master is listening.'}
               </p>
-              {!archived && (
+              {!archived && !claude && (
                 <div className="stack tight">
                   {OPENERS.map((line) => (
                     <button key={line} type="button" className="opener" onClick={() => setDraft(line)}>
@@ -380,7 +397,25 @@ function Play({ id, campaign, state, template }: TableProps) {
           )}
           {table.stream && <LiveDm stream={table.stream} />}
           {!table.stream && table.turn.status === 'resolving' && (
-            <LiveDm stream={{ turnId: '', text: '', tools: [] }} />
+            <LiveDm
+              stream={{ turnId: '', text: '', tools: [] }}
+              waitingOn={
+                stalled
+                  ? `Waiting for Claude. ${host} runs the Dungeon Master from their Claude app.`
+                  : undefined
+              }
+            >
+              {stalled && c.role === 'owner' && (
+                <button
+                  type="button"
+                  className="btn sm ghost give-back"
+                  disabled={busy}
+                  onClick={() => void giveBack()}
+                >
+                  Give the turn back
+                </button>
+              )}
+            </LiveDm>
           )}
         </div>
       </div>

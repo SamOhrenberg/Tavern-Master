@@ -195,10 +195,20 @@ const TOOL_LABEL: Record<string, string> = {
   recall: 'Leafing back through the chronicle',
   search_documents: 'Consulting the campaign documents',
   edit_sheet: 'Updating a character sheet',
+  search_setting: 'Drawing on the setting',
 };
 
 /** The reply in flight: tool activity first, then the words as they arrive. */
-export function LiveDm({ stream }: { stream: DmStream }) {
+export function LiveDm({
+  stream,
+  waitingOn,
+  children,
+}: {
+  stream: DmStream;
+  /** Why nothing is happening yet, when the DM is not there to answer. */
+  waitingOn?: string;
+  children?: ReactNode;
+}) {
   const latest = stream.tools[stream.tools.length - 1];
   return (
     <article className="msg dm live" aria-live="polite">
@@ -218,11 +228,13 @@ export function LiveDm({ stream }: { stream: DmStream }) {
           <div className="dm-tool">
             <span className="live-dot" />
             <span>
-              {stream.turnId === 'opening' ? 'Preparing the opening scene…' : 'Weighing your actions…'}
+              {waitingOn ??
+                (stream.turnId === 'opening' ? 'Preparing the opening scene…' : 'Weighing your actions…')}
             </span>
           </div>
         )
       )}
+      {children}
     </article>
   );
 }

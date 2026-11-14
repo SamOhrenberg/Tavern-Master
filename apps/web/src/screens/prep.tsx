@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useAction, useAuth, useMe, useToast } from '../app';
 import { IconBack, IconBook, IconDots, IconPlus, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
+import { DmChip, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
 import { ManageSheet } from '../play/manage';
 import { CharacterCard } from '../play/party';
@@ -55,6 +56,9 @@ export function Prep({ id, campaign, state, template }: TableProps) {
   const without = c.members.filter((m) => !characters.some((ch) => runsIt(ch, m.id)));
   const host = c.members.find((m) => m.role === 'owner');
   const others = table.present.filter((u) => u.id !== me.id).length;
+  const claude = c.dm === 'claude';
+  const dm = table.dm ?? c.dmStatus;
+  const people = others === 0 ? 'just you here' : `${others + 1} here`;
 
   const saveWishes = () =>
     run(async () => {
@@ -91,9 +95,9 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             <i />
             {table.link !== 'open'
               ? 'Joining the table…'
-              : others === 0
-                ? 'Getting ready · just you here'
-                : `Getting ready · ${others + 1} here`}
+              : claude
+                ? `${dmLine(dm)} · ${people}`
+                : `Getting ready · ${people}`}
           </p>
         </div>
         <button
@@ -120,6 +124,20 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             </div>
           </div>
 
+          {claude && (
+            <div className="card dm-card">
+              <div className="row">
+                <h3 className="grow">Dungeon Master</h3>
+              </div>
+              <DmChip dm={dm} />
+              {!owner && (
+                <p className="small muted">
+                  {host?.displayName ?? 'The host'} runs the Dungeon Master from Claude.
+                </p>
+              )}
+            </div>
+          )}
+
           <section>
             <div className="section-title with-icon">
               <span>
@@ -131,7 +149,9 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             <div className="stack">
               {!game ? null : characters.length === 0 ? (
                 <Empty icon={<IconSparkle />} title="Nobody has a character yet">
-                  Build one with the guide, fill in a sheet, or upload one you already have.
+                  {claude
+                    ? 'Build one with Claude, fill in a sheet, or upload one you already have.'
+                    : 'Build one with the guide, fill in a sheet, or upload one you already have.'}
                 </Empty>
               ) : (
                 characters.map((ch) => (
@@ -168,8 +188,9 @@ export function Prep({ id, campaign, state, template }: TableProps) {
               </button>
               {owner && (
                 <p className="small faint">
-                  Add companions to fill out the party. Each one can be played by a player, by the Dungeon
-                  Master, or by an AI of its own that knows only what the character knows.
+                  {claude
+                    ? 'Add companions to fill out the party. A player can run one, or Claude will.'
+                    : 'Add companions to fill out the party. Each one can be played by a player, by the Dungeon Master, or by an AI of its own that knows only what the character knows.'}
                 </p>
               )}
             </div>
@@ -240,18 +261,24 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             <ConfirmButton
               className="btn primary block"
               confirmLabel={
-                characters.length === 0
-                  ? 'Begin with no characters? Tap again'
-                  : without.length > 0
-                    ? `${without.length === 1 ? without[0]!.displayName + ' has' : without.length + ' players have'} no character. Tap again`
-                    : 'Tap again to begin'
+                claude && dm.state === 'never'
+                  ? 'Claude has not joined yet. Begin anyway? Tap again'
+                  : characters.length === 0
+                    ? 'Begin with no characters? Tap again'
+                    : without.length > 0
+                      ? `${without.length === 1 ? without[0]!.displayName + ' has' : without.length + ' players have'} no character. Tap again`
+                      : 'Tap again to begin'
               }
               disabled={busy}
               onConfirm={() => void begin()}
             >
               Begin the adventure
             </ConfirmButton>
-            <p className="small faint center">The DM plans the story, then sets the opening scene.</p>
+            <p className="small faint center">
+              {claude
+                ? 'Claude plans the story and writes the opening scene when it is at the table.'
+                : 'The DM plans the story, then sets the opening scene.'}
+            </p>
           </div>
         ) : (
           <p className="archived-note">

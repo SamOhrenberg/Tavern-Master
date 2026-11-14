@@ -33,8 +33,9 @@ export const runsIt = (c: Character, meId: string) => c.controller === 'player' 
 
 /** "Played by …" in a few words. */
 export function playedBy(c: Character, campaign: CampaignDetail, meId: string): string {
-  if (c.controller === 'gm') return 'Played by the Dungeon Master';
-  if (c.controller === 'agent') return 'Played by its own AI';
+  const claude = campaign.dm === 'claude';
+  if (c.controller === 'gm') return claude ? 'Played by Claude' : 'Played by the Dungeon Master';
+  if (c.controller === 'agent') return claude ? 'Played by Claude, blind' : 'Played by its own AI';
   if (!c.playerIds.length) return 'Nobody plays them yet';
   const names = c.playerIds.map((id) =>
     id === meId ? 'You' : (campaign.members.find((m) => m.id === id)?.displayName ?? 'A player'),
@@ -43,6 +44,28 @@ export function playedBy(c: Character, campaign: CampaignDetail, meId: string): 
   names.sort((a, b) => Number(b === 'You') - Number(a === 'You'));
   return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`;
 }
+
+/** The same three choices, worded for a campaign whose every AI is Claude. */
+const CLAUDE_CONTROLLERS: ChoiceOption<CharacterController>[] = [
+  {
+    value: 'player',
+    title: 'Players',
+    body: 'One or more people at the table speak for this character.',
+  },
+  {
+    value: 'gm',
+    title: 'Claude, as the Dungeon Master',
+    body: 'The same Claude that runs the game plays them. It knows the whole story.',
+  },
+  {
+    value: 'agent',
+    title: 'Claude, playing blind',
+    body: 'A separate Claude plays them knowing only what the character has seen. Needs the folder setup; in a Claude chat the Dungeon Master plays them instead.',
+  },
+];
+
+export const controllerOptions = (campaign: CampaignDetail) =>
+  campaign.dm === 'claude' ? CLAUDE_CONTROLLERS : CONTROLLERS;
 
 const CONTROLLERS: ChoiceOption<CharacterController>[] = [
   {
@@ -88,7 +111,10 @@ function AddCharacterSheet({
   const notify = useToast();
   const owner = campaign.role === 'owner';
   const [whose, setWhose] = useState<'mine' | 'companion'>('mine');
-  const [controller, setController] = useState<CharacterController>('agent');
+  // With Claude, the DM playing a companion needs no extra setup, so it is the default.
+  const [controller, setController] = useState<CharacterController>(
+    campaign.dm === 'claude' ? 'gm' : 'agent',
+  );
   const [reading, setReading] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
 
@@ -134,7 +160,7 @@ function AddCharacterSheet({
             <ControllerChoice
               value={controller}
               onChange={setController}
-              options={CONTROLLERS.filter((c) => c.value !== 'player')}
+              options={controllerOptions(campaign).filter((c) => c.value !== 'player')}
             />
             <p className="small faint under-field">
               You can hand a companion to a player later from the party list.
@@ -221,7 +247,7 @@ function ControlSheet({
   return (
     <Sheet title={`Who plays ${character.name}?`} onClose={onClose} tall>
       <div className="stack">
-        <ControllerChoice value={controller} onChange={setController} />
+        <ControllerChoice value={controller} onChange={setController} options={controllerOptions(campaign)} />
 
         {controller === 'player' && (
           <div>
