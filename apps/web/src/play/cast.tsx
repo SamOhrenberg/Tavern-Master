@@ -4,6 +4,7 @@ import type {
   CharacterController,
   CharacterDraft,
   CharacterKind,
+  DmStatus,
   GameState,
   SheetTemplate,
 } from '@tavern/protocol';
@@ -174,9 +175,11 @@ function AddCharacterSheet({
               <IconChat />
             </span>
             <span className="grow">
-              <b>Build with the guide</b>
+              <b>{campaign.dm === 'claude' ? 'Build with Claude' : 'Build with the guide'}</b>
               <small className="row-detail">
-                Talk it through with an AI that knows the rules and rolls for you.
+                {campaign.dm === 'claude'
+                  ? 'Talk it through here. Claude knows the rules and rolls for you.'
+                  : 'Talk it through with an AI that knows the rules and rolls for you.'}
               </small>
             </span>
             <IconChevron className="chev" />
@@ -309,6 +312,8 @@ export function CastPanels({
   state,
   template,
   onChanged,
+  dm = null,
+  guideSignal = 0,
 }: {
   panel: CastPanel;
   setPanel: (panel: CastPanel) => void;
@@ -316,6 +321,10 @@ export function CastPanels({
   state: GameState | undefined;
   template: SheetTemplate | undefined;
   onChanged: () => void;
+  /** Where Claude is, live from the table. */
+  dm?: DmStatus | null;
+  /** Bumped when a guide reply arrives. */
+  guideSignal?: number;
 }) {
   const me = useMe();
   const owner = campaign.role === 'owner';
@@ -351,6 +360,10 @@ export function CastPanels({
         campaignId={campaign.id}
         characterId={panel.characterId}
         control={panel.control}
+        claude={campaign.dm === 'claude'}
+        dm={dm ?? campaign.dmStatus}
+        hostName={campaign.members.find((m) => m.role === 'owner')?.displayName}
+        guideSignal={guideSignal}
         onClose={close}
         onChanged={onChanged}
         onOpenSheet={(id) => {
@@ -401,7 +414,7 @@ export function CastActions({
           className="btn sm"
           onClick={() => onOpen({ kind: 'guide', characterId: character.id })}
         >
-          <IconSparkle /> Guide
+          <IconSparkle /> {campaign.dm === 'claude' ? 'Claude' : 'Guide'}
         </button>
       )}
       {owner && (

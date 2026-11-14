@@ -28,6 +28,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
   const owner = c.role === 'owner';
 
   const [cast, setCast] = useState<CastPanel>(null);
+  const [guideSignal, setGuideSignal] = useState(0);
   const [managing, setManaging] = useState(false);
   const [wishes, setWishes] = useState(c.myWishes);
   const [busy, run] = useAction();
@@ -46,6 +47,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
     onError: (text) => notify(text, 'error'),
     onReconnect: reload,
     onSignedOut: () => setMe(null),
+    onGuide: () => setGuideSignal((n) => n + 1),
   });
   useEffect(() => {
     if (table.link === 'denied') navigate('/', { replace: true });
@@ -294,6 +296,8 @@ export function Prep({ id, campaign, state, template }: TableProps) {
         campaign={c}
         state={game}
         template={template}
+        dm={table.dm}
+        guideSignal={guideSignal}
         onChanged={reload}
       />
       {managing && (

@@ -1,10 +1,11 @@
-import type { BuilderEvent, BuilderMessage, BuilderThread } from '@tavern/protocol';
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import type { BuilderEvent, BuilderMessage, BuilderThread, DmStatus } from '@tavern/protocol';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { api, apiStream, errorMessage } from '../api';
 import { useToast } from '../app';
 import { IconScroll, IconSend, IconSparkle } from '../icons';
 import { Loading, Sheet } from '../ui';
 import type { Control } from './character';
+import { dmAbsent } from './claude';
 import { RollChip, Story } from './story';
 
 const STARTERS = [
@@ -39,10 +40,20 @@ export function GuideSheet({
   onClose,
   onChanged,
   onOpenSheet,
+  claude = false,
+  dm = null,
+  hostName = 'the host',
+  guideSignal = 0,
 }: {
   campaignId: string;
   characterId?: string;
   control?: Control;
+  /** Claude is the guide: replies arrive later, through the table's connection. */
+  claude?: boolean;
+  dm?: DmStatus | null;
+  hostName?: string;
+  /** Bumped by the parent when a guide reply arrives, to fetch it. */
+  guideSignal?: number;
   onClose: () => void;
   /** The sheet was written to. */
   onChanged: () => void;
@@ -55,6 +66,8 @@ export function GuideSheet({
   const [saved, setSaved] = useState<string | null>(characterId ?? null);
   const [draft, setDraft] = useState('');
   const [reply, setReply] = useState<{ text: string; note: string } | null>(null);
+  // Claude has the player's message and has not answered yet.
+  const [waiting, setWaiting] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const next = useRef(-1);
@@ -67,6 +80,7 @@ export function GuideSheet({
         setThread(res.thread);
         setMessages(res.thread.messages);
         setSaved(res.thread.characterId);
+        if (claude && res.thread.messages.at(-1)?.role === 'user') setWaiting(true);
       })
       .catch((err: unknown) => live && setFailed(errorMessage(err)));
     return () => {
@@ -79,7 +93,43 @@ export function GuideSheet({
   useLayoutEffect(() => {
     const el = body.current?.closest('.sheet-body');
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, reply]);
+  }, [messages, reply, waiting]);
+
+  const threadId = thread?.id;
+  const changedRef = useRef(onChanged);
+  changedRef.current = onChanged;
+  /** Fetch the chat again, to pick up what Claude wrote. */
+  const refresh = useCallback(async () => {
+    if (!threadId) return;
+    try {
+      const res = await api<{ thread: BuilderThread }>(`/campaigns/${campaignId}/builder/${threadId}`);
+      setMessages(res.thread.messages);
+      setSaved(res.thread.characterId);
+      if (res.thread.messages.at(-1)?.role === 'assistant') {
+        setWaiting(false);
+        changedRef.current();
+      }
+    } catch {
+      // Tried again on the next signal or tick.
+    }
+  }, [campaignId, threadId]);
+
+  // A reply arrived over the table's connection.
+  useEffect(() => {
+    if (guideSignal) void refresh();
+  }, [guideSignal, refresh]);
+
+  // While waiting, look again now and then and on returning to the app, in case a signal was missed.
+  useEffect(() => {
+    if (!waiting) return;
+    const tick = window.setInterval(() => void refresh(), 20_000);
+    const onVisible = () => document.visibilityState === 'visible' && void refresh();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(tick);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [waiting, refresh]);
 
   useEffect(() => {
     const el = field.current;
@@ -115,6 +165,10 @@ export function GuideSheet({
             done = true;
             setMessages((list) => [...list, ev.message]);
             setSaved(ev.characterId);
+          } else if (ev.type === 'queued') {
+            // Stored and handed to Claude; the answer comes later.
+            done = true;
+            setWaiting(true);
           } else if (ev.type === 'error') {
             notify(ev.message, 'error');
           }
@@ -140,9 +194,18 @@ export function GuideSheet({
   };
 
   const companion = control?.kind === 'npc';
+  const away = dmAbsent(dm);
   return (
     <Sheet
-      title={companion ? 'Companion guide' : 'Character guide'}
+      title={
+        claude
+          ? companion
+            ? 'Companion with Claude'
+            : 'Build with Claude'
+          : companion
+            ? 'Companion guide'
+            : 'Character guide'
+      }
       onClose={onClose}
       tall
       action={
@@ -161,7 +224,13 @@ export function GuideSheet({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
-            placeholder={reply ? 'The guide is writing…' : 'Say what you have in mind'}
+            placeholder={
+              reply
+                ? 'The guide is writing…'
+                : waiting
+                  ? 'Add more while you wait'
+                  : 'Say what you have in mind'
+            }
             maxLength={2000}
             disabled={!thread}
             enterKeyHint={coarse() ? 'enter' : 'send'}
@@ -192,8 +261,8 @@ export function GuideSheet({
                 <IconSparkle />
                 <p>
                   {companion
-                    ? 'Describe the companion you want at the party’s side. The guide writes the sheet and their personality as you talk.'
-                    : 'Talk your character into being. The guide knows this table’s rules, rolls real dice, and writes the sheet as you go.'}
+                    ? `Describe the companion you want at the party’s side. ${claude ? 'Claude' : 'The guide'} writes the sheet and their personality as you talk.`
+                    : `Talk your character into being. ${claude ? 'Claude' : 'The guide'} knows this table’s rules, rolls real dice, and writes the sheet as you go.`}
                 </p>
                 <div className="stack tight">
                   {(companion ? COMPANION_STARTERS : STARTERS).map((line) => (
@@ -225,6 +294,18 @@ export function GuideSheet({
                   </div>
                 </article>
               ),
+            )}
+            {waiting && !reply && (
+              <article className="msg guide-msg live" aria-live="polite">
+                <div className="dm-tool">
+                  {!away && <span className="live-dot" />}
+                  <span>
+                    {away
+                      ? `Claude is away. Your message is saved and will be answered when ${hostName} has Claude running.`
+                      : 'Sent to Claude…'}
+                  </span>
+                </div>
+              </article>
             )}
             {reply && (
               <article className="msg guide-msg live" aria-live="polite">

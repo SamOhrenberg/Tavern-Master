@@ -102,6 +102,7 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [citation, setCitation] = useState<Citation | null>(null);
   const [entry, setEntry] = useState<Entity | null>(null);
   const [unseen, setUnseen] = useState(false);
+  const [guideSignal, setGuideSignal] = useState(0);
   const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
@@ -148,6 +149,7 @@ function Play({ id, campaign, state, template }: TableProps) {
       void reloadState();
     },
     onSignedOut: () => setMe(null),
+    onGuide: () => setGuideSignal((n) => n + 1),
   });
 
   // ---- scrolling: stay at the newest line unless the reader has scrolled up ----
@@ -482,6 +484,8 @@ function Play({ id, campaign, state, template }: TableProps) {
         campaign={c}
         state={game}
         template={template}
+        dm={table.dm}
+        guideSignal={guideSignal}
         onChanged={() => {
           void reloadState();
           void reloadCampaign();
