@@ -8,8 +8,9 @@ coverage/
 .env.*
 !.env.example
 
-# runtime data (uploads, model cache, db dumps)
+# runtime data (uploads, model cache, db dumps), and what the tests write
 /data/
+.test-data/
 /backups/
 *.dump
 
