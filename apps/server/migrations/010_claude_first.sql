@@ -23,6 +23,8 @@ CREATE TABLE dm_work (
 );
 CREATE UNIQUE INDEX dm_work_open_idx ON dm_work (campaign_id, kind, subject_id)
   WHERE status IN ('waiting', 'claimed');
+-- Claude does one thing at a time: at most one claimed item per campaign.
+CREATE UNIQUE INDEX dm_work_one_claimed_idx ON dm_work (campaign_id) WHERE status = 'claimed';
 CREATE INDEX dm_work_queue_idx ON dm_work (campaign_id, created_at)
   WHERE status IN ('waiting', 'claimed');
 CREATE INDEX dm_work_requester_idx ON dm_work (campaign_id, requested_by, kind);
