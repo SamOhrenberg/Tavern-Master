@@ -1,4 +1,4 @@
-import type { ServerMeta } from '@tavern/protocol';
+import type { ConnectorToken, ServerMeta } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
@@ -239,12 +239,15 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     const rows = await listTokens(auth.user.id);
     return {
       url: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
-      tokens: rows.map((r) => ({
+      tokens: rows.map((r): ConnectorToken => ({
         id: r.id,
+        kind: r.client_id ? 'signin' : 'token',
         label: r.label,
-        createdAt: r.created_at,
-        lastUsedAt: r.last_used_at,
+        clientName: r.client_name,
+        createdAt: r.created_at.toISOString(),
+        lastUsedAt: r.last_used_at?.toISOString() ?? null,
         campaignName: r.campaign_name,
+        scope: r.scope_name,
       })),
     };
   });

@@ -11,6 +11,7 @@ import { connectorRoutes } from './connector/mcp.js';
 import { onWorkChanged } from './connector/work.js';
 import { q } from './db/pool.js';
 import { HttpError } from './errors.js';
+import { oauthRoutes } from './oauth/routes.js';
 import { registerSecurity } from './http/security.js';
 import { loggerOptions } from './log.js';
 import { getRoom } from './realtime/room.js';
@@ -101,6 +102,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(partyRoutes);
   await app.register(realtimeRoutes);
   await app.register(connectorRoutes);
+  await app.register(oauthRoutes);
 
   await registerSpa(app);
   return app;
@@ -109,9 +111,10 @@ export async function buildApp(): Promise<FastifyInstance> {
 async function registerSpa(app: FastifyInstance): Promise<void> {
   const root = webDist();
   app.setNotFoundHandler((req, reply) => {
-    // /.well-known stays a plain 404: connector clients probe it for OAuth
-    // metadata, and the SPA shell there would look like a broken answer.
-    const isApi = ['/api/', '/ws/', '/mcp', '/.well-known/'].some((p) => req.url.startsWith(p));
+    // Other /.well-known paths stay a plain 404: clients probe several
+    // places for OAuth metadata, and the SPA shell there would look like a
+    // broken answer. /oauth is the connector's sign-in, never the SPA.
+    const isApi = ['/api/', '/ws/', '/mcp', '/.well-known/', '/oauth/'].some((p) => req.url.startsWith(p));
     if (root && req.method === 'GET' && !isApi) {
       // Client-side routes fall back to the SPA shell.
       return reply.header('Cache-Control', 'no-cache').sendFile('index.html');

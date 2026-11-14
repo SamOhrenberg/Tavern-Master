@@ -5,6 +5,7 @@ import { migrate } from './db/migrate.js';
 import { closeDb, waitForDb } from './db/pool.js';
 import { log } from './log.js';
 import { listenForWork } from './connector/work.js';
+import { sweepOAuth } from './oauth/clients.js';
 import { failStaleTurns, getRoom, sweepRooms } from './realtime/room.js';
 import { seedIfEmpty } from './seed.js';
 
@@ -21,7 +22,11 @@ async function main(): Promise<void> {
   // The worker queues work for Claude too (documents, the chronicle); wake the room when it does.
   await listenForWork((campaignId) => void getRoom(campaignId)?.workChanged());
   // Rooms opened only by the connector have no socket to close them.
-  setInterval(sweepRooms, 10 * 60_000).unref();
+  setInterval(() => {
+    sweepRooms();
+    // Sign-ins nobody finished.
+    void sweepOAuth().catch((err) => log().warn({ err }, 'could not sweep sign-in requests'));
+  }, 10 * 60_000).unref();
 
   let stopping = false;
   const stop = async (signal: string) => {

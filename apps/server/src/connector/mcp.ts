@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { q1 } from '../db/pool.js';
 import { enforceLimit, rateLimiters } from '../http/security.js';
 import { log } from '../log.js';
+import { challengeHeader, resourceFor } from '../oauth/metadata.js';
 import { SERVER_INSTRUCTIONS } from './instructions.js';
 import './register.js';
 import { resolveToken, type ConnectorUser } from './tokens.js';
@@ -63,14 +64,12 @@ function rpcError(reply: FastifyReply, status: number, message: string) {
 export async function connectorRoutes(app: FastifyInstance): Promise<void> {
   const handle = async (req: FastifyRequest, reply: FastifyReply, campaignId: string | null) => {
     enforceLimit(rateLimiters().api, `ip:${req.ip}`);
-    const user = await resolveToken(bearer(req.headers.authorization));
+    const path = campaignId ? pinnedPath(campaignId) : CONNECTOR_PATH;
+    const user = await resolveToken(bearer(req.headers.authorization), resourceFor(path));
     if (!user) {
-      reply.header('WWW-Authenticate', 'Bearer realm="tavern-master"');
-      return rpcError(
-        reply,
-        401,
-        'Missing or invalid connector token. Make one in Tavern Master under Settings.',
-      );
+      // Points the client at the sign-in endpoints for this exact address.
+      reply.header('WWW-Authenticate', challengeHeader(path));
+      return rpcError(reply, 401, 'Sign in to Tavern Master to connect, or send a connector token.');
     }
     enforceLimit(rateLimiters().api, `connector:${user.tokenId}`);
     if (campaignId) {
