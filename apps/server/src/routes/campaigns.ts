@@ -16,6 +16,9 @@ import { config } from '../config.js';
 import { projectInstructions } from '../connector/instructions.js';
 import { CONNECTOR_PATH } from '../connector/mcp.js';
 import { dmModeOf } from '../connector/mode.js';
+import { dropSheetFile } from '../connector/uploads.js';
+import { cancelWork } from '../connector/work.js';
+import { enqueue } from '../jobs/queue.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
@@ -28,6 +31,13 @@ import { uploadPath } from '../storage.js';
 import { areFriends } from './friends.js';
 
 const uuid = z.string().uuid();
+
+/** Run when a campaign becomes Claude's; the chronicle registers what it needs. */
+let switchedToClaude: (campaignId: string) => Promise<void> = async () => undefined;
+export function onSwitchToClaude(fn: (campaignId: string) => Promise<void>): void {
+  switchedToClaude = fn;
+}
+const afterSwitchToClaude = (campaignId: string) => switchedToClaude(campaignId).catch(() => undefined);
 const MAX_MEMBERS = 8;
 
 const createSchema = z.object({
@@ -175,9 +185,24 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     );
     const room = getRoom(campaignId);
     if (room && body.gatherWindowSeconds) room.collector.windowMs = body.gatherWindowSeconds * 1000;
-    // A turn left waiting for the Claude app goes back to the table rather than sitting there.
-    if (body.dm === 'server') room?.releaseDesk();
+    if (body.dm === 'server') {
+      // Nothing waits for Claude any more: turns go back to the table, requests are cancelled.
+      room?.releaseDesk();
+      const cancelled = await cancelWork(campaignId);
+      for (const item of cancelled.filter((w) => w.kind === 'sheet')) {
+        await q(`UPDATE dm_work SET status = 'failed', error = $2 WHERE id = $1`, [
+          item.id,
+          'This campaign switched to the built-in AI. Upload it again.',
+        ]);
+        await dropSheetFile(item.payload);
+        if (item.requestedBy)
+          room?.tellUser(item.requestedBy, { type: 'sheet', id: item.id, status: 'failed' });
+      }
+      // The built-in chronicler catches up on whatever Claude had not written.
+      await enqueue('summarize_campaign', { campaignId });
+    }
     if (body.dm) await room?.setMode(body.dm);
+    if (body.dm === 'claude') await afterSwitchToClaude(campaignId);
     room?.broadcast({ type: 'state_changed' });
     if (body.dm === 'server') void room?.maybeOpen();
     return { ok: true };

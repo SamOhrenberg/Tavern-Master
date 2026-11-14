@@ -14,7 +14,9 @@ import { builderTurn, controlOf, threadMessages } from '../agent/builder.js';
 import { readSheet, type SheetSource } from '../agent/sheets.js';
 import { config } from '../config.js';
 import { dmMode } from '../connector/mode.js';
-import { queueWork } from '../connector/work.js';
+import { dropSheetFile, toPendingSheet, type SheetPayload } from '../connector/uploads.js';
+import { getWork, queueWork, type WorkItem } from '../connector/work.js';
+import { randomUUID } from 'node:crypto';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, HttpError, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
@@ -125,17 +127,29 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
    * in the sheet editor and saves it from there.
    */
   app.post<{ Params: Params }>('/api/campaigns/:id/characters/import', async (req) => {
-    const { auth, campaignId } = await requireMember(req);
-    enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
-    const blocked = await budgetBlock(campaignId, [auth.user.id]);
-    if (blocked) throw conflict(blocked, 'over_budget');
+    const { auth, campaignId, viewer } = await requireMember(req);
+    // In a Claude campaign the upload is handed to Claude: no model runs here.
+    const claude = (await dmMode(campaignId)) === 'claude';
+    if (!claude) {
+      enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
+      const blocked = await budgetBlock(campaignId, [auth.user.id]);
+      if (blocked) throw conflict(blocked, 'over_budget');
+    }
 
     const file = await receiveFile(req, SHEET_MAX_BYTES);
+    let keep = false;
     try {
       const head = await readHead(file.path);
       const source: SheetSource = {};
       const image = sniffImage(head);
-      if (image) {
+      if (image && claude) {
+        const max = config().CONNECTOR_IMAGE_MAX_BYTES;
+        if (file.size > max) {
+          throw badRequest(
+            `That photo is too large for Claude to read here. Try one under ${Math.max(1, Math.floor(max / 1_000_000))} MB, or a PDF.`,
+          );
+        }
+      } else if (image) {
         if (file.size > IMAGE_MAX_BYTES) throw badRequest('That photo is too large. Try one under 4 MB.');
         const fh = await open(file.path, 'r');
         try {
@@ -167,6 +181,40 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
           );
         }
         source.text = text;
+      }
+
+      if (claude) {
+        let control: Control = { kind: 'pc', controller: 'player', playerIds: [auth.user.id] };
+        if (file.fields.control) {
+          let raw: unknown;
+          try {
+            raw = JSON.parse(file.fields.control);
+          } catch {
+            throw badRequest('The control field is not valid JSON.');
+          }
+          control = parse(controlSchema, raw);
+        }
+        const own =
+          control.kind === 'pc' &&
+          control.controller === 'player' &&
+          control.playerIds.join() === auth.user.id;
+        if (!own && viewer.role !== 'owner')
+          throw forbidden('Only the campaign owner can add companions or assign characters.');
+        const payload: SheetPayload = {
+          fileName: file.originalName,
+          control,
+          ...(image ? { image: { storageName: file.storageName, mediaType: image } } : { text: source.text }),
+        };
+        const id = await queueWork({
+          campaignId,
+          kind: 'sheet',
+          subjectId: randomUUID(),
+          requestedBy: auth.user.id,
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        keep = !!image;
+        const item = (await getWork(id!))!;
+        return { pending: toPendingSheet(item) };
       }
 
       const campaign = await q1<{ owner_id: string; system_name: string; sheet_template: SheetTemplate }>(
@@ -208,9 +256,44 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
       }
       return { draft };
     } finally {
-      await discard(file);
+      if (!keep) await discard(file);
     }
   });
+
+  /** Your uploaded sheets that Claude has, or has read, newest first. */
+  app.get<{ Params: Params }>('/api/campaigns/:id/sheets', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    const rows = await q<{
+      id: string;
+      status: WorkItem['status'];
+      payload: Record<string, unknown>;
+      result: Record<string, unknown> | null;
+      error: string | null;
+    }>(
+      `SELECT id, status, payload, result, error FROM dm_work
+        WHERE campaign_id = $1 AND requested_by = $2 AND kind = 'sheet'
+        ORDER BY created_at DESC LIMIT 10`,
+      [campaignId, auth.user.id],
+    );
+    return { sheets: rows.map(toPendingSheet) };
+  });
+
+  /** Forget an uploaded sheet once its draft is saved or dismissed. */
+  app.delete<{ Params: { id: string; sheetId: string } }>(
+    '/api/campaigns/:id/sheets/:sheetId',
+    async (req) => {
+      const { auth, role, campaignId } = await requireMember(req);
+      const id = parse(uuid, req.params.sheetId);
+      const item = await getWork(id);
+      if (!item || item.campaignId !== campaignId || item.kind !== 'sheet') throw notFound();
+      if (item.requestedBy !== auth.user.id && role !== 'owner')
+        throw forbidden('That upload is someone else’s.');
+      await q('DELETE FROM dm_work WHERE id = $1', [id]);
+      await dropSheetFile(item.payload);
+      getRoom(campaignId)?.workChanged();
+      return { ok: true };
+    },
+  );
 
   // ---- the character-building guide ----
 
