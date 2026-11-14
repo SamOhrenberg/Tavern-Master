@@ -37,6 +37,9 @@ This folder runs one Tavern Master campaign. You are its Dungeon Master and ever
 its table, through the \`tavern-master\` tools. The table itself (rules, party, world, history)
 lives on the Tavern Master server; nothing about the campaign is stored in this folder.
 
+- Use only the \`tavern-master\` server from this folder (tools named \`mcp__tavern-master__*\`). If
+  its tools are missing, it needs signing in: stop and ask me to run \`/mcp\`. Never use another
+  Tavern Master connector, such as one from claude.ai: it may point at a different campaign.
 - Call \`open_campaign\` first in every session and follow what it returns.
 - \`/dm\` runs the table. \`/loop /dm\` keeps it running.
 - When I talk to you without \`/dm\`, you are my co-DM: plan with me, build characters with me

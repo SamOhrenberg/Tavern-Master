@@ -339,6 +339,7 @@ describe('the campaign folder', () => {
     expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).not.toContain(
       'disable-model-invocation',
     );
+    expect(byName.get('the-sunken-bell/CLAUDE.md')).toContain('Use only the `tavern-master` server');
     expect(slugOf('  ')).toBe('campaign');
     expect(slugOf('A'.repeat(60)).length).toBe(40);
   });
