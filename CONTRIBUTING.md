@@ -29,15 +29,48 @@ Inside `apps/server/src`:
 ```
 auth/       passwords, sessions, TOTP, invites
 security/   crypto helpers, rate limiter, response headers
-http/       request hooks: session lookup, CSRF, origin checks
+http/       request hooks: session lookup, CSRF, origin checks, campaign
+            membership, receiving uploads
 routes/     REST endpoints, one file per area
 db/         connection pool and migration runner
 llm/        provider interface and implementations, pricing, usage
-rules/      upload parsing, chunking, embeddings, retrieval
-agent/      dice, game state, DM tools, prompt context, agent loop, summaries
+rules/      upload parsing, chunking, embeddings, retrieval, cataloguing
+agent/      dice, game state, DM tools, prompt context and brief, agent loop,
+            summaries, companions, the character guide, reading sheets
 realtime/   websocket rooms, turn collection, chat messages
+connector/  the remote MCP endpoint that lets the Claude app run a campaign's
+            DM: bearer tokens, the turn desk, session tools, DM instructions
 jobs/       background queue
+party.ts    who is in a party and who may change what (used by routes and
+            by the guide, so both follow the same rules)
 ```
+
+There are four agents, each with its own prompt and its own slice of the data:
+
+| Agent | File | Sees | Can change |
+|---|---|---|---|
+| DM | `agent/context.ts`, `agent/tools.ts` | everything in the campaign | game state through its tools |
+| Companion | `agent/companion.ts` | its sheet, the public story, this turn | nothing: it returns one action |
+| Guide | `agent/builder.ts` | rules, premise, table-visible documents, one sheet | that one sheet |
+| Sheet reader | `agent/sheets.ts` | one upload | nothing: it returns a draft |
+| DM in the Claude app | `connector/` | what the DM sees, fetched through its tools | game state through the same tools |
+
+Keep them separate. A companion or the guide given the DM's prompt would know
+the plot.
+
+The Claude-app DM is the built-in DM's tool set run by a model the server does
+not control, so the same rule applies to it as to the built-in loop: every
+permission lives in the tools, never in its instructions. Connector tools take
+the campaign from the token's record (set by `open_campaign`, rechecked for
+ownership on every call), not from arguments. A new GM tool reaches the
+connector automatically; give it a player-safe line in `publicSummary` and, if
+it changes state, add it to `STATE_TOOLS`.
+
+Prompt order matters for cost. The DM request is built most-stable-first
+(`buildPrompt`): instructions, the stored brief, recent history, then the
+volatile tail. Anything that changes per turn belongs in the tail; putting it
+earlier silently stops the prompt cache from hitting. Watch
+`cache_read_tokens` in `usage_events` when you touch it.
 
 Inside `apps/web/src`:
 
@@ -48,8 +81,9 @@ app.tsx     session, toasts, data-loading hooks
 api.ts      fetch wrapper (CSRF token, error shape)
 ui.tsx      shared components: sheets, fields, avatars
 install.tsx the "Add to Home Screen" prompt
-screens/    one file per screen
-play/       the play screen's parts: socket, story feed, composer, sheets
+screens/    one file per screen (prep.tsx is a campaign's lobby, play.tsx the story)
+play/       the table's parts: socket, story feed, composer, party and sheet
+            editor, the guide chat, campaign documents
 styles/     plain CSS; tokens in base.css
 ```
 
@@ -70,9 +104,15 @@ npm test
 ```
 
 - **Tests.** Anything touching dice, turn collection, retrieval scoping, the
-  provider layer or tool dispatch needs a test. Most tests are pure and need
-  no database; the ones that do skip themselves when `TEST_DATABASE_URL` is
-  not set.
+  provider layer, tool dispatch, party permissions or what a companion is
+  shown needs a test. Most tests are pure and need no database; the ones that
+  do skip themselves when `TEST_DATABASE_URL` is not set. To run them locally,
+  create a second database in the dev container and point at it:
+
+  ```bash
+  docker compose -f docker-compose.dev.yml exec db createdb -U tavern tavern_test
+  TEST_DATABASE_URL=postgres://tavern:tavern@localhost:55432/tavern_test npm test
+  ```
 - **Migrations** are append-only SQL files in `apps/server/migrations`. Never
   edit one that has been released; add a new one.
 - **Configuration** is by environment variable only. A new variable needs an

@@ -12,20 +12,32 @@ the party in structured state rather than in its memory.
   or text. The DM retrieves from the campaign's system only, and cites it.
 - **Multiplayer.** Friends, campaign invites, real-time play. Actions from
   several players are gathered into one turn with clear attribution.
-- **Long campaigns.** Session summaries and a campaign memory keep the prompt
-  small and the story consistent.
+- **A party, not just a player.** Each campaign has its own characters. Fill
+  the party out with companions that are played by a player (or several), by
+  the DM, or by a separate AI that knows only what the character has seen.
+- **A prep phase.** Before the first scene, build characters by hand, in a
+  chat with a guide that knows the rules, or from an uploaded sheet; add
+  campaign documents; and tell the DM what you hope the story holds, or leave
+  it all to the DM.
+- **Long campaigns.** The DM keeps a notebook, durable facts and rolling
+  summaries, and can search everything ever said at the table, so the prompt
+  stays small and the story stays consistent.
 - **An app on your phone.** The client is built phone-first and installs to
   the Home Screen on iOS and Android, where it runs full screen.
 - **Bring any model.** Anthropic API, AWS Bedrock, Azure AI Foundry or any
   OpenAI-compatible endpoint, with per-task model routing, prompt caching,
   token budgets and cost tracking.
+- **Or run the DM from the Claude app.** The server is also a remote MCP
+  connector: add it to Claude, and the host runs a campaign's DM from a chat
+  on their own Claude plan while friends play in the app as usual.
 - **Built for the open internet.** Invite-only sign-up, argon2id, TOTP,
   rate limiting, CSRF protection, strict headers, non-root read-only
   containers.
 
 ## Quick start
 
-Requirements: Docker with the Compose plugin, and an LLM API key.
+Requirements: Docker with the Compose plugin, and either an LLM API key or a
+Claude plan (to run the DM from the Claude app, see below).
 
 ```bash
 git clone https://github.com/SamOhrenberg/RPG.git tavern && cd tavern
@@ -41,16 +53,60 @@ prompted, and then:
 1. **Systems → New system**, then upload a rules document. Watch it go from
    *queued* to *ready*. (A small SRD-based system is seeded for you.)
 2. **Admin → Invites** to create invite codes for your friends.
-3. **Campaigns → New campaign**, pick the system, invite a friend.
-4. Each player creates a character and types an action. The DM answers the
-   whole table at once.
+3. **Campaigns → New campaign**, pick the system. You land in the campaign's
+   lobby: invite friends from the menu, build the party, add documents.
+4. **Begin the adventure.** The DM plans the story, writes the opening scene,
+   and from then on answers the whole table at once.
 
 No API key yet? Set `LLM_PROVIDER=mock` to try the full flow with a scripted
 DM that still rolls real dice and searches your rules.
 
 Every setting is an environment variable; `.env.example` documents all of
-them. Reverse-proxy examples for Traefik, Caddy and Nginx Proxy Manager are in
-[`docker/proxy/`](docker/proxy).
+them.
+
+### On a server, behind a reverse proxy
+
+The image is published to GHCR, so a server needs only `docker-compose.yml`
+and a `.env`, not the source:
+
+```bash
+mkdir tavern && cd tavern
+curl -fsSLO https://raw.githubusercontent.com/SamOhrenberg/RPG/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/SamOhrenberg/RPG/main/.env.example -o .env
+# edit .env, then:
+docker compose pull && docker compose up -d
+```
+
+The web container serves the app, the API, the websocket and the Claude
+connector on one address. With Nginx Proxy Manager:
+
+1. Point a DNS record (say `tavern.example.com`) at your server, with port 443
+   forwarded to the proxy.
+2. In `.env`, set `BASE_URL=https://tavern.example.com` and `TRUSTED_PROXIES`
+   to the proxy's address or Docker network range (`docker network inspect`
+   shows it), so rate limits see real client IPs.
+3. Let the proxy reach the web container, either through the published port
+   (`APP_BIND` set to an address the proxy can reach, forward to that host and
+   `APP_PORT`) or by joining the proxy's Docker network with
+   [`docker/compose.proxy.example.yml`](docker/compose.proxy.example.yml)
+   (forward to `tavern-web-1:8080`).
+4. Add a proxy host for the domain: scheme `http`, **Websockets Support** on,
+   and a Let's Encrypt certificate with **Force SSL**.
+
+Upgrade with `docker compose pull && docker compose up -d`; migrations run on
+start.
+
+### Running the DM from the Claude app
+
+Set a campaign's Dungeon Master to *Claude app* in its Manage menu, and the
+host's Claude chat runs the table on their own Claude plan, with no API key
+needed for play. Make a token under *You → Claude connector*, then in Claude
+add a custom connector with the URL `BASE_URL/mcp` (for example
+`https://tavern.example.com/mcp`) and a request header `Authorization` whose
+value is `Bearer ` followed by the token. The server must be reachable over
+public HTTPS on port 443, since Anthropic's cloud makes the connection. The
+campaign's Manage menu gives you the instructions to paste into a Claude
+Project for that campaign.
 
 ## Architecture
 
@@ -98,9 +154,59 @@ when every present player has acted or passed, when the gather window expires,
 or when the owner sends it early. The server serialises the turn with each
 action attributed to its player and character before the DM sees it.
 
-**Memory is layered.** Recent turns are kept verbatim; older ones are folded
-into rolling summaries and durable campaign facts by a cheaper model, so the
-prompt stays roughly the same size however long the campaign runs.
+**A campaign starts in a lobby.** New campaigns are in a `prep` phase. Players
+make characters three ways: a sheet editor drawn from the game system's
+template, a private chat with a character-building guide (a separate agent
+with the rules, the premise and the table's public documents, which rolls real
+dice and writes to the sheet as it goes), or an uploaded sheet (PDF, text or a
+photo) that a model reads into a draft for the player to check. The owner
+decides whether players keep the sheets or the DM does, and begins the
+campaign; the DM then plans in its notebook and writes the opening scene.
+
+**Who plays whom.** Every party member has a controller: one or more players,
+the DM, or an AI of its own. A turn waits on *seats*, one per player-run
+character, so someone running two characters acts with each. A companion with
+its own AI is asked what it does in a separate model call that contains only
+its sheet, the story as the players have seen it and this turn's actions. None
+of the DM's notes, secrets or DM-only documents are in that call, so it cannot
+act on them. Its action then reaches the DM like a player's.
+
+**The DM can live in the Claude app instead.** A campaign's owner can set its
+Dungeon Master to *Claude app*. The server then calls no model for play: a
+closed turn waits on a *desk* until the owner's Claude chat collects it through
+the connector at `BASE_URL/mcp` (`take_turn`), resolves it with the same GM
+tools the built-in DM uses, and posts it with `narrate`, which applies the same
+secret redaction and codex linking before the table sees it. `open_campaign`
+hands a new chat the full DM guide, the brief, the state and the latest play,
+so long campaigns survive the chat's context limit, and Claude writes the
+rolling summaries itself (`review_chronicle`, `save_chronicle`). The connector
+authenticates with per-user bearer tokens made under *You → Claude connector*,
+acts only on campaigns that user owns, and needs the server reachable over
+public HTTPS on port 443, since Anthropic's cloud makes the connection. Setup
+steps are in the app, on that screen and in the campaign's Manage menu.
+
+**Campaign documents.** Any player can upload setting notes, an adventure or
+house rules to a campaign. They go through the same ingestion as rulebooks and
+are scoped to that one campaign. A cheap model catalogues each one (what it
+holds, what kind of thing it is); the DM carries that one-line entry and
+searches the document when it is relevant. Documents marked for the DM only
+are never shown to the guide or to companions.
+
+**Memory is layered, and cached.** Recent turns are kept verbatim; older ones
+are folded into rolling summaries and durable facts by a cheaper model, old
+sessions into arcs, and the list of facts is tidied as it grows, so the prompt
+stays roughly the same size however long the campaign runs. The DM also keeps
+a private notebook (story plan, NPC agendas) and can search the full
+transcript when it needs a detail it can no longer see.
+
+All of that is compiled into one *brief* that is stored and left alone between
+summaries, which keeps the front of the prompt byte-identical from turn to
+turn: instructions, then the brief, then recent history are read from the
+provider's prompt cache at a tenth of the price, and only the notes written
+since, the state snapshot and the new turn are paid for in full. Per-task
+models (`LLM_MODEL_NARRATION`, `_UTILITY`, `_COMPANION`, `_PREP`) keep the
+small jobs on a small model, and `LLM_CACHE_TTL` trades cache lifetime against
+write cost for slower tables.
 
 **Security defaults.** Only `web` is reachable from the proxy; the database is
 on an internal-only network. Containers run as a non-root user with read-only
