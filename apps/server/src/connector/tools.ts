@@ -203,6 +203,53 @@ async function nextThing(t: Table): Promise<ToolOutput | null> {
   return null;
 }
 
+/** Everything Claude needs to run a campaign, as open_campaign (and create_campaign) return it. */
+export async function campaignBrief(t: Table): Promise<string> {
+  const info = infoOf(t.id, await loadCampaign(t.id));
+  const ctx: TurnContext = {
+    campaignId: t.id,
+    systemId: t.systemId,
+    turnId: null,
+    actors: await members(t.id),
+    citations: [],
+    rolls: [],
+    stateChanged: false,
+  };
+  const [{ brief, changes }, snapshot, recent, waiting] = await Promise.all([
+    briefAndChanges(t.id),
+    stateSnapshot(ctx, pgStore),
+    recentPlay(t.id),
+    waitingBlock(t),
+  ]);
+
+  let next: string;
+  if (t.phase === 'prep') {
+    next =
+      'The campaign is still in the lobby: the players are making characters. You can prepare now with ' +
+      'write_note, upsert_entity and set_scene, and help build the party with save_character. Turns start ' +
+      'once it begins (begin_adventure, or Begin the adventure in the app).';
+  } else if (!t.opened) {
+    next = `${await openingText(t)}`;
+  } else if (t.room.desk.turn) {
+    next = `Turn ${t.room.desk.turn.number} is waiting for you.`;
+  } else {
+    next = 'The table is in play.';
+  }
+
+  return [
+    `# ${info.name}`,
+    `<dm_instructions>\n${connectorGuide(info)}\n</dm_instructions>`,
+    brief ? `<brief>\n${brief}\n</brief>` : '',
+    changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
+    snapshot,
+    recent ? `<recent_play>\n${recent}\n</recent_play>` : '',
+    waiting,
+    `## What to do now\n${next}\n\nCall wait_for_work.`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 // ---------------------------------------------------------------- session tools
 
 export const SESSION_TOOLS: ConnectorTool[] = [
@@ -294,50 +341,7 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         await setTokenCampaign(user.tokenId, hit.id);
         user.campaignId = hit.id;
       }
-      const t = await openTable(call);
-      const info = infoOf(t.id, await loadCampaign(t.id));
-      const ctx: TurnContext = {
-        campaignId: t.id,
-        systemId: t.systemId,
-        turnId: null,
-        actors: await members(t.id),
-        citations: [],
-        rolls: [],
-        stateChanged: false,
-      };
-      const [{ brief, changes }, snapshot, recent, waiting] = await Promise.all([
-        briefAndChanges(t.id),
-        stateSnapshot(ctx, pgStore),
-        recentPlay(t.id),
-        waitingBlock(t),
-      ]);
-
-      let next: string;
-      if (t.phase === 'prep') {
-        next =
-          'The campaign is still in the lobby: the players are making characters. You can prepare now with ' +
-          'write_note, upsert_entity and set_scene, and help build the party with save_character. Turns start ' +
-          'once it begins (begin_adventure, or Begin the adventure in the app).';
-      } else if (!t.opened) {
-        next = `${await openingText(t)}`;
-      } else if (t.room.desk.turn) {
-        next = `Turn ${t.room.desk.turn.number} is waiting for you.`;
-      } else {
-        next = 'The table is in play.';
-      }
-
-      return [
-        `# ${info.name}`,
-        `<dm_instructions>\n${connectorGuide(info)}\n</dm_instructions>`,
-        brief ? `<brief>\n${brief}\n</brief>` : '',
-        changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
-        snapshot,
-        recent ? `<recent_play>\n${recent}\n</recent_play>` : '',
-        waiting,
-        `## What to do now\n${next}\n\nCall wait_for_work.`,
-      ]
-        .filter(Boolean)
-        .join('\n\n');
+      return campaignBrief(await openTable(call));
     },
   }),
 
