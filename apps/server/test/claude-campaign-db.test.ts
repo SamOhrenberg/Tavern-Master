@@ -3,9 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
+import { createToken } from '../src/connector/tokens.js';
 import { migrate } from '../src/db/migrate.js';
 import { closeDb, q, q1 } from '../src/db/pool.js';
-import { signedIn, type SignedIn } from './http.js';
+import { getRoom } from '../src/realtime/room.js';
+import { mcpClient, signedIn, type SignedIn } from './http.js';
 
 // The app around a campaign run by Claude: the choice at creation, presence, the setup routes.
 describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (database)', () => {
@@ -79,6 +81,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (dat
     const back = await as.get<{ campaign: CampaignDetail }>(`/api/campaigns/${plain.body.id}`);
     expect(back.body.campaign.dm).toBe('server');
     expect(back.body.campaign.dmStatus.state).toBe('listening');
+  });
+
+  it('shows whether Claude is at the table', async () => {
+    const res = await create({ dm: 'claude' });
+    const id = res.body.id!;
+    const status = async () =>
+      (await as.get<{ campaign: CampaignDetail }>(`/api/campaigns/${id}`)).body.campaign.dmStatus;
+    expect(await status()).toMatchObject({ state: 'never', lastSeenAt: null });
+
+    const { token } = (await createToken(host, 'presence'))!;
+    const claude = mcpClient(app, token);
+    expect((await claude.call('open_campaign', { campaign: id })).isError).toBe(false);
+    const here = await status();
+    expect(here.state).toBe('listening');
+    expect(here.lastSeenAt).toBeTruthy();
+    expect((await as.get<ServerMeta>('/api/meta')).body.claudeConnected).toBe(true);
+
+    // Gone quiet past the listening window.
+    getRoom(id)!.ageLastCallForTests(5 * 60_000);
+    expect((await status()).state).toBe('away');
+
+    // Nothing is waiting, so there is nothing to give back.
+    expect((await as.post(`/api/campaigns/${id}/desk/release`)).status).toBe(409);
   });
 
   it('runs every campaign with Claude on a server with no built-in AI', async () => {
