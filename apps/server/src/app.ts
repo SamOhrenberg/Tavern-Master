@@ -8,10 +8,12 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { config } from './config.js';
 import { connectorRoutes } from './connector/mcp.js';
+import { onWorkChanged } from './connector/work.js';
 import { q } from './db/pool.js';
 import { HttpError } from './errors.js';
 import { registerSecurity } from './http/security.js';
 import { loggerOptions } from './log.js';
+import { getRoom } from './realtime/room.js';
 import { realtimeRoutes } from './realtime/ws.js';
 import { accountRoutes } from './routes/account.js';
 import { adminRoutes } from './routes/admin.js';
@@ -42,6 +44,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     disableRequestLogging: cfg.LOG_LEVEL !== 'debug' && cfg.LOG_LEVEL !== 'trace',
     routerOptions: { maxParamLength: 128 },
   });
+
+  // Work queued in this process reaches the room at once; other processes NOTIFY (see main.ts).
+  onWorkChanged((campaignId) => void getRoom(campaignId)?.workChanged());
 
   const headers = securityHeaders(cfg);
   app.addHook('onRequest', async (_req, reply) => {

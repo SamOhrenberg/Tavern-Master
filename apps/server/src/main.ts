@@ -4,7 +4,8 @@ import { config } from './config.js';
 import { migrate } from './db/migrate.js';
 import { closeDb, waitForDb } from './db/pool.js';
 import { log } from './log.js';
-import { failStaleTurns, sweepRooms } from './realtime/room.js';
+import { listenForWork } from './connector/work.js';
+import { failStaleTurns, getRoom, sweepRooms } from './realtime/room.js';
 import { seedIfEmpty } from './seed.js';
 
 async function main(): Promise<void> {
@@ -17,6 +18,8 @@ async function main(): Promise<void> {
 
   const app = await buildApp();
   await app.listen({ host: cfg.HOST, port: cfg.PORT });
+  // The worker queues work for Claude too (documents, the chronicle); wake the room when it does.
+  await listenForWork((campaignId) => void getRoom(campaignId)?.workChanged());
   // Rooms opened only by the connector have no socket to close them.
   setInterval(sweepRooms, 10 * 60_000).unref();
 

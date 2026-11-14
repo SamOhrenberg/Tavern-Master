@@ -2,123 +2,50 @@ import { z } from 'zod';
 import { briefAndChanges, buildOpening, renderTurn, stateSnapshot } from '../agent/context.js';
 import { systemRng } from '../agent/dice.js';
 import { publicSummary } from '../agent/loop.js';
-import { pgStore, type Actor, type TurnContext } from '../agent/store.js';
-import { chronicleBacklog, saveChronicle } from '../agent/summarize.js';
-import { dispatchTool, EDIT_SHEET, gmTools, TOOLS, ToolError } from '../agent/tools.js';
+import { pgStore, type TurnContext } from '../agent/store.js';
+import { dispatchTool, EDIT_SHEET, gmTools, TOOLS } from '../agent/tools.js';
+import { config } from '../config.js';
 import { q, q1 } from '../db/pool.js';
 import { log } from '../log.js';
-import { infoOf, loadCampaign, openRoom, STATE_TOOLS, type Room } from '../realtime/room.js';
+import { getRoom, infoOf, loadCampaign, STATE_TOOLS, type Room } from '../realtime/room.js';
 import type { DeskTurn } from './desk.js';
+import { handlerFor, type WorkView } from './handlers.js';
 import { connectorGuide } from './instructions.js';
 import { dmModeOf } from './mode.js';
-import { setTokenCampaign, type ConnectorUser } from './tokens.js';
+import { setTokenCampaign } from './tokens.js';
+import {
+  campaignOf,
+  gateAllows,
+  jsonSchema,
+  members,
+  openTable,
+  own,
+  requirePlay,
+  ToolError,
+  workIdSchema,
+  type ConnectorCall,
+  type ConnectorTool,
+  type Gate,
+  type Table,
+  type ToolOutput,
+} from './toolkit.js';
+import {
+  claimNext,
+  currentWork,
+  dropWork,
+  failWork,
+  getWork,
+  lastFinishedAt,
+  openWork,
+  releaseStale,
+  type WorkItem,
+} from './work.js';
 
-/** One tool call from the connector, with who is making it. */
-export interface ConnectorCall {
-  user: ConnectorUser;
-  signal: AbortSignal;
-}
+export type { ConnectorCall, ConnectorTool } from './toolkit.js';
 
-export interface ToolAnnotations {
-  readOnlyHint?: boolean;
-  destructiveHint?: boolean;
-  idempotentHint?: boolean;
-  openWorldHint?: boolean;
-}
-
-export interface ConnectorTool {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  annotations: ToolAnnotations;
-  call(input: unknown, call: ConnectorCall): Promise<{ text: string; isError: boolean }>;
-}
-
-const jsonSchema = (schema: z.ZodType) => {
-  const { $schema: _drop, ...rest } = z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>;
-  return rest;
-};
-
-/** The longest a single take_turn waits before reporting back, inside the client's patience. */
-const MAX_WAIT_SECONDS = 50;
 const RECENT_MESSAGES = 12;
 
-// ---------------------------------------------------------------- campaign
-
-interface Table {
-  id: string;
-  name: string;
-  phase: 'prep' | 'active';
-  status: string;
-  opened: boolean;
-  systemId: string;
-  gmSheets: boolean;
-  room: Room;
-}
-
-/**
- * The campaign this client has open, checked again on every call: still
- * owned by the token's user, not archived, and set to be run from the app.
- */
-async function openTable(user: ConnectorUser): Promise<Table> {
-  if (!user.campaignId) throw new ToolError('No campaign is open. Call list_campaigns, then open_campaign.');
-  const row = await q1<{
-    name: string;
-    phase: 'prep' | 'active';
-    status: string;
-    opened: boolean;
-    system_id: string;
-    settings: { dm?: unknown; sheets?: string };
-  }>(
-    `SELECT name, phase, status, opened_at IS NOT NULL AS opened, system_id, settings
-       FROM campaigns WHERE id = $1`,
-    [user.campaignId],
-  );
-  if (!row || row.status !== 'active') throw new ToolError('That campaign is archived. Open another one.');
-  if (dmModeOf(row.settings) !== 'claude') {
-    throw new ToolError(
-      `"${row.name}" is run by the built-in DM. To run it from here, the owner opens the campaign in the app, ` +
-        'then Manage → Dungeon Master → Claude app.',
-    );
-  }
-  const room = await openRoom(user.campaignId);
-  room.touchDm();
-  return {
-    id: user.campaignId,
-    name: row.name,
-    phase: row.phase,
-    status: row.status,
-    opened: row.opened,
-    systemId: row.system_id,
-    gmSheets: row.settings.sheets === 'gm',
-    room,
-  };
-}
-
-function requirePlay(t: Table): void {
-  if (t.phase !== 'active') {
-    throw new ToolError(
-      'The campaign is still in the lobby. You can prepare (notebook, codex entries, scene), but turns start ' +
-        'once the owner taps Begin the adventure in the app.',
-    );
-  }
-}
-
-/** Everyone at the table, so the state snapshot does not mark absent players as away. */
-async function members(campaignId: string): Promise<Actor[]> {
-  const [people, chars] = await Promise.all([
-    q<{ id: string; display_name: string }>(
-      `SELECT u.id, u.display_name FROM campaign_members m JOIN users u ON u.id = m.user_id WHERE m.campaign_id = $1`,
-      [campaignId],
-    ),
-    pgStore.characters(campaignId),
-  ]);
-  return people.map((p) => ({
-    userId: p.id,
-    displayName: p.display_name,
-    characterName: chars.find((c) => c.playerIds.includes(p.id))?.name ?? null,
-  }));
-}
+// ---------------------------------------------------------------- what Claude is shown
 
 async function recentPlay(campaignId: string): Promise<string> {
   const rows = await q<{
@@ -143,32 +70,55 @@ async function recentPlay(campaignId: string): Promise<string> {
     .join('\n\n');
 }
 
-async function chronicleNote(campaignId: string): Promise<string> {
-  const due = await chronicleBacklog(campaignId).catch(() => null);
-  return due
-    ? `\n\nThe chronicle is due (${due.messages} messages unsummarised): call review_chronicle at the next lull.`
-    : '';
+/** What the outside DM already did for a turn, so a turn handed out again is not resolved twice. */
+async function alreadyApplied(turnId: string): Promise<string[]> {
+  const rows = await q<{ summary: string }>(
+    'SELECT summary FROM state_events WHERE turn_id = $1 ORDER BY id',
+    [turnId],
+  );
+  return rows.map((r) => r.summary);
 }
 
-function renderClaimed(t: DeskTurn, snapshot: string, note = ''): string {
+/** Extra lines a turn carries, added by later features (own-AI companions that have not acted). */
+type TurnNote = (t: Table, turn: DeskTurn) => Promise<string>;
+const turnNotes: TurnNote[] = [];
+export function addTurnNote(note: TurnNote): void {
+  turnNotes.push(note);
+}
+
+async function renderClaimed(t: Table, turn: DeskTurn, note = ''): Promise<string> {
+  const [snapshot, applied, extra] = await Promise.all([
+    stateSnapshot(turn.ctx, pgStore),
+    alreadyApplied(turn.id),
+    Promise.all(turnNotes.map((n) => n(t, turn))),
+  ]);
   return [
-    `Turn ${t.number} is yours to resolve.${note ? ` ${note}` : ''}`,
+    `Turn ${turn.number} is yours to resolve.${note ? ` ${note}` : ''}`,
     snapshot,
-    renderTurn(t.input),
-    'Resolve every action with the tools, then post the scene with narrate. Keep your chat reply to the host to a line.',
-  ].join('\n\n');
+    renderTurn(turn.input),
+    applied.length
+      ? `Already applied this turn (do not repeat):\n${applied.map((s) => `- ${s}`).join('\n')}`
+      : '',
+    ...extra,
+    'Resolve every action with the tools, then post the scene with narrate.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
-/** Where the turn being gathered stands, in words, for when no turn is ready yet. */
+/** The opening-scene instructions, for a campaign that has begun but has no opening yet. */
+async function openingText(t: Table): Promise<string> {
+  const info = infoOf(t.id, await loadCampaign(t.id));
+  const opening = await buildOpening(info, pgStore);
+  const block = opening.messages[0]?.content.find((b) => b.type === 'text');
+  return `${block && 'text' in block ? block.text : ''}\n\nPost it with narrate.`;
+}
+
+/** Where the turn being gathered stands, in words, for when there is nothing to hand out. */
 function describeWait(room: Room): string {
   const state = room.turnState();
   const name = (id: string) => state.seats.find((s) => s.id === id)?.name ?? 'someone';
-  if (state.status === 'idle') {
-    return (
-      'No one has acted yet. Call take_turn again to keep waiting, or pass the host’s action if they want to ' +
-      'start. Nobody in the app? The players need the campaign open to act.'
-    );
-  }
+  if (state.status === 'idle') return 'No one has acted yet.';
   if (state.status === 'collecting') {
     const waiting = state.expected.filter((id) => !state.acted.includes(id) && !state.passed.includes(id));
     const secs = state.deadline ? Math.max(0, Math.round((state.deadline - Date.now()) / 1000)) : null;
@@ -176,61 +126,92 @@ function describeWait(room: Room): string {
       `Turn ${state.number ?? ''} is gathering.`,
       state.acted.length ? `Acted: ${state.acted.map(name).join(', ')}.` : '',
       waiting.length ? `Waiting on: ${waiting.map(name).join(', ')}.` : '',
-      secs !== null ? `It closes by itself in about ${secs}s.` : '',
-      'Call take_turn again to keep waiting, or with close_now to resolve what is in.',
+      secs !== null ? `It closes by itself in about ${secs}s, or now with close_turn.` : '',
     ]
       .filter(Boolean)
       .join(' ');
   }
-  return 'The table is between turns. Call take_turn again in a moment.';
+  return 'The table is between turns.';
+}
+
+/** Minutes since the table last did anything: a player spoke, or Claude finished a request. */
+async function quietMinutes(campaignId: string): Promise<number> {
+  const row = await q1<{ at: Date | null }>(
+    `SELECT max(created_at) AS at FROM messages WHERE campaign_id = $1 AND kind IN ('action', 'ooc')`,
+    [campaignId],
+  );
+  const finished = await lastFinishedAt(campaignId);
+  const last = Math.max(row?.at?.getTime() ?? 0, finished?.getTime() ?? 0);
+  return last ? Math.floor((Date.now() - last) / 60_000) : Number.POSITIVE_INFINITY;
+}
+
+/** The list of what is open for Claude, for open_campaign. */
+async function waitingBlock(t: Table): Promise<string> {
+  const lines: string[] = [];
+  if (t.phase === 'active' && !t.opened) lines.push('- The opening scene.');
+  const turn = t.room.desk.turn;
+  if (turn)
+    lines.push(`- Turn ${turn.number}${turn.claimed ? ', claimed by you and not yet narrated' : ''}.`);
+  for (const item of await openWork(t.id)) {
+    lines.push(
+      `- ${handlerFor(item.kind).label(item)} (${item.kind}, id ${item.id})${item.status === 'claimed' ? ', claimed by you' : ''}.`,
+    );
+  }
+  return lines.length ? `<waiting>\n${lines.join('\n')}\n</waiting>` : '';
+}
+
+/** Show Claude a request, preparing it first when it was just claimed. Null when it turned out moot. */
+async function viewWork(t: Table, item: WorkItem, fresh: boolean): Promise<WorkView | null> {
+  const handler = handlerFor(item.kind);
+  let current: WorkItem | null = item;
+  if (fresh && handler.prepare) {
+    try {
+      current = await handler.prepare(item, t);
+    } catch (err) {
+      log().warn({ err, workId: item.id, kind: item.kind }, 'could not prepare DM work');
+      await failWork(item.id, 'The server could not prepare this request.');
+      return null;
+    }
+    if (!current) {
+      await dropWork(item.id);
+      return null;
+    }
+  }
+  return handler.render(current, t);
+}
+
+/** Steps 5 to 7 of wait_for_work: the opening, a gathered turn, or the next request. */
+async function nextThing(t: Table): Promise<ToolOutput | null> {
+  if (t.phase === 'active' && !t.opened) {
+    const still = await q1<{ opened: boolean }>(
+      'SELECT opened_at IS NOT NULL AS opened FROM campaigns WHERE id = $1',
+      [t.id],
+    );
+    if (!still?.opened) return { text: await openingText(t), isError: false };
+  }
+  if (t.phase === 'active' && t.room.desk.turn) {
+    const turn = t.room.claimForOutsideDm();
+    if (turn) return { text: await renderClaimed(t, turn), isError: false };
+  }
+  // A moot request is dropped and the next one tried, a few times at most.
+  for (let i = 0; i < 5; i++) {
+    const next = await claimNext(t.id);
+    if (!next) return null;
+    const view = await viewWork(t, next.item, next.fresh);
+    if (view) return { text: view.text, images: view.images, isError: false };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- session tools
 
-interface Spec<S extends z.ZodType> {
-  name: string;
-  description: string;
-  schema: S;
-  annotations: ToolAnnotations;
-  run(input: z.infer<S>, call: ConnectorCall): Promise<string>;
-}
-
-function own<S extends z.ZodType>(spec: Spec<S>): ConnectorTool {
-  return {
-    name: spec.name,
-    description: spec.description,
-    inputSchema: jsonSchema(spec.schema),
-    annotations: spec.annotations,
-    async call(input, call) {
-      const parsed = spec.schema.safeParse(input ?? {});
-      if (!parsed.success) {
-        const issues = parsed.error.issues
-          .map((i) => `${i.path.join('.') || 'input'}: ${i.message}`)
-          .join('; ');
-        return { text: `Invalid arguments: ${issues}`, isError: true };
-      }
-      try {
-        return { text: await spec.run(parsed.data, call), isError: false };
-      } catch (err) {
-        if (err instanceof ToolError) return { text: err.message, isError: true };
-        throw err;
-      }
-    },
-  };
-}
-
-const memory = z.object({
-  kind: z.enum(['fact', 'thread', 'promise']).default('fact'),
-  content: z.string().trim().min(3).max(400),
-  importance: z.number().int().min(1).max(5).default(3),
-});
-
 export const SESSION_TOOLS: ConnectorTool[] = [
   own({
     name: 'list_campaigns',
-    description: 'List the campaigns you own, with their phase and who runs their DM.',
+    description: 'List the campaigns you own, with their phase, who runs them and how much is waiting.',
     schema: z.object({}),
     annotations: { readOnlyHint: true, openWorldHint: false },
+    during: ['any'],
     async run(_input, { user }) {
       const rows = await q<{
         name: string;
@@ -238,8 +219,11 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         system_name: string;
         settings: { dm?: unknown };
         opened: boolean;
+        waiting: number;
       }>(
-        `SELECT c.name, c.phase, s.name AS system_name, c.settings, c.opened_at IS NOT NULL AS opened
+        `SELECT c.name, c.phase, s.name AS system_name, c.settings, c.opened_at IS NOT NULL AS opened,
+                (SELECT count(*)::int FROM dm_work w
+                  WHERE w.campaign_id = c.id AND w.status IN ('waiting', 'claimed')) AS waiting
            FROM campaigns c
            JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1 AND m.role = 'owner'
            JOIN game_systems s ON s.id = c.system_id
@@ -247,15 +231,15 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         [user.userId],
       );
       if (!rows.length)
-        return 'You do not own any active campaigns. Create one in the Tavern Master app first.';
+        return 'You do not own any active campaigns. Create one with list_systems and create_campaign, or in the Tavern Master app.';
       return rows
         .map((r) => {
           const where =
             r.phase === 'prep' ? 'in the lobby' : r.opened ? 'in play' : 'ready for its opening scene';
           const dm =
             dmModeOf(r.settings) === 'claude'
-              ? 'DM: this chat'
-              : 'DM: built-in (switch it in the app to run it here)';
+              ? `DM: you. waiting: ${r.waiting}`
+              : 'DM: built-in AI (switch it in the app to run it here)';
           return `- ${r.name} (${r.system_name}), ${where}. ${dm}`;
         })
         .join('\n');
@@ -265,32 +249,52 @@ export const SESSION_TOOLS: ConnectorTool[] = [
   own({
     name: 'open_campaign',
     description:
-      'Open a campaign to run it. Returns your full DM instructions for it, your brief (notebook, durable facts, ' +
-      'story so far), the party and world state, the latest play, and what to do next. Call this first in every chat.',
+      'Open a campaign to run it. Returns your full instructions for it, your brief (notebook, durable facts, ' +
+      'story so far), the party and world state, the latest play, what is waiting for you, and what to do next. ' +
+      'Call this first in every conversation.',
     schema: z.object({
-      campaign: z.string().trim().min(1).max(80).describe('The campaign name (or its id)'),
+      campaign: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .optional()
+        .describe('The campaign name (or its id). Optional when this connection is for one campaign.'),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    async run(input, { user }) {
-      const owned = await q<{ id: string; name: string }>(
-        `SELECT c.id, c.name FROM campaigns c
-           JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1 AND m.role = 'owner'
-          WHERE c.status = 'active' ORDER BY c.created_at`,
-        [user.userId],
-      );
-      const want = input.campaign.toLowerCase();
-      const hit =
-        owned.find((c) => c.id === input.campaign) ??
-        owned.find((c) => c.name.toLowerCase() === want) ??
-        owned.find((c) => c.name.toLowerCase().startsWith(want));
-      if (!hit) {
-        throw new ToolError(
-          `You own no active campaign called "${input.campaign}". Yours: ${owned.map((c) => c.name).join(', ') || 'none'}.`,
+    during: ['any'],
+    async run(input, call) {
+      const { user } = call;
+      if (call.pinned) {
+        const pinned = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [
+          call.campaignId,
+        ]);
+        const want = input.campaign?.toLowerCase();
+        if (want && want !== call.campaignId && !pinned?.name.toLowerCase().startsWith(want)) {
+          throw new ToolError(`This connection is for "${pinned?.name ?? 'one campaign'}" only.`);
+        }
+      } else {
+        if (!input.campaign) throw new ToolError('Say which campaign: call list_campaigns to see yours.');
+        const owned = await q<{ id: string; name: string }>(
+          `SELECT c.id, c.name FROM campaigns c
+             JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1 AND m.role = 'owner'
+            WHERE c.status = 'active' ORDER BY c.created_at`,
+          [user.userId],
         );
+        const want = input.campaign.toLowerCase();
+        const hit =
+          owned.find((c) => c.id === input.campaign) ??
+          owned.find((c) => c.name.toLowerCase() === want) ??
+          owned.find((c) => c.name.toLowerCase().startsWith(want));
+        if (!hit) {
+          throw new ToolError(
+            `You own no active campaign called "${input.campaign}". Yours: ${owned.map((c) => c.name).join(', ') || 'none'}.`,
+          );
+        }
+        await setTokenCampaign(user.tokenId, hit.id);
+        user.campaignId = hit.id;
       }
-      await setTokenCampaign(user.tokenId, hit.id);
-      user.campaignId = hit.id;
-      const t = await openTable(user);
+      const t = await openTable(call);
       const info = infoOf(t.id, await loadCampaign(t.id));
       const ctx: TurnContext = {
         campaignId: t.id,
@@ -301,26 +305,25 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         rolls: [],
         stateChanged: false,
       };
-      const [{ brief, changes }, snapshot, recent] = await Promise.all([
+      const [{ brief, changes }, snapshot, recent, waiting] = await Promise.all([
         briefAndChanges(t.id),
         stateSnapshot(ctx, pgStore),
         recentPlay(t.id),
+        waitingBlock(t),
       ]);
 
       let next: string;
       if (t.phase === 'prep') {
         next =
           'The campaign is still in the lobby: the players are making characters. You can prepare now with ' +
-          'write_note, upsert_entity and set_scene. Turns start once the owner taps Begin the adventure in the app; ' +
-          'after that, open the campaign again for the opening scene.';
+          'write_note, upsert_entity and set_scene, and help build the party with save_character. Turns start ' +
+          'once it begins (begin_adventure, or Begin the adventure in the app).';
       } else if (!t.opened) {
-        const opening = await buildOpening(info, pgStore);
-        const text = opening.messages[0]?.content.find((b) => b.type === 'text');
-        next = `${text && 'text' in text ? text.text : ''}\n\nWhen the opening is ready, post it with narrate. Then call take_turn.`;
+        next = `${await openingText(t)}`;
       } else if (t.room.desk.turn) {
-        next = `Turn ${t.room.desk.turn.number} is already waiting for you. Call take_turn to pick it up.`;
+        next = `Turn ${t.room.desk.turn.number} is waiting for you.`;
       } else {
-        next = 'Call take_turn to collect the next turn.';
+        next = 'The table is in play.';
       }
 
       return [
@@ -330,7 +333,8 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
         snapshot,
         recent ? `<recent_play>\n${recent}\n</recent_play>` : '',
-        `## What to do now\n${next}${await chronicleNote(t.id)}`,
+        waiting,
+        `## What to do now\n${next}\n\nCall wait_for_work.`,
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -338,68 +342,110 @@ export const SESSION_TOOLS: ConnectorTool[] = [
   }),
 
   own({
-    name: 'take_turn',
+    name: 'wait_for_work',
     description:
-      'Collect the next gathered turn from the table. Waits up to wait_seconds for the players to act, then ' +
-      'returns either the turn to resolve or who the table is still waiting on. Pass `action` to add the host’s ' +
-      'own character action first, and close_now to stop waiting for the others.',
+      'Get the next thing that needs you at this table: a gathered turn, the opening scene, a player waiting on ' +
+      'the character guide, an uploaded sheet to read, a document to catalogue, or the chronicle. Waits up to ' +
+      'wait_seconds when nothing is ready. Handle what it returns, then call it again.',
     schema: z.object({
-      action: z
-        .string()
-        .trim()
-        .min(1)
-        .max(2000)
+      wait_seconds: z
+        .number()
+        .int()
+        .min(0)
+        .max(600)
         .optional()
-        .describe('What the host’s character does, if they play one'),
+        .describe('How long to wait for something to arrive. Defaults to the longest the server allows.'),
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    during: ['any'],
+    async run(input, call) {
+      const t = await openTable(call);
+      const room = t.room;
+      await releaseStale(t.id);
+
+      // Something already in hand comes back first, so nothing is left half done.
+      const held = room.desk.turn;
+      if (held?.claimed) {
+        return renderClaimed(t, held, 'You claimed this turn earlier and have not narrated it.');
+      }
+      const work = await currentWork(t.id);
+      if (work) {
+        const view = await viewWork(t, work, false);
+        if (view) return view;
+      }
+
+      const ready = await nextThing(t);
+      if (ready) return ready;
+
+      const max = config().CONNECTOR_MAX_WAIT_SECONDS;
+      const wait = Math.min(input.wait_seconds ?? max, max);
+      if (wait > 0) {
+        room.touchDm('start');
+        try {
+          await room.desk.waitForTurn(wait * 1000, call.signal);
+        } finally {
+          room.touchDm('end');
+        }
+        const fresh = await openTable(call);
+        const after = await nextThing(fresh);
+        if (after) return after;
+      }
+
+      const players = room.present().length;
+      const quiet = await quietMinutes(t.id);
+      const quietText = Number.isFinite(quiet) ? `Quiet for ${quiet} min.` : 'Nothing has happened yet.';
+      const empty =
+        players === 0 && quiet >= config().CONNECTOR_IDLE_MINUTES
+          ? ' The table is empty. Stop calling wait_for_work and tell the host in one line.'
+          : '';
+      const lobby = t.phase === 'prep' ? 'The campaign is in the lobby.' : describeWait(room);
+      return `Nothing for you yet. ${lobby} Players connected: ${players}. ${quietText}${empty}`;
+    },
+  }),
+
+  own({
+    name: 'host_action',
+    description:
+      'Send what the host’s own character does to the table, as if they had typed it in the app. Use this when ' +
+      'the host, talking to you, describes their character acting.',
+    schema: z.object({
+      action: z.string().trim().min(1).max(2000).describe('What the host’s character does'),
       character: z
         .string()
         .trim()
         .max(80)
         .optional()
         .describe('Which of the host’s characters acts, if they run several'),
-      close_now: z.boolean().default(false).describe('Resolve the turn with the actions already in'),
-      wait_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).default(30),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-    async run(input, { user, signal }) {
-      const t = await openTable(user);
+    during: ['free'],
+    async run(input, call) {
+      const t = await openTable(call);
       requirePlay(t);
-      const room = t.room;
-      const snapshotFor = async (turn: DeskTurn) => stateSnapshot(turn.ctx, pgStore);
+      const sent = await t.room.hostAction(
+        { id: call.user.userId, displayName: call.user.displayName },
+        input.action,
+        input.character,
+      );
+      if ('error' in sent) throw new ToolError(sent.error);
+      return sent.where === 'queued'
+        ? `The host’s action (as ${sent.as}) is held for the turn after this one.`
+        : `The host’s action is in, as ${sent.as}. ${describeWait(t.room)}`;
+    },
+  }),
 
-      const held = room.desk.turn;
-      if (held?.claimed) {
-        const note = input.action
-          ? 'You have not narrated it yet, so the host’s new action was not sent: narrate this turn, then send it.'
-          : 'You claimed it earlier and have not narrated it yet.';
-        return renderClaimed(held, await snapshotFor(held), note);
-      }
-
-      const notes: string[] = [];
-      if (input.action) {
-        const sent = await room.hostAction(
-          { id: user.userId, displayName: user.displayName },
-          input.action,
-          input.character,
-        );
-        if ('error' in sent) throw new ToolError(sent.error);
-        notes.push(
-          sent.where === 'queued'
-            ? `The host’s action (as ${sent.as}) is held for the turn after this one.`
-            : `The host’s action is in, as ${sent.as}.`,
-        );
-      }
-      if (input.close_now) room.force();
-
-      room.touchDm('start');
-      const turn = await room.desk
-        .waitForTurn(input.wait_seconds * 1000, signal)
-        .finally(() => room.touchDm('end'));
-      if (turn) {
-        room.claimForOutsideDm();
-        return renderClaimed(turn, await snapshotFor(turn), notes.join(' '));
-      }
-      return [...notes, describeWait(room)].join(' ');
+  own({
+    name: 'close_turn',
+    description: 'Stop waiting for the rest of the table and resolve the turn with the actions already in.',
+    schema: z.object({}),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    during: ['free'],
+    async run(_input, call) {
+      const t = await openTable(call);
+      requirePlay(t);
+      if (t.room.turnState().status !== 'collecting') return `Nothing to close. ${describeWait(t.room)}`;
+      t.room.force();
+      return 'The turn is closed. Call wait_for_work to take it.';
     },
   }),
 
@@ -407,15 +453,16 @@ export const SESSION_TOOLS: ConnectorTool[] = [
     name: 'narrate',
     description:
       'Post narration to the table. This is the only thing the players see. It answers the turn you took with ' +
-      'take_turn, or, before the campaign has opened, it is the opening scene. Write it in full: the vivid ' +
+      'wait_for_work, or, before the campaign has opened, it is the opening scene. Write it in full: the vivid ' +
       'narration, with [R#] citations and [[codex]] links as your instructions describe. Unrevealed secrets in ' +
       'it are blacked out before anyone sees them.',
     schema: z.object({
       text: z.string().trim().min(1).max(8000).describe('The narration, as the players will read it'),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    async run(input, { user }) {
-      const t = await openTable(user);
+    during: ['free'],
+    async run(input, call) {
+      const t = await openTable(call);
       requirePlay(t);
       const done = await t.room.narrateFromOutside(input.text);
       const redacted =
@@ -424,57 +471,79 @@ export const SESSION_TOOLS: ConnectorTool[] = [
           : '';
       switch (done.kind) {
         case 'turn':
-          return `Posted turn ${done.number} to the table.${redacted}${await chronicleNote(t.id)} Call take_turn for the next one.`;
+          await afterNarration(t.id);
+          return `Posted turn ${done.number} to the table.${redacted} Call wait_for_work.`;
         case 'opening':
-          return `Posted the opening scene.${redacted} Call take_turn to collect the players’ first turn.`;
+          return `Posted the opening scene.${redacted} Call wait_for_work.`;
         case 'nothing':
           throw new ToolError(
             done.turnWaiting
-              ? 'A turn is waiting but you have not taken it. Call take_turn first, then narrate it.'
-              : 'There is no turn to narrate. Call take_turn to collect the players’ next actions.',
+              ? 'A turn is waiting but you have not taken it. Call wait_for_work first, then narrate it.'
+              : 'There is no turn to narrate. Call wait_for_work for the next one.',
           );
       }
     },
   }),
 
   own({
-    name: 'review_chronicle',
+    name: 'skip_work',
     description:
-      'Get the stretch of play that is due to be summarised, with instructions for the summary. Then store it with ' +
-      'save_chronicle. Do this when a tool result says the chronicle is due.',
-    schema: z.object({}),
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    async run(_input, { user }) {
-      const t = await openTable(user);
-      const due = await chronicleBacklog(t.id, true);
-      if (!due) return 'Nothing is due: the chronicle is up to date.';
-      return `${due.text}\n\nWrite the summary and up to five durable memories, then call save_chronicle with through_message = ${due.throughId}.`;
-    },
-  }),
-
-  own({
-    name: 'save_chronicle',
-    description:
-      'Store the summary you wrote from review_chronicle. It replaces that stretch of play in your brief.',
+      'Drop a request you cannot or should not do, with a reason the player who asked will read. Use it for ' +
+      'an unreadable sheet, a request that makes no sense, or one you were handed by mistake.',
     schema: z.object({
-      through_message: z.number().int().positive().describe('The number review_chronicle gave you'),
-      summary: z.string().trim().min(80).max(3000),
-      memories: z.array(memory).max(5).default([]),
+      work_id: workIdSchema,
+      reason: z.string().trim().min(3).max(200).describe('Why, in a sentence the player can read'),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-    async run(input, { user }) {
-      const t = await openTable(user);
-      const n = await saveChronicle(t.id, input.through_message, input.summary, input.memories);
-      return n
-        ? `Stored. ${n} messages are now covered by the chronicle.`
-        : 'That stretch was already summarised.';
+    during: ['any'],
+    async run(input, call) {
+      const t = await openTable(call);
+      const item = await getWork(input.work_id);
+      if (!item || item.campaignId !== t.id) throw new ToolError('There is no such request at this table.');
+      if (item.status !== 'waiting' && item.status !== 'claimed')
+        throw new ToolError('That request is already settled.');
+      await failWork(item.id, input.reason);
+      await handlerFor(item.kind)
+        .skipped?.(item, input.reason, t)
+        .catch((err) => log().warn({ err, workId: item.id }, 'could not report a skipped request'));
+      return 'Dropped. Call wait_for_work.';
     },
   }),
 ];
 
+/** Hooks run after a turn is narrated (the chronicle queues itself here). */
+const narrationHooks: ((campaignId: string) => Promise<void>)[] = [];
+export function afterNarrationHook(fn: (campaignId: string) => Promise<void>): void {
+  narrationHooks.push(fn);
+}
+async function afterNarration(campaignId: string): Promise<void> {
+  for (const hook of narrationHooks)
+    await hook(campaignId).catch((err) => log().warn({ err, campaignId }, 'after-narration hook failed'));
+}
+
 // ---------------------------------------------------------------- the GM's own tools
 
 const READ_ONLY = new Set(['get_state', 'lookup_rules', 'recall', 'search_documents', 'search_setting']);
+/** GM tools that also help a guide request: rolling and reading the rules. */
+const GUIDE_TOO = new Set(['roll_dice', 'lookup_rules', 'search_documents']);
+
+/** Replaces a GM tool while a request of some kind is held, e.g. a table-only document search for the guide. */
+type Variant = (
+  input: unknown,
+  t: Table,
+  held: WorkItem,
+) => Promise<{ content: string; isError: boolean }> | null;
+const variants = new Map<string, Variant>();
+export function gmVariant(name: string, variant: Variant): void {
+  variants.set(name, variant);
+}
+
+/** The context a GM tool call runs in for a request Claude holds, e.g. the guide's dice. */
+type RequestContext = (t: Table, held: WorkItem) => TurnContext | null;
+let requestContext: RequestContext = () => null;
+export function setRequestContext(fn: RequestContext): void {
+  requestContext = fn;
+}
 
 /**
  * The built-in DM's tools, unchanged: same validation, same rules about whose
@@ -492,10 +561,11 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
       destructiveHint: false,
       openWorldHint: false,
     },
-    async call(input, { user }) {
+    during: GUIDE_TOO.has(spec.name) ? ['free', 'guide'] : ['free'],
+    async call(input, call) {
       let t: Table;
       try {
-        t = await openTable(user);
+        t = await openTable(call);
       } catch (err) {
         if (err instanceof ToolError) return { text: err.message, isError: true };
         throw err;
@@ -506,8 +576,19 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
           isError: true,
         };
       }
+      const held = await currentWork(t.id);
+      if (held) {
+        const variant = variants.get(spec.name)?.(input, t, held);
+        if (variant) {
+          const out = await variant;
+          return { text: out.content, isError: out.isError };
+        }
+      }
       const opening = t.phase === 'active' && !t.opened;
-      const { ctx, streamId } = t.room.outsideContext(t.systemId, opening);
+      const reqCtx = held ? requestContext(t, held) : null;
+      const { ctx, streamId } = reqCtx
+        ? { ctx: reqCtx, streamId: null }
+        : t.room.outsideContext(t.systemId, opening);
       const out = await dispatchTool(
         spec.name,
         input,
@@ -532,19 +613,62 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
   };
 }
 
-export const CONNECTOR_TOOLS: ConnectorTool[] = [...SESSION_TOOLS, ...[...TOOLS, EDIT_SHEET].map(gmTool)];
+const extraTools: ConnectorTool[] = [];
+/** Tools for a kind of request, registered by the module that handles it. */
+export function addTools(...tools: ConnectorTool[]): void {
+  extraTools.push(...tools);
+}
+
+export function connectorTools(): ConnectorTool[] {
+  return [...SESSION_TOOLS, ...extraTools, ...[...TOOLS, EDIT_SHEET].map(gmTool)];
+}
+
+const refusal = (held: WorkItem) =>
+  `Finish the open request first (${held.kind}, id ${held.id}), or skip it with skip_work.`;
+
+async function campaignName(id: string): Promise<string | null> {
+  return (await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [id]))?.name ?? null;
+}
 
 export async function runConnectorTool(
   name: string,
   input: unknown,
   call: ConnectorCall,
-): Promise<{ text: string; isError: boolean }> {
-  const tool = CONNECTOR_TOOLS.find((t) => t.name === name);
+): Promise<ToolOutput> {
+  const tool = connectorTools().find((t) => t.name === name);
   if (!tool) return { text: `Unknown tool "${name.slice(0, 40)}".`, isError: true };
+  let out: ToolOutput;
   try {
-    return await tool.call(input, call);
+    out = await gated(tool, input, call);
   } catch (err) {
     log().error({ err, tool: name, tokenId: call.user.tokenId }, 'connector tool failed');
-    return { text: 'Something went wrong on the server. Try again in a moment.', isError: true };
+    out = { text: 'Something went wrong on the server. Try again in a moment.', isError: true };
   }
+  // On the account-wide address another chat may have opened a different campaign since.
+  if (!call.pinned) {
+    const id = campaignOf(call);
+    const label = id ? await campaignName(id).catch(() => null) : null;
+    if (label) out = { ...out, text: `[${label}]\n${out.text}` };
+  }
+  return out;
 }
+
+async function gated(tool: ConnectorTool, input: unknown, call: ConnectorCall): Promise<ToolOutput> {
+  const id = campaignOf(call);
+  if (id && !tool.during.includes('any')) {
+    const held = await currentWork(id);
+    const turnClaimed = !!getRoom(id)?.desk.turn?.claimed;
+    if (!gateAllows(tool.during, held?.kind ?? null, turnClaimed)) {
+      if (held) return { text: refusal(held), isError: true };
+      return {
+        text: tool.during.includes('turn')
+          ? 'This tool works only while you hold a turn. Call wait_for_work.'
+          : `This tool belongs to a request you do not hold. Call wait_for_work.`,
+        isError: true,
+      };
+    }
+  }
+  return tool.call(input, call);
+}
+
+export type { Gate };
