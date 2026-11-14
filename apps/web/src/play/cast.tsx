@@ -6,6 +6,7 @@ import type {
   CharacterKind,
   DmStatus,
   GameState,
+  PendingSheet,
   SheetTemplate,
 } from '@tavern/protocol';
 import { useRef, useState } from 'react';
@@ -19,7 +20,14 @@ import { GuideSheet } from './guide';
 /** Which of the party sheets is open. Shared by the lobby and the play screen. */
 export type CastPanel =
   | { kind: 'add' }
-  | { kind: 'edit'; character?: Character; draft?: CharacterDraft; control?: Control }
+  | {
+      kind: 'edit';
+      character?: Character;
+      draft?: CharacterDraft;
+      control?: Control;
+      /** An uploaded sheet Claude read, forgotten once this draft is saved or dismissed. */
+      pendingId?: string;
+    }
   | { kind: 'guide'; characterId?: string; control?: Control }
   | { kind: 'control'; character: Character }
   | null;
@@ -103,11 +111,15 @@ function AddCharacterSheet({
   campaign,
   onPick,
   onClose,
+  onQueued,
 }: {
   campaign: CampaignDetail;
   onPick: (panel: CastPanel) => void;
   onClose: () => void;
+  /** An upload went to Claude to read. */
+  onQueued: () => void;
 }) {
+  const claude = campaign.dm === 'claude';
   const me = useMe();
   const notify = useToast();
   const owner = campaign.role === 'owner';
@@ -129,11 +141,20 @@ function AddCharacterSheet({
     setReading(true);
     try {
       const form = new FormData();
+      // Fields go before the file: the server reads only those it has seen when the file starts.
+      form.append('control', JSON.stringify(control));
       form.append('file', file);
-      const res = await api<{ draft: CharacterDraft }>(`/campaigns/${campaign.id}/characters/import`, {
-        form,
-      });
-      onPick({ kind: 'edit', draft: res.draft, control });
+      const res = await api<{ draft?: CharacterDraft; pending?: PendingSheet }>(
+        `/campaigns/${campaign.id}/characters/import`,
+        { form },
+      );
+      if (res.pending) {
+        notify('Sent to Claude. You will see it here when it is read.');
+        onQueued();
+        onClose();
+      } else if (res.draft) {
+        onPick({ kind: 'edit', draft: res.draft, control });
+      }
     } catch (err) {
       notify(errorMessage(err), 'error');
     } finally {
@@ -197,14 +218,27 @@ function AddCharacterSheet({
           <button type="button" disabled={reading} onClick={() => picker.current?.click()}>
             <span className="row-icon">{reading ? <span className="spinner" /> : <IconUpload />}</span>
             <span className="grow">
-              <b>{reading ? 'Reading your sheet…' : 'Upload a character sheet'}</b>
+              <b>
+                {reading
+                  ? claude
+                    ? 'Sending your sheet…'
+                    : 'Reading your sheet…'
+                  : 'Upload a character sheet'}
+              </b>
               <small className="row-detail">
-                A PDF, a text file or a photo. You check it before it is saved.
+                {claude
+                  ? 'A PDF, a text file or a photo. Claude reads it; you check it before it is saved.'
+                  : 'A PDF, a text file or a photo. You check it before it is saved.'}
               </small>
             </span>
             <IconChevron className="chev" />
           </button>
         </div>
+        {claude && owner && (
+          <p className="small faint">
+            Or do it in your Claude chat: say <i>help me make a character</i>.
+          </p>
+        )}
         <input
           ref={picker}
           type="file"
@@ -332,10 +366,18 @@ export function CastPanels({
   if (!panel) return null;
 
   if (panel.kind === 'add')
-    return <AddCharacterSheet campaign={campaign} onPick={setPanel} onClose={close} />;
+    return <AddCharacterSheet campaign={campaign} onPick={setPanel} onClose={close} onQueued={onChanged} />;
 
   if (panel.kind === 'edit') {
     const c = panel.character;
+    const pendingId = panel.pendingId;
+    // A draft Claude read is forgotten once it is saved or dismissed.
+    const forget = () => {
+      if (pendingId)
+        void api(`/campaigns/${campaign.id}/sheets/${pendingId}`, { method: 'DELETE' })
+          .catch(() => undefined)
+          .finally(onChanged);
+    };
     return (
       <CharacterSheet
         campaignId={campaign.id}
@@ -345,8 +387,12 @@ export function CastPanels({
         control={panel.control}
         mine={c ? runsIt(c, me.id) : (panel.control?.controller ?? 'player') === 'player'}
         canDelete={!!c && (owner || (c.playerIds.length === 1 && c.playerIds[0] === me.id))}
-        onClose={close}
+        onClose={() => {
+          forget();
+          close();
+        }}
         onSaved={() => {
+          forget();
           onChanged();
           close();
         }}

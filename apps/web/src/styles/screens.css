@@ -841,3 +841,34 @@ button.code-box {
 .connector-make {
   margin-top: 14px;
 }
+
+/* ---------- uploaded sheets Claude is reading ---------- */
+.ready-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.ready-strip > .grow {
+  min-width: 0;
+}
+.ready-strip .live-dot {
+  display: inline-block;
+  margin-right: 6px;
+  background: var(--arcane);
+}
+.ready-strip.done {
+  border-color: rgba(98, 211, 162, 0.4);
+}
+.ready-strip.failed {
+  border-color: rgba(255, 122, 122, 0.35);
+}
+.ready-strip b.truncate {
+  display: inline-block;
+  max-width: 14em;
+  vertical-align: bottom;
+}

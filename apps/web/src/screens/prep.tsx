@@ -1,10 +1,11 @@
+import type { PendingSheet } from '@tavern/protocol';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import { useAction, useAuth, useMe, useToast } from '../app';
+import { useAction, useAuth, useMe, useQuery, useToast } from '../app';
 import { IconBack, IconBook, IconDots, IconPlus, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
-import { DmChip, dmLine } from '../play/claude';
+import { DmChip, dmAbsent, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
 import { ManageSheet } from '../play/manage';
 import { CharacterCard } from '../play/party';
@@ -35,9 +36,18 @@ export function Prep({ id, campaign, state, template }: TableProps) {
 
   const reloadState = state.reload;
   const reloadCampaign = campaign.reload;
+  const sheets = useQuery(
+    () =>
+      c.dm === 'claude'
+        ? api<{ sheets: PendingSheet[] }>(`/campaigns/${id}/sheets`)
+        : Promise.resolve({ sheets: [] as PendingSheet[] }),
+    [id, c.dm],
+  );
+  const reloadSheets = sheets.reload;
   const reload = () => {
     void reloadState();
     void reloadCampaign();
+    void reloadSheets();
   };
   // The live connection tells the lobby when the party changes and when play begins.
   const table = useTable(id, c.status === 'active', {
@@ -48,6 +58,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
     onReconnect: reload,
     onSignedOut: () => setMe(null),
     onGuide: () => setGuideSignal((n) => n + 1),
+    onSheet: () => void reloadSheets(),
   });
   useEffect(() => {
     if (table.link === 'denied') navigate('/', { replace: true });
@@ -149,6 +160,48 @@ export function Prep({ id, campaign, state, template }: TableProps) {
               {characters.length > 0 && <span>{characters.length}</span>}
             </div>
             <div className="stack">
+              {(sheets.data?.sheets ?? []).map((s) => (
+                <div key={s.id} className={`ready-strip ${s.status}`}>
+                  {s.status === 'done' ? (
+                    <>
+                      <span className="grow">
+                        <b className="truncate">{s.fileName}</b> is ready to check
+                      </span>
+                      <button
+                        type="button"
+                        className="btn sm primary"
+                        onClick={() =>
+                          setCast({ kind: 'edit', draft: s.draft, control: s.control, pendingId: s.id })
+                        }
+                      >
+                        Review
+                      </button>
+                    </>
+                  ) : s.status === 'failed' ? (
+                    <>
+                      <span className="grow small">
+                        <b className="truncate">{s.fileName}</b>: {s.error}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn sm ghost"
+                        onClick={() =>
+                          void api(`/campaigns/${id}/sheets/${s.id}`, { method: 'DELETE' }).finally(
+                            reloadSheets,
+                          )
+                        }
+                      >
+                        Dismiss
+                      </button>
+                    </>
+                  ) : (
+                    <span className="grow small">
+                      <span className="live-dot" /> Claude is reading <b className="truncate">{s.fileName}</b>
+                      …{dmAbsent(dm) && ` ${dmLine(dm)}.`}
+                    </span>
+                  )}
+                </div>
+              ))}
               {!game ? null : characters.length === 0 ? (
                 <Empty icon={<IconSparkle />} title="Nobody has a character yet">
                   {claude
