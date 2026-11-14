@@ -1,4 +1,4 @@
-import type { Me, UsageTotals } from '@tavern/protocol';
+import type { ConnectorToken, Me, UsageTotals } from '@tavern/protocol';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery } from '../app';
@@ -6,6 +6,8 @@ import {
   IconAlert,
   IconChevron,
   IconClock,
+  IconCopy,
+  IconCrown,
   IconKey,
   IconLogout,
   IconPhone,
@@ -14,10 +16,10 @@ import {
   IconUsers,
 } from '../icons';
 import { isStandalone, openInstallGuide } from '../install';
-import { Avatar, ConfirmButton, Field, PageHead, Sheet, formatTokens, formatUsd, timeAgo } from '../ui';
+import { Avatar, ConfirmButton, Field, PageHead, Sheet, copyText, formatTokens, formatUsd, timeAgo } from '../ui';
 import { TwoFactorSheet } from './twofactor';
 
-type Panel = 'profile' | 'password' | 'twofactor' | 'devices' | 'apikey' | null;
+type Panel = 'profile' | 'password' | 'twofactor' | 'devices' | 'apikey' | 'connector' | null;
 
 function Row({
   icon,
@@ -341,6 +343,147 @@ function ApiKeySheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** One value to copy, such as the connector address or a new token. */
+function CopyRow({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
+  const [busy, run] = useAction();
+  return (
+    <div>
+      <div className="grow">
+        <div className="small muted">{label}</div>
+        <div className={`mono small ${secret ? 'secret-value' : 'truncate'}`}>{value}</div>
+      </div>
+      <button
+        type="button"
+        className="btn sm"
+        disabled={busy}
+        onClick={() =>
+          void run(async () => {
+            if (!(await copyText(value))) throw new Error('Could not copy. Select the text and copy it instead.');
+          }, 'Copied')
+        }
+      >
+        <IconCopy /> Copy
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Tokens for the Claude connector, which lets the Claude app run your
+ * campaigns as their Dungeon Master on your Claude plan instead of the
+ * server's API key.
+ */
+function ConnectorSheet({ onClose }: { onClose: () => void }) {
+  const info = useQuery(() => api<{ url: string; tokens: ConnectorToken[] }>('/account/connector'), []);
+  const [label, setLabel] = useState('Claude');
+  const [fresh, setFresh] = useState<string | null>(null);
+  const [busy, run] = useAction();
+  const tokens = info.data?.tokens ?? [];
+
+  const make = (e: FormEvent) => {
+    e.preventDefault();
+    void run(async () => {
+      const res = await api<{ token: string }>('/account/connector', { body: { label } });
+      setFresh(res.token);
+      await info.reload();
+    }, 'Token made');
+  };
+
+  return (
+    <Sheet title="Claude connector" onClose={onClose} tall>
+      <p className="small muted">
+        Let the Claude app be the Dungeon Master, on your Claude plan instead of an API key. Add Tavern Master to
+        Claude as a custom connector, then set a campaign’s Dungeon Master to “Claude app”.
+      </p>
+
+      <div className="section-title">
+        <span>Connector address</span>
+      </div>
+      <div className="list">{info.data && <CopyRow label="Server URL" value={info.data.url} />}</div>
+
+      {fresh && (
+        <>
+          <div className="section-title">
+            <span>Your new token</span>
+          </div>
+          <p className="small note">Copy it now. It is shown only once; if you lose it, make another.</p>
+          <div className="list">
+            <CopyRow label="Header value" value={`Bearer ${fresh}`} secret />
+          </div>
+        </>
+      )}
+
+      <div className="section-title">
+        <span>Tokens</span>
+        <span>{tokens.length}</span>
+      </div>
+      {tokens.length > 0 && (
+        <div className="list">
+          {tokens.map((t) => (
+            <div key={t.id}>
+              <span className="row-icon">
+                <IconKey />
+              </span>
+              <div className="grow">
+                <div className="truncate">{t.label}</div>
+                <div className="small muted truncate">
+                  {t.lastUsedAt ? `Used ${timeAgo(t.lastUsedAt)}` : 'Not used yet'}
+                  {t.campaignName ? ` · ${t.campaignName}` : ''}
+                </div>
+              </div>
+              <ConfirmButton
+                className="btn sm danger"
+                confirmLabel="Revoke?"
+                disabled={busy}
+                onConfirm={() =>
+                  void run(async () => {
+                    await api(`/account/connector/${t.id}`, { method: 'DELETE' });
+                    await info.reload();
+                  }, 'Token revoked')
+                }
+              >
+                Revoke
+              </ConfirmButton>
+            </div>
+          ))}
+        </div>
+      )}
+      <form className="stack connector-make" onSubmit={make}>
+        <Field label="New token" hint="A name to tell your tokens apart, like the device or app using it.">
+          <input
+            className="input"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            maxLength={60}
+            required
+          />
+        </Field>
+        <button type="submit" className="btn block" disabled={busy}>
+          Make a token
+        </button>
+      </form>
+
+      <div className="section-title">
+        <span>Add it to Claude</span>
+      </div>
+      <ol className="steps small">
+        <li>
+          On claude.ai (Safari is fine), open <b>Customize → Connectors</b> and choose <b>Add custom connector</b>.
+        </li>
+        <li>Name it Tavern Master and paste the server URL above.</li>
+        <li>
+          Under <b>Request headers</b>, add <span className="mono">Authorization</span> with the header value of
+          your token.
+        </li>
+        <li>
+          Make a Claude Project for your campaign, paste the instructions from the campaign’s Manage menu, and turn
+          the connector on in its chats. Allow its tools so play is not interrupted.
+        </li>
+      </ol>
+    </Sheet>
+  );
+}
+
 const total = (u: UsageTotals) => u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
 
 export function SettingsScreen() {
@@ -393,6 +536,12 @@ export function SettingsScreen() {
       </div>
       <div className="list">
         <Row
+          icon={<IconCrown />}
+          title="Claude connector"
+          detail="Run campaigns from the Claude app"
+          onClick={() => setPanel('connector')}
+        />
+        <Row
           icon={<IconSparkle />}
           title="Your own API key"
           detail="Optional. Pays for campaigns you host."
@@ -439,6 +588,7 @@ export function SettingsScreen() {
       {panel === 'twofactor' && <TwoFactorSheet onClose={close} />}
       {panel === 'devices' && <DevicesSheet onClose={close} />}
       {panel === 'apikey' && <ApiKeySheet onClose={close} />}
+      {panel === 'connector' && <ConnectorSheet onClose={close} />}
     </main>
   );
 }
