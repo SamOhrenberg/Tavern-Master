@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { migrate } from './db/migrate.js';
 import { closeDb, waitForDb } from './db/pool.js';
 import { log } from './log.js';
-import { failStaleTurns } from './realtime/room.js';
+import { failStaleTurns, sweepRooms } from './realtime/room.js';
 import { seedIfEmpty } from './seed.js';
 
 async function main(): Promise<void> {
@@ -17,6 +17,8 @@ async function main(): Promise<void> {
 
   const app = await buildApp();
   await app.listen({ host: cfg.HOST, port: cfg.PORT });
+  // Rooms opened only by the connector have no socket to close them.
+  setInterval(sweepRooms, 10 * 60_000).unref();
 
   let stopping = false;
   const stop = async (signal: string) => {

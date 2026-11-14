@@ -1,6 +1,5 @@
 import type {
   CampaignDetail,
-  DmStatus,
   CampaignInvite,
   CampaignSettings,
   CampaignSummary,
@@ -24,7 +23,7 @@ import { requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
 import { usageTotals } from '../llm/usage.js';
 import { listMessages } from '../realtime/messages.js';
-import { endSession, getRoom } from '../realtime/room.js';
+import { dmStatusOf, endSession, getRoom } from '../realtime/room.js';
 import { uploadPath } from '../storage.js';
 import { areFriends } from './friends.js';
 
@@ -57,13 +56,6 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
     dm: dmModeOf(raw),
   };
 }
-
-const placeholderStatus = (mode: DmStatus['mode']): DmStatus => ({
-  mode,
-  state: mode === 'server' ? 'listening' : 'never',
-  lastSeenAt: null,
-  waiting: 0,
-});
 
 const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, c.owner_id, c.status,
                             c.phase, c.settings, c.scene, m.role, m.wishes,
@@ -161,7 +153,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         invitee: { id: p.uid, username: p.username, displayName: p.display_name },
       })),
       myWishes: row.wishes,
-      dmStatus: placeholderStatus(dmModeOf(row.settings)),
+      dmStatus: await dmStatusOf(campaignId, dmModeOf(row.settings)),
     };
     return { campaign: detail };
   });
@@ -184,7 +176,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const room = getRoom(campaignId);
     if (room && body.gatherWindowSeconds) room.collector.windowMs = body.gatherWindowSeconds * 1000;
     // A turn left waiting for the Claude app goes back to the table rather than sitting there.
-    if (body.dm === 'server') room?.desk.drop();
+    if (body.dm === 'server') room?.releaseDesk();
+    if (body.dm) await room?.setMode(body.dm);
     room?.broadcast({ type: 'state_changed' });
     if (body.dm === 'server') void room?.maybeOpen();
     return { ok: true };
@@ -215,7 +208,17 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     if (!rows.length) throw conflict('This campaign has already begun.');
     const room = getRoom(campaignId);
     room?.broadcast({ type: 'state_changed' });
+    // A polling Claude hears about the opening at once.
+    await room?.workChanged();
     void room?.maybeOpen();
+    return { ok: true };
+  });
+
+  /** The owner hands a turn that is waiting for Claude back to the table. */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/desk/release', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const room = getRoom(campaignId);
+    if (!room?.releaseDesk()) throw conflict('Nothing is waiting for Claude.');
     return { ok: true };
   });
 

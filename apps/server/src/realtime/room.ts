@@ -1,4 +1,12 @@
-import type { ServerMessage, SettingLore, TurnSeat, TurnState, UserRef } from '@tavern/protocol';
+import type {
+  DmMode,
+  DmStatus,
+  ServerMessage,
+  SettingLore,
+  TurnSeat,
+  TurnState,
+  UserRef,
+} from '@tavern/protocol';
 import type { WebSocket } from 'ws';
 import { refreshBrief } from '../agent/brief.js';
 import { resolveRefs } from '../agent/codex.js';
@@ -18,6 +26,7 @@ import { gmTools } from '../agent/tools.js';
 import { config } from '../config.js';
 import { DmDesk } from '../connector/desk.js';
 import { dmMode, dmModeOf } from '../connector/mode.js';
+import { presenceOf } from '../connector/presence.js';
 import { q, q1 } from '../db/pool.js';
 import { enqueue } from '../jobs/queue.js';
 import { LlmNotConfigured, resolveLlm } from '../llm/index.js';
@@ -39,6 +48,45 @@ export const STATE_TOOLS = new Set([
 ]);
 /** Stands in for a turn id while the DM writes the opening scene. */
 const OPENING = 'opening';
+/** A room kept open only for an outside DM is forgotten after this long without a call. */
+const DM_IDLE_MS = 15 * 60_000;
+/** dm_seen_at is written at most this often. */
+const SEEN_WRITE_MS = 30_000;
+
+/** How long after a connector call an outside DM still counts as listening. */
+const listenMs = () => (config().CONNECTOR_MAX_WAIT_SECONDS + 25) * 1000;
+const claimTimeoutMs = () => config().CONNECTOR_CLAIM_TIMEOUT_MINUTES * 60_000;
+
+/** What the database says about a campaign's outside DM, for when no room is open. */
+interface DmFacts {
+  seenAt: Date | null;
+  openWork: number;
+  workClaimed: boolean;
+  needsOpening: boolean;
+}
+
+async function loadDmFacts(campaignId: string): Promise<DmFacts> {
+  const row = await q1<{
+    seen: Date | null;
+    open: number;
+    claimed: boolean;
+    needs_opening: boolean;
+  }>(
+    `SELECT c.dm_seen_at AS seen,
+            c.phase = 'active' AND c.status = 'active' AND c.opened_at IS NULL AS needs_opening,
+            (SELECT count(*)::int FROM dm_work w
+              WHERE w.campaign_id = c.id AND w.status IN ('waiting', 'claimed')) AS open,
+            EXISTS (SELECT 1 FROM dm_work w WHERE w.campaign_id = c.id AND w.status = 'claimed') AS claimed
+       FROM campaigns c WHERE c.id = $1`,
+    [campaignId],
+  );
+  return {
+    seenAt: row?.seen ?? null,
+    openWork: row?.open ?? 0,
+    workClaimed: row?.claimed ?? false,
+    needsOpening: row?.needs_opening ?? false,
+  };
+}
 
 interface ActiveTurn {
   id: string;
@@ -126,11 +174,170 @@ export class Room {
   /** Context for an outside DM's tool calls made outside a turn (planning, the opening scene). */
   private loose: TurnContext | null = null;
 
+  /** Who is this campaign's AI. */
+  mode: DmMode;
+  /** wait_for_work calls open right now. */
+  private polls = 0;
+  /** Epoch ms of the last connector call, 0 until the first one. */
+  private lastCallAt = 0;
+  private lastSeenWrite = 0;
+  private dmFacts: DmFacts = { seenAt: null, openWork: 0, workClaimed: false, needsOpening: false };
+  private lastBroadcastStatus = '';
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private claimWatch: ReturnType<typeof setInterval> | null = null;
+  /** Called when an abandoned claim is released, so the connector can release its own claims too. */
+  onClaimsReleased: (() => Promise<void>) | null = null;
+
   constructor(
     readonly campaignId: string,
     windowMs: number,
+    mode: DmMode = 'server',
   ) {
     this.collector = new TurnCollector({ windowMs, onClose: (closed) => void this.resolve(closed) });
+    this.mode = mode;
+  }
+
+  // ------------------------------------------------------------ presence of an outside DM
+
+  /** Start from what the database knows. */
+  seed(facts: DmFacts): void {
+    this.dmFacts = facts;
+    this.lastBroadcastStatus = this.statusKey(this.dmStatus());
+  }
+
+  /** Where this campaign's AI is right now. */
+  dmStatus(): DmStatus {
+    const f = this.dmFacts;
+    return presenceOf({
+      mode: this.mode,
+      polls: this.polls,
+      lastCallAt: this.lastCallAt,
+      claimed: !!this.desk.turn?.claimed || f.workClaimed,
+      seenAt: f.seenAt,
+      waiting: (this.desk.turn ? 1 : 0) + f.openWork + (f.needsOpening ? 1 : 0),
+      now: Date.now(),
+      listenMs: listenMs(),
+    });
+  }
+
+  private statusKey(s: DmStatus): string {
+    return `${s.mode}:${s.state}:${s.waiting}`;
+  }
+
+  /** Tell the table where its AI is, when that changed. */
+  private statusMaybeChanged(): void {
+    const s = this.dmStatus();
+    const key = this.statusKey(s);
+    if (key === this.lastBroadcastStatus) return;
+    this.lastBroadcastStatus = key;
+    this.broadcast({ type: 'dm_status', dm: s });
+  }
+
+  /** The campaign switched between the built-in AI and Claude. */
+  setMode(mode: DmMode): Promise<void> {
+    this.mode = mode;
+    if (mode === 'server') this.stopClaimWatch();
+    return this.workChanged();
+  }
+
+  /**
+   * The outside DM called a tool for this campaign. `poll` marks the start
+   * and end of a wait_for_work call, during which it counts as listening.
+   */
+  touchDm(poll?: 'start' | 'end'): void {
+    // Coming back after a long silence: whatever it held is released first.
+    this.checkAbandoned();
+    const now = Date.now();
+    this.lastCallAt = now;
+    if (poll === 'start') this.polls++;
+    else if (poll === 'end') this.polls = Math.max(0, this.polls - 1);
+    this.dmFacts.seenAt = new Date(now);
+    if (now - this.lastSeenWrite > SEEN_WRITE_MS) {
+      this.lastSeenWrite = now;
+      void q('UPDATE campaigns SET dm_seen_at = now() WHERE id = $1', [this.campaignId]).catch((err) =>
+        log().warn({ err, campaignId: this.campaignId }, 'could not record DM presence'),
+      );
+    }
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.presenceTimer = setTimeout(() => this.statusMaybeChanged(), listenMs() + 50);
+    this.presenceTimer.unref?.();
+    this.statusMaybeChanged();
+  }
+
+  /** Recount what is waiting for the outside DM, wake anyone polling, and tell the table. */
+  async workChanged(): Promise<void> {
+    try {
+      this.dmFacts = { ...(await loadDmFacts(this.campaignId)), seenAt: this.dmFacts.seenAt };
+    } catch (err) {
+      log().warn({ err, campaignId: this.campaignId }, 'could not count DM work');
+    }
+    this.desk.poke();
+    this.statusMaybeChanged();
+  }
+
+  /** How long since the outside DM last called, in ms. */
+  get dmIdleFor(): number {
+    return this.lastCallAt ? Date.now() - this.lastCallAt : Number.POSITIVE_INFINITY;
+  }
+
+  /** No poll open and no call for a while: nothing keeps this room alive for the outside DM. */
+  get dmGone(): boolean {
+    return this.polls === 0 && this.dmIdleFor > DM_IDLE_MS;
+  }
+
+  /**
+   * A turn or request claimed and then left alone past the claim timeout goes
+   * back to waiting, so the next call hands it out again and players see that
+   * nobody is working on it.
+   */
+  checkAbandoned(): void {
+    if (!this.lastCallAt || Date.now() - this.lastCallAt < claimTimeoutMs()) return;
+    const turn = this.desk.turn;
+    const releasedTurn = !!turn?.claimed;
+    if (turn?.claimed) {
+      turn.claimed = false;
+      this.broadcast({ type: 'dm_end', turnId: turn.id, ok: false });
+    }
+    this.stopClaimWatch();
+    if (releasedTurn || this.dmFacts.workClaimed) {
+      log().info({ campaignId: this.campaignId }, 'released a claim the outside DM abandoned');
+      this.dmFacts.workClaimed = false;
+      void (this.onClaimsReleased?.() ?? Promise.resolve())
+        .then(() => this.workChanged())
+        .catch(() => undefined);
+    }
+    this.statusMaybeChanged();
+  }
+
+  /** For tests: pretend the last connector call was this long ago. */
+  ageLastCallForTests(ms: number): void {
+    this.lastCallAt = Date.now() - ms;
+  }
+
+  private startClaimWatch(): void {
+    if (this.claimWatch) return;
+    this.claimWatch = setInterval(() => {
+      if (!this.desk.turn?.claimed) return this.stopClaimWatch();
+      this.checkAbandoned();
+    }, 60_000);
+    this.claimWatch.unref?.();
+  }
+
+  private stopClaimWatch(): void {
+    if (this.claimWatch) clearInterval(this.claimWatch);
+    this.claimWatch = null;
+  }
+
+  /** The owner gives a turn that is waiting for the outside DM back to the table. */
+  releaseDesk(): boolean {
+    this.stopClaimWatch();
+    return this.desk.drop();
+  }
+
+  /** Stop the room's timers; it is being forgotten. */
+  dispose(): void {
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.stopClaimWatch();
   }
 
   /** Run room work one step at a time so database writes keep their order. */
@@ -174,9 +381,14 @@ export class Room {
     }
   }
 
-  private errorTo(userId: string, code: string, message: string): void {
-    const data = JSON.stringify({ type: 'error', code, message } satisfies ServerMessage);
+  /** Send a message to one person's connections only. */
+  tellUser(userId: string, msg: ServerMessage): void {
+    const data = JSON.stringify(msg);
     for (const [ws, u] of this.sockets) if (u.id === userId && ws.readyState === ws.OPEN) ws.send(data);
+  }
+
+  private errorTo(userId: string, code: string, message: string): void {
+    this.tellUser(userId, { type: 'error', code, message });
   }
 
   private tell(userId: string, message: string): void {
@@ -246,7 +458,7 @@ export class Room {
             you: user,
             present: this.present(),
             turn: this.turnState(),
-            dm: { mode: 'server', state: 'listening', lastSeenAt: null, waiting: 0 },
+            dm: this.dmStatus(),
           } satisfies ServerMessage),
         );
       }
@@ -666,10 +878,14 @@ export class Room {
       stateChanged: false,
     };
     const minutes = config().CONNECTOR_TURN_TIMEOUT_MINUTES;
-    const ok = await this.desk.handOff(
+    const handed = this.desk.handOff(
       { id: turn.id, number: turn.number, sessionId: turn.sessionId, input, ctx, claimed: false },
       minutes * 60_000,
     );
+    this.statusMaybeChanged();
+    const ok = await handed;
+    this.stopClaimWatch();
+    this.statusMaybeChanged();
     if (!ok) {
       await this.system(
         'The Dungeon Master did not pick this turn up in time. Your actions were kept; act again to retry.',
@@ -686,7 +902,11 @@ export class Room {
   claimForOutsideDm() {
     const before = this.desk.turn?.claimed;
     const turn = this.desk.claim();
-    if (turn && !before) this.broadcast({ type: 'dm_start', turnId: turn.id });
+    if (turn && !before) {
+      this.broadcast({ type: 'dm_start', turnId: turn.id });
+      this.startClaimWatch();
+      this.statusMaybeChanged();
+    }
     return turn;
   }
 
@@ -742,8 +962,10 @@ export class Room {
       stateChanged: false,
     };
     this.loose = null;
+    this.dmFacts.needsOpening = false;
     const { redacted } = await this.publish(text, ctx, sessionId, null);
     this.broadcast({ type: 'dm_end', turnId: OPENING, ok: true });
+    this.statusMaybeChanged();
     this.broadcast({ type: 'state_changed' });
     await refreshBrief(this.campaignId).catch(() => undefined);
     return { kind: 'opening', redacted };
@@ -890,22 +1112,59 @@ export function getRoom(campaignId: string): Room | undefined {
 export async function openRoom(campaignId: string): Promise<Room> {
   let room = rooms.get(campaignId);
   if (!room) {
-    const row = await q1<{ settings: { gatherWindowSeconds?: number } }>(
+    const row = await q1<{ settings: { gatherWindowSeconds?: number; dm?: unknown } }>(
       'SELECT settings FROM campaigns WHERE id = $1',
       [campaignId],
     );
     const seconds = row?.settings.gatherWindowSeconds ?? config().DEFAULT_GATHER_WINDOW_SECONDS;
+    const facts = await loadDmFacts(campaignId);
     // Another connection may have created it while we were reading.
-    room = rooms.get(campaignId) ?? new Room(campaignId, seconds * 1000);
-    rooms.set(campaignId, room);
+    room = rooms.get(campaignId);
+    if (!room) {
+      room = new Room(campaignId, seconds * 1000, dmModeOf(row?.settings));
+      room.seed(facts);
+      rooms.set(campaignId, room);
+      roomOpened?.(room);
+    }
   }
   return room;
 }
 
-/** Forget empty, idle rooms. */
+let roomOpened: ((room: Room) => void) | null = null;
+/** Run for every room as it opens, e.g. to wire the connector's work queue into it. */
+export function onRoomOpened(fn: (room: Room) => void): void {
+  roomOpened = fn;
+}
+
+/** Where a campaign's AI is, from the open room or, without one, from the database. */
+export async function dmStatusOf(campaignId: string, mode: DmMode): Promise<DmStatus> {
+  const room = rooms.get(campaignId);
+  if (room) return room.dmStatus();
+  const f = await loadDmFacts(campaignId);
+  return presenceOf({
+    mode,
+    polls: 0,
+    lastCallAt: 0,
+    claimed: f.workClaimed,
+    seenAt: f.seenAt,
+    waiting: f.openWork + (f.needsOpening ? 1 : 0),
+    now: Date.now(),
+    listenMs: listenMs(),
+  });
+}
+
+/** Forget empty, idle rooms: no players, no turn in progress, and no outside DM around. */
 export function closeRoomIfEmpty(campaignId: string): void {
   const room = rooms.get(campaignId);
-  if (room && room.sockets.size === 0 && !room.busy) rooms.delete(campaignId);
+  if (room && room.sockets.size === 0 && !room.busy && !room.desk.turn && room.dmGone) {
+    room.dispose();
+    rooms.delete(campaignId);
+  }
+}
+
+/** Close every room nobody is using. Rooms opened only by the connector would otherwise linger. */
+export function sweepRooms(): void {
+  for (const id of [...rooms.keys()]) closeRoomIfEmpty(id);
 }
 
 /** Turns left open by a restart can never finish; mark them so history is honest. */

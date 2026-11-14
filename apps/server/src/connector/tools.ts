@@ -81,6 +81,8 @@ async function openTable(user: ConnectorUser): Promise<Table> {
         'then Manage → Dungeon Master → Claude app.',
     );
   }
+  const room = await openRoom(user.campaignId);
+  room.touchDm();
   return {
     id: user.campaignId,
     name: row.name,
@@ -89,7 +91,7 @@ async function openTable(user: ConnectorUser): Promise<Table> {
     opened: row.opened,
     systemId: row.system_id,
     gmSheets: row.settings.sheets === 'gm',
-    room: await openRoom(user.campaignId),
+    room,
   };
 }
 
@@ -389,7 +391,10 @@ export const SESSION_TOOLS: ConnectorTool[] = [
       }
       if (input.close_now) room.force();
 
-      const turn = await room.desk.waitForTurn(input.wait_seconds * 1000, signal);
+      room.touchDm('start');
+      const turn = await room.desk
+        .waitForTurn(input.wait_seconds * 1000, signal)
+        .finally(() => room.touchDm('end'));
       if (turn) {
         room.claimForOutsideDm();
         return renderClaimed(turn, await snapshotFor(turn), notes.join(' '));

@@ -65,6 +65,11 @@ export class DmDesk {
     return turn;
   }
 
+  /** Wake everyone waiting without handing out a turn: other work for the DM arrived. */
+  poke(): void {
+    for (const wake of [...this.waiters]) wake();
+  }
+
   /** The turn was narrated. */
   complete(): boolean {
     return this.settle(true);
@@ -76,8 +81,9 @@ export class DmDesk {
   }
 
   /**
-   * Wait up to `ms` for a turn to be offered. Returns at once if one is
-   * already waiting, and returns null on timeout or when `signal` aborts.
+   * Wait up to `ms` for a turn to be offered, or for `poke`. Returns at once
+   * if a turn is already waiting, and returns null on timeout, on a poke, or
+   * when `signal` aborts.
    */
   waitForTurn(ms: number, signal?: AbortSignal): Promise<DeskTurn | null> {
     if (this.turn) return Promise.resolve(this.turn);
