@@ -4,6 +4,9 @@ import { audit } from '../audit.js';
 import { hashPassword, passwordSchema, verifyPassword } from '../auth/password.js';
 import { revokeAllSessions, revokeSession, toMe } from '../auth/sessions.js';
 import { newRecoveryCodes, newTotpSecret, verifyTotp } from '../auth/totp.js';
+import { config } from '../config.js';
+import { CONNECTOR_PATH } from '../connector/mcp.js';
+import { createToken, listTokens, revokeToken } from '../connector/tokens.js';
 import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireUser } from '../http/security.js';
@@ -20,6 +23,7 @@ const passwordChangeSchema = z.object({
   newPassword: passwordSchema,
 });
 const codeSchema = z.object({ code: z.string().trim().min(6).max(10) });
+const tokenLabelSchema = z.object({ label: z.string().trim().min(1).max(60).default('Claude') });
 const disableTotpSchema = z.object({ password: z.string().min(1).max(200) });
 const apiKeySchema = z
   .object({
@@ -200,6 +204,41 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireUser(req);
     await q('DELETE FROM user_api_keys WHERE user_id = $1', [auth.user.id]);
     await audit('user.api_key_removed', { actorId: auth.user.id, ip: req.ip });
+    return { ok: true };
+  });
+
+  // ---- connector tokens: the Claude app as Dungeon Master ----
+  app.get('/api/account/connector', async (req) => {
+    const auth = requireUser(req);
+    const rows = await listTokens(auth.user.id);
+    return {
+      url: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
+      tokens: rows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        createdAt: r.created_at,
+        lastUsedAt: r.last_used_at,
+        campaignName: r.campaign_name,
+      })),
+    };
+  });
+
+  app.post('/api/account/connector', async (req) => {
+    const auth = requireUser(req);
+    enforceLimit(rateLimiters().auth, `connector:${auth.user.id}`);
+    const { label } = parse(tokenLabelSchema, req.body);
+    const made = await createToken(auth.user.id, label);
+    if (!made) throw conflict('You have the most connector tokens allowed. Revoke one you no longer use.');
+    await audit('connector.token_created', { actorId: auth.user.id, ip: req.ip, targetId: made.id });
+    // The only time the token itself leaves the server.
+    return { id: made.id, token: made.token };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/account/connector/:id', async (req) => {
+    const auth = requireUser(req);
+    const id = parse(z.string().uuid(), req.params.id);
+    if (!(await revokeToken(auth.user.id, id))) throw notFound();
+    await audit('connector.token_revoked', { actorId: auth.user.id, ip: req.ip, targetId: id });
     return { ok: true };
   });
 
