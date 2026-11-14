@@ -307,7 +307,10 @@ describe('the campaign folder', () => {
   });
 
   it('holds the folder setup for one campaign, with no secret in it', () => {
-    const files = kitFiles({ id: '7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b', name: 'The Sunken Bell!' }, 'https://tavern.example');
+    const files = kitFiles(
+      { id: '7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b', name: 'The Sunken Bell!' },
+      'https://tavern.example',
+    );
     const byName = new Map(files.map((f) => [f.path, f.data.toString('utf8')]));
     expect([...byName.keys()].sort()).toEqual(
       [
@@ -322,14 +325,19 @@ describe('the campaign folder', () => {
     const mcp = JSON.parse(byName.get('the-sunken-bell/.mcp.json')!);
     expect(mcp).toEqual({
       mcpServers: {
-        'tavern-master': { type: 'http', url: 'https://tavern.example/mcp/c/7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b' },
+        'tavern-master': {
+          type: 'http',
+          url: 'https://tavern.example/mcp/c/7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b',
+        },
       },
     });
     for (const text of byName.values()) expect(text).not.toMatch(/tm[car]_[A-Za-z0-9_-]{20}/);
     expect(byName.get('the-sunken-bell/.claude/agents/companion.md')).toContain(
       'tools: mcp__tavern-master__companion_view, mcp__tavern-master__companion_act',
     );
-    expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).toContain('disable-model-invocation: true');
+    expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).toContain(
+      'disable-model-invocation: true',
+    );
     expect(slugOf('  ')).toBe('campaign');
     expect(slugOf('A'.repeat(60)).length).toBe(40);
   });
