@@ -319,14 +319,16 @@ function Play({ id, campaign, state, template }: TableProps) {
           {claude && c.role === 'owner' && !archived ? (
             <button
               type="button"
-              className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}
+              className={`truncate play-sub${table.link === 'open' && !dmAbsent(dm) ? ' on' : ''}`}
               onClick={() => setSettingUp(true)}
             >
               <i />
               {subtitle}
             </button>
           ) : (
-            <p className={`truncate play-sub${table.link === 'open' && !archived ? ' on' : ''}`}>
+            <p
+              className={`truncate play-sub${table.link === 'open' && !archived && (!claude || !dmAbsent(dm)) ? ' on' : ''}`}
+            >
               <i />
               {subtitle}
             </p>

@@ -205,12 +205,17 @@ export function ClaudeSetupSheet({
           ) : (
             <>
               <p className="small">
-                In Claude, say: <i>{how === 'chat' ? 'open the table' : '/dm'}</i>.
+                In Claude, say: <i>open the table</i>.
               </p>
               <DmChip dm={dm} />
             </>
           )}
           {hello && <DmChip dm={dm} />}
+          {!hello && how === 'folder' && (
+            <p className="small muted">
+              <span className="mono">/loop /dm</span> does this for you.
+            </p>
+          )}
         </Step>
 
         {meta?.builtInAi && (

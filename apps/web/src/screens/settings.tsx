@@ -385,9 +385,11 @@ function ConnectorSheet({ onClose }: { onClose: () => void }) {
       <div className="section-title">
         <span>Add Tavern Master to Claude</span>
       </div>
-      <div className="list">{info.data && <CopyRow label="Address" value={info.data.url} />}</div>
-      <SignInSteps />
-      <p className="small muted">Open a campaign and choose Claude setup for the rest.</p>
+      <div className="stack">
+        <div className="list">{info.data && <CopyRow label="Address" value={info.data.url} />}</div>
+        <SignInSteps />
+        <p className="small muted">Open a campaign and choose Claude setup for the rest.</p>
+      </div>
 
       <div className="section-title">
         <span>Connections</span>

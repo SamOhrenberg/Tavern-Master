@@ -1,6 +1,6 @@
 import type { PendingSheet } from '@tavern/protocol';
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast } from '../app';
 import { IconBack, IconBook, IconDots, IconPlus, IconSparkle, IconUsers } from '../icons';
@@ -30,15 +30,17 @@ export function Prep({ id, campaign, state, template }: TableProps) {
 
   const [cast, setCast] = useState<CastPanel>(null);
   const [guideSignal, setGuideSignal] = useState(0);
-  const [settingUp, setSettingUp] = useState(false);
-  const [params, setParams] = useSearchParams();
-
-  // Straight from creating a Claude campaign: open the setup, once.
+  // Straight from creating a Claude campaign: open the setup, once. The query is
+  // dropped without a router navigation, which would reload the campaign under us.
+  const [settingUp, setSettingUp] = useState(
+    () => owner && c.dm === 'claude' && new URLSearchParams(window.location.search).get('setup') === 'claude',
+  );
   useEffect(() => {
-    if (params.get('setup') !== 'claude') return;
-    if (owner && c.dm === 'claude') setSettingUp(true);
-    setParams({}, { replace: true });
-  }, [params, setParams, owner, c.dm]);
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('setup')) return;
+    url.searchParams.delete('setup');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const [managing, setManaging] = useState(false);
   const [wishes, setWishes] = useState(c.myWishes);
   const [busy, run] = useAction();
@@ -116,14 +118,16 @@ export function Prep({ id, campaign, state, template }: TableProps) {
           {owner && claude ? (
             <button
               type="button"
-              className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}
+              className={`truncate play-sub${table.link === 'open' && (!claude || !dmAbsent(dm)) ? ' on' : ''}`}
               onClick={() => setSettingUp(true)}
             >
               <i />
               {table.link !== 'open' ? 'Joining the table…' : `${dmLine(dm)} · ${people}`}
             </button>
           ) : (
-            <p className={`truncate play-sub${table.link === 'open' ? ' on' : ''}`}>
+            <p
+              className={`truncate play-sub${table.link === 'open' && (!claude || !dmAbsent(dm)) ? ' on' : ''}`}
+            >
               <i />
               {table.link !== 'open'
                 ? 'Joining the table…'

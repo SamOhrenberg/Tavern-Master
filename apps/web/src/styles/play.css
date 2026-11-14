@@ -1053,7 +1053,7 @@
   display: none;
 }
 @media (max-width: 599px) {
-  .wide-only {
+  .setup .wide-only {
     display: none;
   }
   .narrow-only {
