@@ -4,7 +4,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useMe, useQuery } from '../app';
 import { IconCrown } from '../icons';
-import { Avatar, ConfirmButton, Field, Sheet, formatTokens, formatUsd } from '../ui';
+import { Avatar, ConfirmButton, Field, Sheet, copyText, formatTokens, formatUsd } from '../ui';
+import { Documents } from './documents';
 
 const WINDOWS = [
   { seconds: 10, label: '10 seconds' },
@@ -48,6 +49,9 @@ export function ManageSheet({
   const [premise, setPremise] = useState(c.premise);
   const [tone, setTone] = useState(c.settings.tone);
   const [windowSeconds, setWindowSeconds] = useState(c.settings.gatherWindowSeconds);
+  const [sheets, setSheets] = useState(c.settings.sheets);
+  const [dm, setDm] = useState(c.settings.dm);
+  const prep = c.phase === 'prep';
 
   const invitable = (friends.data?.friends ?? []).filter(
     (f) =>
@@ -61,7 +65,7 @@ export function ManageSheet({
     void run(async () => {
       await api(`/campaigns/${c.id}`, {
         method: 'PATCH',
-        body: { name, premise, tone, gatherWindowSeconds: windowSeconds },
+        body: { name, premise, tone, gatherWindowSeconds: windowSeconds, sheets, dm },
       });
       onChanged();
     }, 'Campaign updated');
@@ -174,7 +178,10 @@ export function ManageSheet({
                 required
               />
             </Field>
-            <Field label="Premise">
+            <Field
+              label="Premise"
+              hint={prep ? 'Leave it empty and the DM will invent the story.' : undefined}
+            >
               <textarea
                 className="textarea"
                 rows={4}
@@ -210,10 +217,50 @@ export function ManageSheet({
                 ))}
               </select>
             </Field>
+            <Field
+              label="Character sheets"
+              hint={
+                sheets === 'gm'
+                  ? 'The DM updates sheets itself as characters level up and change.'
+                  : 'The DM tracks hit points, conditions and inventory; players edit the rest.'
+              }
+            >
+              <select
+                className="select"
+                value={sheets}
+                onChange={(e) => setSheets(e.target.value as 'players' | 'gm')}
+              >
+                <option value="players">Players keep them</option>
+                <option value="gm">The DM keeps them</option>
+              </select>
+            </Field>
+            <Field
+              label="Dungeon Master"
+              hint={
+                dm === 'claude'
+                  ? 'You run the DM from the Claude app on your Claude plan. Turns wait for you there.'
+                  : 'The server’s own DM answers every turn, using the configured model.'
+              }
+            >
+              <select className="select" value={dm} onChange={(e) => setDm(e.target.value as 'server' | 'claude')}>
+                <option value="server">Built-in</option>
+                <option value="claude">Claude app (connector)</option>
+              </select>
+            </Field>
             <button type="submit" className="btn block" disabled={busy}>
               Save changes
             </button>
           </form>
+          {c.settings.dm === 'claude' && <ClaudeSetup campaignId={c.id} />}
+        </>
+      )}
+
+      {!prep && (
+        <>
+          <div className="section-title">
+            <span>Campaign documents</span>
+          </div>
+          <Documents campaignId={c.id} />
         </>
       )}
 
@@ -245,7 +292,7 @@ export function ManageSheet({
       <div className="stack">
         {owner ? (
           <>
-            {c.status === 'active' && (
+            {c.status === 'active' && !prep && (
               <button
                 type="button"
                 className="btn block"
@@ -306,5 +353,49 @@ export function ManageSheet({
         )}
       </div>
     </Sheet>
+  );
+}
+
+/** How to run this campaign from the Claude app: the project instructions to paste, and where the token lives. */
+function ClaudeSetup({ campaignId }: { campaignId: string }) {
+  const setup = useQuery(
+    () => api<{ url: string; projectInstructions: string }>(`/campaigns/${campaignId}/connector`),
+    [campaignId],
+  );
+  const [busy, run] = useAction();
+  return (
+    <>
+      <div className="section-title">
+        <span>Run it from Claude</span>
+      </div>
+      <ol className="steps small">
+        <li>
+          Add the connector once, under <Link to="/you">You → Claude connector</Link>.
+        </li>
+        <li>In Claude, make a Project for this campaign and paste these as its instructions.</li>
+        <li>
+          Start a chat in the project with the connector on. Say “next” to collect turns; tell it what your own
+          character does and it joins the turn.
+        </li>
+      </ol>
+      {setup.data && (
+        <div className="card stack">
+          <p className="small muted project-text">{setup.data.projectInstructions}</p>
+          <button
+            type="button"
+            className="btn block"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                if (!(await copyText(setup.data!.projectInstructions)))
+                  throw new Error('Could not copy. Select the text and copy it instead.');
+              }, 'Instructions copied')
+            }
+          >
+            Copy project instructions
+          </button>
+        </div>
+      )}
+    </>
   );
 }
