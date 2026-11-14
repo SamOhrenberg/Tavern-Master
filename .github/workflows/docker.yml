@@ -23,6 +23,8 @@ jobs:
       contents: read
       packages: write
       security-events: write
+      # upload-sarif reads the run it belongs to.
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -79,9 +81,12 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
+      # Code scanning needs a public repo (or Advanced Security), so a failed
+      # upload never blocks publishing; the next step is the real gate.
       - name: Upload scan results
         if: always() && github.event_name != 'pull_request'
-        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy.sarif
 
