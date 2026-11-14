@@ -11,7 +11,7 @@ import { migrate } from '../src/db/migrate.js';
 import { closeDb, q, q1 } from '../src/db/pool.js';
 import { setProviderForTests } from '../src/llm/index.js';
 import type { ChatProvider } from '../src/llm/types.js';
-import { openRoom } from '../src/realtime/room.js';
+import { endSession, openRoom } from '../src/realtime/room.js';
 import { ingestDocument } from '../src/rules/ingest.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from '../src/storage.js';
 import { mcpClient, signedIn, type SignedIn } from './http.js';
@@ -87,7 +87,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
 
   beforeAll(async () => {
     setConfigForTests(
-      testConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, SUMMARY_KEEP_MESSAGES: '2' }),
+      testConfig({
+        DATABASE_URL: process.env.TEST_DATABASE_URL!,
+        SUMMARY_KEEP_MESSAGES: '2',
+        ARC_AFTER_SESSIONS: '4',
+        MEMORY_CONSOLIDATE_AT: '10',
+      }),
     );
     await migrate();
     setProviderForTests(forbidden);
@@ -318,5 +323,115 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
     );
     expect(open?.n).toBe(0);
     await asHost.patch(`/api/campaigns/${camp}`, { dm: 'claude' });
+  });
+
+  const LONG = (what: string) =>
+    `${what}. ` +
+    'The party slipped through the flooded streets at low tide, bargained with the smugglers at the Bell, ' +
+    'and learned that the harbourmaster keeps a second ledger hidden under the customs house floor. '.repeat(
+      3,
+    );
+
+  it('has Claude write a finished session’s summary, then merge old sessions and tidy the notes', async () => {
+    const session = (await q1<{ id: string }>(
+      `INSERT INTO play_sessions (campaign_id, number) VALUES ($1, 1) RETURNING id`,
+      [camp],
+    ))!.id;
+    // An earlier chunk of the session was already summarised; the rest is still transcript.
+    await q(
+      `INSERT INTO summaries (campaign_id, session_id, kind, content, token_count)
+       VALUES ($1, $2, 'chunk', 'The party reached the drowned quarter.', 8)`,
+      [camp, session],
+    );
+    for (const [kind, text] of [
+      ['action', 'I wade toward the Bell.'],
+      ['dm', 'The water is cold and black.'],
+      ['action', 'I knock twice.'],
+      ['dm', 'A smuggler opens the hatch.'],
+    ])
+      await q(
+        `INSERT INTO messages (campaign_id, session_id, kind, user_id, content) VALUES ($1, $2, $3, $4, $5)`,
+        [camp, session, kind, kind === 'action' ? ann : null, text],
+      );
+    await endSession(camp, session);
+
+    const work = await claude.call('wait_for_work', { wait_seconds: 0 });
+    const workId = /Chronicle request ([0-9a-f-]{36})/.exec(work.text)?.[1];
+    expect(workId).toBeTruthy();
+    expect(work.text).toContain('This is session 1, now over.');
+    expect(work.text).toContain('<earlier_in_session>\nThe party reached the drowned quarter.');
+    expect(work.text).toContain('A smuggler opens the hatch.');
+    expect(work.text).not.toContain('Reply with JSON');
+    // Too short is refused, and the request stays Claude's to finish.
+    expect((await claude.call('save_chronicle', { work_id: workId, summary: 'Too short.' })).isError).toBe(
+      true,
+    );
+    const saved = await claude.call('save_chronicle', {
+      work_id: workId,
+      summary: LONG('Session one'),
+      memories: [{ kind: 'thread', content: 'The harbourmaster keeps a second ledger', importance: 4 }],
+    });
+    expect(saved.text).toContain('Stored in the chronicle');
+    const live = await q<{ kind: string; content: string }>(
+      `SELECT kind, content FROM summaries WHERE campaign_id = $1 AND session_id = $2 AND superseded_at IS NULL`,
+      [camp, session],
+    );
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ kind: 'session' });
+    expect(live[0]!.content.startsWith('Session 1: Session one.')).toBe(true);
+    const left = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM messages WHERE session_id = $1 AND summary_id IS NULL AND kind IN ('action', 'dm')`,
+      [session],
+    );
+    expect(left?.n).toBe(0);
+    const brief = await q1<{ brief: string }>('SELECT brief FROM campaigns WHERE id = $1', [camp]);
+    expect(brief?.brief).toContain('second ledger');
+
+    // Past the limit, old sessions are merged into an arc.
+    for (let n = 2; n <= 6; n++)
+      await q(
+        `INSERT INTO summaries (campaign_id, kind, content, token_count, created_at)
+         VALUES ($1, 'session', $2, 10, now() + make_interval(secs => $3))`,
+        [camp, `Session ${n}: things happened.`, n],
+      );
+    // And past the limit, the durable notes are tidied.
+    for (let n = 1; n <= 11; n++)
+      await q(`INSERT INTO memories (campaign_id, kind, content, importance) VALUES ($1, 'fact', $2, 3)`, [
+        camp,
+        `Fact number ${n}`,
+      ]);
+    const { queueChronicleIfDue } = await import('../src/agent/summarize.js');
+    await queueChronicleIfDue(camp);
+
+    const arc = await claude.call('wait_for_work', { wait_seconds: 0 });
+    const arcId = /Chronicle request ([0-9a-f-]{36})/.exec(arc.text)?.[1];
+    expect(arc.text).toContain('Merge them into one account');
+    expect(arc.text).toContain('save_chronicle');
+    const short = await claude.call('save_chronicle', { work_id: arcId, summary: 'x'.repeat(120) });
+    expect(short.text).toContain('too short');
+    expect(
+      (await claude.call('save_chronicle', { work_id: arcId, summary: LONG('The early arc') })).isError,
+    ).toBe(false);
+    const arcs = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM summaries WHERE campaign_id = $1 AND kind = 'arc' AND superseded_at IS NULL`,
+      [camp],
+    );
+    expect(arcs?.n).toBe(1);
+
+    const notes = await claude.call('wait_for_work', { wait_seconds: 0 });
+    const notesId = /Chronicle request ([0-9a-f-]{36})/.exec(notes.text)?.[1];
+    expect(notes.text).toContain('Fact number 11');
+    expect(notes.text).toContain('save_memories');
+    const all = Array.from({ length: 12 }, (_, i) => ({ kind: 'fact', content: `Kept ${i}`, importance: 3 }));
+    // Keeping everything is no tidying at all.
+    expect((await claude.call('save_memories', { work_id: notesId, memories: all })).isError).toBe(true);
+    expect(
+      (await claude.call('save_memories', { work_id: notesId, memories: all.slice(0, 6) })).text,
+    ).toContain('tidied');
+    const kept = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM memories WHERE campaign_id = $1 AND superseded_at IS NULL`,
+      [camp],
+    );
+    expect(kept?.n).toBe(6);
   });
 });
