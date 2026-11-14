@@ -220,10 +220,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
   });
 
   it('does one thing at a time: tools outside the request Claude holds are refused', async () => {
-    const workId = await queueWork({ campaignId: camp, kind: 'guide', subjectId: `thread-${tag}` });
+    const thread = (await q1<{ id: string }>(
+      `INSERT INTO builder_threads (campaign_id, user_id) VALUES ($1, $2) RETURNING id`,
+      [camp, ann],
+    ))!.id;
+    await q(`INSERT INTO builder_messages (thread_id, role, content) VALUES ($1, 'user', 'Help me')`, [thread]);
+    const workId = await queueWork({ campaignId: camp, kind: 'guide', subjectId: thread, requestedBy: ann });
     expect(workId).toBeTruthy();
     // The same subject is never queued twice.
-    expect(await queueWork({ campaignId: camp, kind: 'guide', subjectId: `thread-${tag}` })).toBeNull();
+    expect(await queueWork({ campaignId: camp, kind: 'guide', subjectId: thread })).toBeNull();
     const got = await claude.call('wait_for_work', { wait_seconds: 0 });
     expect(got.text).toContain(workId!);
     const refused = await claude.call('update_character', { character: 'Wren', hp_delta: -1 });
