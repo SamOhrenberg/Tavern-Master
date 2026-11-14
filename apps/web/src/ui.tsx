@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { IconBack, IconCheck, IconClose } from './icons';
+import { useAction } from './app';
+import { IconBack, IconCheck, IconClose, IconCopy } from './icons';
 
 /** Stable colour per person so avatars are recognisable at a glance. */
 function hue(seed: string): number {
@@ -288,6 +289,32 @@ export function timeAgo(iso: string | Date | null | undefined): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** One value to copy, such as the connector address or a new token. */
+export function CopyRow({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
+  const [busy, run] = useAction();
+  return (
+    <div>
+      <div className="grow">
+        <div className="small muted">{label}</div>
+        <div className={`mono small ${secret ? 'secret-value' : 'truncate'}`}>{value}</div>
+      </div>
+      <button
+        type="button"
+        className="btn sm"
+        disabled={busy}
+        onClick={() =>
+          void run(async () => {
+            if (!(await copyText(value)))
+              throw new Error('Could not copy. Select the text and copy it instead.');
+          }, 'Copied')
+        }
+      >
+        <IconCopy /> Copy
+      </button>
+    </div>
+  );
 }
 
 export async function copyText(text: string): Promise<boolean> {
