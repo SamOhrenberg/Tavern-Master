@@ -1,0 +1,20 @@
+# Put the web container on your reverse proxy's Docker network (Nginx Proxy
+# Manager, Traefik, Caddy…) instead of publishing a port on the host. The
+# proxy then forwards to http://<web container name>:8080, which
+# `docker compose ps` shows (tavern-web-1 by default).
+#
+#   docker compose -f docker-compose.yml -f compose.proxy.yml up -d
+#
+# Copy this file next to docker-compose.yml as compose.proxy.yml, and set
+# PROXY_NETWORK in .env to the proxy's network (`docker network ls`).
+# Needs Docker Compose 2.24 or later for `!reset`.
+services:
+  web:
+    ports: !reset []
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK in .env to your proxy's Docker network}
