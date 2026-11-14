@@ -434,4 +434,65 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
     );
     expect(kept?.n).toBe(6);
   });
+
+  it('sets a whole campaign up from a conversation with the host', async () => {
+    const { token } = (await createToken(host, 'chat'))!;
+    const chat = mcpClient(app, token);
+    expect((await chat.call('list_systems')).text).toContain(`- sys-${tag}:`);
+    // Not on an address pinned to one campaign.
+    expect((await claude.call('create_campaign', { name: 'Nope', system: `sys-${tag}` })).isError).toBe(true);
+
+    const made = await chat.call('create_campaign', {
+      name: `Ember Road ${tag}`,
+      system: `sys-${tag}`,
+      premise: 'A caravan crosses a burning steppe.',
+    });
+    expect(made.isError).toBe(false);
+    expect(made.text).toContain('<dm_instructions>');
+    expect(made.text).toContain('still in the lobby');
+    const link = /App link: \S+\/c\/([0-9a-f-]{36})/.exec(made.text);
+    expect(link).toBeTruthy();
+    const id = link![1]!;
+    const row = await q1<{ owner_id: string; settings: { dm: string } }>(
+      'SELECT owner_id, settings FROM campaigns WHERE id = $1',
+      [id],
+    );
+    expect(row).toMatchObject({ owner_id: host, settings: { dm: 'claude' } });
+
+    expect((await chat.call('update_campaign', { tone: 'dusty and hopeful' })).text).toBe(
+      `[Ember Road ${tag}]\nUpdated.`,
+    );
+    const mine = await chat.call('save_character', { name: 'Ash', max_hp: 11, persona: 'A caravan scout.' });
+    expect(mine.text).toContain('Character created');
+    const pal = await chat.call('save_character', {
+      name: 'Old Teo',
+      max_hp: 8,
+      companion: true,
+      played_by: 'dm',
+    });
+    expect(pal.text).toContain('Character created');
+    expect((await chat.call('save_character', { character: 'Ash', max_hp: 13 })).text).toContain(
+      'Sheet updated',
+    );
+    const teo = JSON.parse(
+      (await chat.call('get_character', { character: 'old teo' })).text.split('\n').slice(1).join('\n'),
+    );
+    expect(teo).toMatchObject({ name: 'Old Teo', kind: 'companion', played_by: 'you, the DM', max_hp: 8 });
+    const ash = await q1<{ controller: string; kind: string }>(
+      `SELECT c.controller, c.kind FROM characters c JOIN character_players p ON p.character_id = c.id
+        WHERE c.campaign_id = $1 AND c.name = 'Ash' AND p.user_id = $2`,
+      [id, host],
+    );
+    expect(ash).toEqual({ controller: 'player', kind: 'pc' });
+
+    expect((await chat.call('begin_adventure')).text).toContain('The adventure has begun');
+    expect((await chat.call('begin_adventure')).text).toContain('already begun');
+    const opening = await chat.call('wait_for_work', { wait_seconds: 0 });
+    expect(opening.text).toContain('The campaign begins now');
+    expect((await chat.call('narrate', { text: 'Dust rises behind the wagons.' })).text).toContain(
+      'Posted the opening scene',
+    );
+    expect((await chat.call('end_session')).text).toContain('Session 1 is closed');
+    await q('DELETE FROM campaigns WHERE id = $1', [id]);
+  });
 });
