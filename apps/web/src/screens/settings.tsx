@@ -6,7 +6,6 @@ import {
   IconAlert,
   IconChevron,
   IconClock,
-  IconCopy,
   IconCrown,
   IconKey,
   IconLogout,
@@ -16,13 +15,14 @@ import {
   IconUsers,
 } from '../icons';
 import { isStandalone, openInstallGuide } from '../install';
+import { SignInSteps } from '../play/claude';
 import {
   Avatar,
   ConfirmButton,
   Field,
   PageHead,
   Sheet,
-  copyText,
+  CopyRow,
   formatTokens,
   formatUsd,
   timeAgo,
@@ -353,36 +353,11 @@ function ApiKeySheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** One value to copy, such as the connector address or a new token. */
-function CopyRow({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
-  const [busy, run] = useAction();
-  return (
-    <div>
-      <div className="grow">
-        <div className="small muted">{label}</div>
-        <div className={`mono small ${secret ? 'secret-value' : 'truncate'}`}>{value}</div>
-      </div>
-      <button
-        type="button"
-        className="btn sm"
-        disabled={busy}
-        onClick={() =>
-          void run(async () => {
-            if (!(await copyText(value)))
-              throw new Error('Could not copy. Select the text and copy it instead.');
-          }, 'Copied')
-        }
-      >
-        <IconCopy /> Copy
-      </button>
-    </div>
-  );
-}
-
 /**
- * Tokens for the Claude connector, which lets the Claude app run your
- * campaigns as their Dungeon Master on your Claude plan instead of the
- * server's API key.
+ * Your connections to Claude, which let it run your campaigns on your Claude
+ * plan instead of the server's API key. Signing in is the way in; a
+ * hand-made token is kept for clients that cannot sign in and servers on
+ * plain HTTP.
  */
 function ConnectorSheet({ onClose }: { onClose: () => void }) {
   const info = useQuery(() => api<{ url: string; tokens: ConnectorToken[] }>('/account/connector'), []);
@@ -401,33 +376,24 @@ function ConnectorSheet({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Sheet title="Claude connector" onClose={onClose} tall>
+    <Sheet title="Claude" onClose={onClose} tall>
       <p className="small muted">
-        Let the Claude app be the Dungeon Master, on your Claude plan instead of an API key. Add Tavern Master
-        to Claude as a custom connector, then set a campaign’s Dungeon Master to “Claude app”.
+        Let Claude run your campaigns, on your Claude plan instead of an API key: the Dungeon Master, the
+        character guide and the chronicle.
       </p>
 
       <div className="section-title">
-        <span>Connector address</span>
+        <span>Add Tavern Master to Claude</span>
       </div>
-      <div className="list">{info.data && <CopyRow label="Server URL" value={info.data.url} />}</div>
-
-      {fresh && (
-        <>
-          <div className="section-title">
-            <span>Your new token</span>
-          </div>
-          <p className="small note">Copy it now. It is shown only once; if you lose it, make another.</p>
-          <div className="list">
-            <CopyRow label="Header value" value={`Bearer ${fresh}`} secret />
-          </div>
-        </>
-      )}
+      <div className="list">{info.data && <CopyRow label="Address" value={info.data.url} />}</div>
+      <SignInSteps />
+      <p className="small muted">Open a campaign and choose Claude setup for the rest.</p>
 
       <div className="section-title">
-        <span>Tokens</span>
+        <span>Connections</span>
         <span>{tokens.length}</span>
       </div>
+      {tokens.length === 0 && <p className="small muted">Nothing is connected yet.</p>}
       {tokens.length > 0 && (
         <div className="list">
           {tokens.map((t) => (
@@ -436,62 +402,64 @@ function ConnectorSheet({ onClose }: { onClose: () => void }) {
                 <IconKey />
               </span>
               <div className="grow">
-                <div className="truncate">{t.label}</div>
+                <div className="truncate">
+                  {t.kind === 'signin' ? (t.clientName ?? t.label).slice(0, 80) : t.label}
+                  {t.kind === 'token' && <span className="faint"> · token</span>}
+                </div>
                 <div className="small muted truncate">
                   {t.lastUsedAt ? `Used ${timeAgo(t.lastUsedAt)}` : 'Not used yet'}
-                  {t.campaignName ? ` · ${t.campaignName}` : ''}
+                  {t.scope ? ` · ${t.scope} only` : t.campaignName ? ` · ${t.campaignName}` : ''}
                 </div>
               </div>
               <ConfirmButton
                 className="btn sm danger"
-                confirmLabel="Revoke?"
+                confirmLabel="Disconnect?"
                 disabled={busy}
                 onConfirm={() =>
                   void run(async () => {
                     await api(`/account/connector/${t.id}`, { method: 'DELETE' });
                     await info.reload();
-                  }, 'Token revoked')
+                  }, 'Disconnected')
                 }
               >
-                Revoke
+                Disconnect
               </ConfirmButton>
             </div>
           ))}
         </div>
       )}
-      <form className="stack connector-make" onSubmit={make}>
-        <Field label="New token" hint="A name to tell your tokens apart, like the device or app using it.">
-          <input
-            className="input"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            maxLength={60}
-            required
-          />
-        </Field>
-        <button type="submit" className="btn block" disabled={busy}>
-          Make a token
-        </button>
-      </form>
+      <details className="token-details">
+        <summary>Use a token instead</summary>
+        <p className="small muted">For clients that cannot sign in, and for servers that are not on HTTPS.</p>
+        {fresh && (
+          <>
+            <p className="small note">Copy it now. It is shown only once; if you lose it, make another.</p>
+            <div className="list">
+              <CopyRow label="Header value" value={`Bearer ${fresh}`} secret />
+            </div>
+          </>
+        )}
+        <form className="stack connector-make" onSubmit={make}>
+          <Field label="New token" hint="A name to tell your tokens apart, like the device or app using it.">
+            <input
+              className="input"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              maxLength={60}
+              required
+            />
+          </Field>
+          <button type="submit" className="btn block" disabled={busy}>
+            Make a token
+          </button>
+        </form>
 
-      <div className="section-title">
-        <span>Add it to Claude</span>
-      </div>
-      <ol className="steps small">
-        <li>
-          On claude.ai (Safari is fine), open <b>Customize → Connectors</b> and choose{' '}
-          <b>Add custom connector</b>.
-        </li>
-        <li>Name it Tavern Master and paste the server URL above.</li>
-        <li>
-          Under <b>Request headers</b>, add <span className="mono">Authorization</span> with the header value
-          of your token.
-        </li>
-        <li>
-          Make a Claude Project for your campaign, paste the instructions from the campaign’s Manage menu, and
-          turn the connector on in its chats. Allow its tools so play is not interrupted.
-        </li>
-      </ol>
+        <p className="small muted">
+          In the client, send the header <span className="mono">Authorization</span> with the value above. In
+          a campaign folder, add it under <span className="mono">headers</span> in{' '}
+          <span className="mono">.mcp.json</span>.
+        </p>
+      </details>
     </Sheet>
   );
 }
@@ -500,6 +468,12 @@ const total = (u: UsageTotals) => u.inputTokens + u.outputTokens + u.cacheReadTo
 
 export function SettingsScreen() {
   const me = useMe();
+  const conns = useQuery(() => api<{ tokens: ConnectorToken[] }>('/account/connector'), []);
+  const lastClaude = (conns.data?.tokens ?? [])
+    .map((t) => t.lastUsedAt)
+    .filter((t): t is string => !!t)
+    .sort()
+    .at(-1);
   const { logout } = useAuth();
   const usage = useQuery(() => api<{ day: UsageTotals; month: UsageTotals }>('/account/usage'), []);
   const [panel, setPanel] = useState<Panel>(null);
@@ -549,8 +523,8 @@ export function SettingsScreen() {
       <div className="list">
         <Row
           icon={<IconCrown />}
-          title="Claude connector"
-          detail="Run campaigns from the Claude app"
+          title="Claude"
+          detail={lastClaude ? `Connected · used ${timeAgo(lastClaude)}` : 'Not connected'}
           onClick={() => setPanel('connector')}
         />
         <Row
@@ -600,7 +574,14 @@ export function SettingsScreen() {
       {panel === 'twofactor' && <TwoFactorSheet onClose={close} />}
       {panel === 'devices' && <DevicesSheet onClose={close} />}
       {panel === 'apikey' && <ApiKeySheet onClose={close} />}
-      {panel === 'connector' && <ConnectorSheet onClose={close} />}
+      {panel === 'connector' && (
+        <ConnectorSheet
+          onClose={() => {
+            close();
+            void conns.reload();
+          }}
+        />
+      )}
     </main>
   );
 }

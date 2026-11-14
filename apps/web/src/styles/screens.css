@@ -907,3 +907,18 @@ button.code-box {
   padding: 8px 0;
   border-top: 1px solid var(--line);
 }
+
+.token-details {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.token-details summary {
+  min-height: 28px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.token-details[open] summary {
+  margin-bottom: 8px;
+}
