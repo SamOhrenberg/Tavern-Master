@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { CampaignInfo } from '../src/agent/context.js';
 import { TOOLS } from '../src/agent/tools.js';
+import { crc32 } from 'node:zlib';
 import { DmDesk, type DeskTurn } from '../src/connector/desk.js';
+import { kitFiles, slugOf } from '../src/connector/kit.js';
 import { connectorGuide, projectInstructions } from '../src/connector/instructions.js';
 import { dmModeOf } from '../src/connector/mode.js';
 import { presenceOf, type PresenceFacts } from '../src/connector/presence.js';
 import '../src/connector/register.js';
 import { gateAllows } from '../src/connector/toolkit.js';
 import { connectorTools } from '../src/connector/tools.js';
+import { zipStore } from '../src/connector/zip.js';
 
 const CONNECTOR_TOOLS = connectorTools();
 
@@ -261,5 +264,73 @@ describe('connector instructions', () => {
     expect(dmModeOf({})).toBe('server');
     expect(dmModeOf(null)).toBe('server');
     expect(dmModeOf({ dm: 'something else' })).toBe('server');
+  });
+});
+
+describe('the campaign folder', () => {
+  /** Read a zip's central directory back: name, size and CRC of every entry. */
+  function readZip(buf: Buffer) {
+    const end = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    const count = buf.readUInt16LE(end + 10);
+    let at = buf.readUInt32LE(end + 16);
+    const entries: { name: string; size: number; crc: number; data: Buffer }[] = [];
+    for (let i = 0; i < count; i++) {
+      expect(buf.readUInt32LE(at)).toBe(0x02014b50);
+      const crc = buf.readUInt32LE(at + 16);
+      const size = buf.readUInt32LE(at + 24);
+      const nameLen = buf.readUInt16LE(at + 28);
+      const local = buf.readUInt32LE(at + 42);
+      const name = buf.toString('utf8', at + 46, at + 46 + nameLen);
+      expect(buf.readUInt32LE(local)).toBe(0x04034b50);
+      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+      entries.push({ name, size, crc, data: buf.subarray(start, start + size) });
+      at += 46 + nameLen;
+    }
+    return entries;
+  }
+
+  it('zips files that read back with the right names, sizes and checksums', () => {
+    const files = [
+      { path: 'a/one.txt', data: Buffer.from('hello') },
+      { path: 'a/ünïcode.md', data: Buffer.from('# Ü\n') },
+      { path: 'a/empty', data: Buffer.alloc(0) },
+    ];
+    const entries = readZip(zipStore(files));
+    expect(entries.map((e) => e.name)).toEqual(files.map((f) => f.path));
+    for (const [i, e] of entries.entries()) {
+      expect(e.size).toBe(files[i]!.data.length);
+      expect(e.crc).toBe(crc32(files[i]!.data));
+      expect(e.data.equals(files[i]!.data)).toBe(true);
+    }
+    // The same files always make the same bytes.
+    expect(zipStore(files).equals(zipStore(files))).toBe(true);
+  });
+
+  it('holds the folder setup for one campaign, with no secret in it', () => {
+    const files = kitFiles({ id: '7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b', name: 'The Sunken Bell!' }, 'https://tavern.example');
+    const byName = new Map(files.map((f) => [f.path, f.data.toString('utf8')]));
+    expect([...byName.keys()].sort()).toEqual(
+      [
+        '.claude/agents/companion.md',
+        '.claude/settings.json',
+        '.claude/skills/dm/SKILL.md',
+        '.mcp.json',
+        'CLAUDE.md',
+        'README.md',
+      ].map((p) => `the-sunken-bell/${p}`),
+    );
+    const mcp = JSON.parse(byName.get('the-sunken-bell/.mcp.json')!);
+    expect(mcp).toEqual({
+      mcpServers: {
+        'tavern-master': { type: 'http', url: 'https://tavern.example/mcp/c/7f1e0d55-1b9a-4b1e-9a2f-1c2d3e4f5a6b' },
+      },
+    });
+    for (const text of byName.values()) expect(text).not.toMatch(/tm[car]_[A-Za-z0-9_-]{20}/);
+    expect(byName.get('the-sunken-bell/.claude/agents/companion.md')).toContain(
+      'tools: mcp__tavern-master__companion_view, mcp__tavern-master__companion_act',
+    );
+    expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).toContain('disable-model-invocation: true');
+    expect(slugOf('  ')).toBe('campaign');
+    expect(slugOf('A'.repeat(60)).length).toBe(40);
   });
 });

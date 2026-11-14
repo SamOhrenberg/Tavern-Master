@@ -106,6 +106,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (dat
     expect((await as.post(`/api/campaigns/${id}/desk/release`)).status).toBe(409);
   });
 
+  it('hands the owner the connector details and the campaign folder', async () => {
+    const res = await create({ dm: 'claude', name: `Folder Test ${tag}` });
+    const id = res.body.id!;
+    const info = await as.get<{ url: string; pinnedUrl: string; projectInstructions: string }>(
+      `/api/campaigns/${id}/connector`,
+    );
+    expect(info.body.pinnedUrl).toMatch(new RegExp(`/mcp/c/${id}$`));
+    expect(info.body.projectInstructions).toContain('wait_for_work');
+    const kit = await as.get(`/api/campaigns/${id}/connector/kit`);
+    expect(kit.status).toBe(200);
+    expect(kit.headers['content-type']).toBe('application/zip');
+    expect(kit.headers['content-disposition']).toBe(`attachment; filename="folder-test-${tag}-tavern.zip"`);
+    expect(kit.headers['cache-control']).toBe('no-store');
+    expect(kit.raw.slice(0, 2)).toBe('PK');
+  });
+
   it('runs every campaign with Claude on a server with no built-in AI', async () => {
     await boot({ LLM_PROVIDER: 'none' });
     expect((await as.get<ServerMeta>('/api/meta')).body.builtInAi).toBe(false);

@@ -16,7 +16,9 @@ import { endCurrentSession, insertCampaign, startCampaign, updateCampaign } from
 import { queueChronicleIfDue } from '../agent/summarize.js';
 import { config } from '../config.js';
 import { projectInstructions } from '../connector/instructions.js';
-import { CONNECTOR_PATH } from '../connector/mcp.js';
+import { kitFiles, slugOf } from '../connector/kit.js';
+import { CONNECTOR_PATH, pinnedPath } from '../connector/mcp.js';
+import { zipStore } from '../connector/zip.js';
 import { dmModeOf } from '../connector/mode.js';
 import { dropSheetFile } from '../connector/uploads.js';
 import { cancelWork } from '../connector/work.js';
@@ -30,6 +32,7 @@ import { usageTotals } from '../llm/usage.js';
 import { listMessages } from '../realtime/messages.js';
 import { dmStatusOf, getRoom } from '../realtime/room.js';
 import { uploadPath } from '../storage.js';
+import { claudeConnected } from './account.js';
 import { areFriends } from './friends.js';
 
 const uuid = z.string().uuid();
@@ -180,13 +183,31 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
 
   /** What the owner needs to run this campaign from the Claude app. */
   app.get<{ Params: { id: string } }>('/api/campaigns/:id/connector', async (req) => {
-    const { campaignId } = await requireMember(req, true);
+    const { auth, campaignId } = await requireMember(req, true);
     const row = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
     if (!row) throw notFound('Campaign not found');
     return {
       url: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
+      pinnedUrl: new URL(pinnedPath(campaignId), config().baseUrl).toString(),
       projectInstructions: projectInstructions(row.name),
+      claudeConnected: await claudeConnected(auth.user.id),
     };
+  });
+
+  /**
+   * The campaign folder for running the table from Claude Code, as a zip. It
+   * holds no secret (Claude signs in on first use), so a plain link works.
+   */
+  app.get<{ Params: { id: string } }>('/api/campaigns/:id/connector/kit', async (req, reply) => {
+    const { campaignId } = await requireMember(req, true);
+    const row = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
+    if (!row) throw notFound('Campaign not found');
+    const zip = zipStore(kitFiles({ id: campaignId, name: row.name }, config().baseUrl.origin));
+    return reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${slugOf(row.name)}-tavern.zip"`)
+      .header('Cache-Control', 'no-store')
+      .send(zip);
   });
 
   /**
