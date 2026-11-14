@@ -18,7 +18,7 @@ x-hardening: &hardening
 
 x-app: &app
   <<: *hardening
-  image: ${TAVERN_IMAGE:-ghcr.io/samohrenberg/rpg:latest}
+  image: ${TAVERN_IMAGE:-ghcr.io/samohrenberg/tavern-master:latest}
   build:
     context: .
     dockerfile: docker/Dockerfile

@@ -40,7 +40,7 @@ Requirements: Docker with the Compose plugin, and either an LLM API key or a
 Claude plan (to run the DM from the Claude app, see below).
 
 ```bash
-git clone https://github.com/SamOhrenberg/RPG.git tavern && cd tavern
+git clone https://github.com/SamOhrenberg/tavern-master.git tavern && cd tavern
 cp .env.example .env
 # edit .env: set SECRET_KEY, ENCRYPTION_KEY, POSTGRES_PASSWORD,
 #            ADMIN_PASSWORD and ANTHROPIC_API_KEY
@@ -71,8 +71,8 @@ and a `.env`, not the source:
 
 ```bash
 mkdir tavern && cd tavern
-curl -fsSLO https://raw.githubusercontent.com/SamOhrenberg/RPG/main/docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/SamOhrenberg/RPG/main/.env.example -o .env
+curl -fsSLO https://raw.githubusercontent.com/SamOhrenberg/tavern-master/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/SamOhrenberg/tavern-master/main/.env.example -o .env
 # edit .env, then:
 docker compose pull && docker compose up -d
 ```
