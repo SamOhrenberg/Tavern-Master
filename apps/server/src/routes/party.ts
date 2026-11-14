@@ -10,9 +10,11 @@ import type {
 } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { builderTurn, threadMessages } from '../agent/builder.js';
+import { builderTurn, controlOf, threadMessages } from '../agent/builder.js';
 import { readSheet, type SheetSource } from '../agent/sheets.js';
 import { config } from '../config.js';
+import { dmMode } from '../connector/mode.js';
+import { queueWork } from '../connector/work.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, HttpError, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
@@ -266,26 +268,54 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
     return { thread };
   });
 
+  /** A guide chat as it stands, for its owner: used to pick up Claude's replies. */
+  app.get<{ Params: ThreadParams }>('/api/campaigns/:id/builder/:threadId', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    const threadId = parse(uuid, req.params.threadId);
+    const row = await q1<{ id: string; character_id: string | null }>(
+      'SELECT id, character_id FROM builder_threads WHERE id = $1 AND campaign_id = $2 AND user_id = $3',
+      [threadId, campaignId, auth.user.id],
+    );
+    if (!row) throw notFound();
+    const thread: BuilderThread = {
+      id: row.id,
+      characterId: row.character_id,
+      messages: await threadMessages(row.id),
+    };
+    return { thread };
+  });
+
   /**
    * Say something to the guide. The reply is streamed as newline-delimited
    * JSON (`BuilderEvent`s): text as it is written, a line for each roll or
-   * save, then the stored message.
+   * save, then the stored message. In a Claude campaign the message is stored
+   * and handed to Claude instead, the stream says `queued`, and the reply
+   * arrives later.
    */
   app.post<{ Params: ThreadParams }>('/api/campaigns/:id/builder/:threadId/messages', async (req, reply) => {
     const { auth, campaignId, viewer } = await requireMember(req);
     const threadId = parse(uuid, req.params.threadId);
     const { text } = parse(z.object({ text: z.string().trim().min(1).max(2000) }), req.body);
-    enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
     const thread = await q1<{ character_id: string | null; intent: Partial<Control> }>(
       'SELECT character_id, intent FROM builder_threads WHERE id = $1 AND campaign_id = $2 AND user_id = $3',
       [threadId, campaignId, auth.user.id],
     );
     if (!thread) throw notFound();
-    const control: Control = {
-      kind: thread.intent.kind ?? 'pc',
-      controller: thread.intent.controller ?? 'player',
-      playerIds: thread.intent.playerIds ?? [auth.user.id],
-    };
+
+    if ((await dmMode(campaignId)) === 'claude') {
+      // No model runs here, so there is nothing to rate limit or charge: the host's Claude answers.
+      await q(`INSERT INTO builder_messages (thread_id, role, content) VALUES ($1, 'user', $2)`, [
+        threadId,
+        text,
+      ]);
+      await q('UPDATE builder_threads SET updated_at = now() WHERE id = $1', [threadId]);
+      await queueWork({ campaignId, kind: 'guide', subjectId: threadId, requestedBy: auth.user.id });
+      reply.header('content-type', 'application/x-ndjson; charset=utf-8').header('cache-control', 'no-store');
+      return `${JSON.stringify({ type: 'queued' } satisfies BuilderEvent)}\n`;
+    }
+
+    enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
+    const control = controlOf(thread.intent, auth.user.id);
 
     // From here on the response is a stream we write ourselves.
     reply.hijack();

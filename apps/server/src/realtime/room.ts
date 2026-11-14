@@ -309,6 +309,34 @@ export class Room {
     this.statusMaybeChanged();
   }
 
+  /** Contexts for requests Claude holds (a guide chat's dice), by work id. */
+  private requests = new Map<string, TurnContext>();
+
+  /** The context tool calls for one request run in, made on first use and kept until it is finished. */
+  requestContext(workId: string, systemId: string, actors: Actor[]): TurnContext {
+    let ctx = this.requests.get(workId);
+    if (!ctx) {
+      ctx = {
+        campaignId: this.campaignId,
+        systemId,
+        turnId: null,
+        actors,
+        citations: [],
+        rolls: [],
+        stateChanged: false,
+      };
+      this.requests.set(workId, ctx);
+    }
+    return ctx;
+  }
+
+  /** The request is finished; its context goes with it. Returns it one last time. */
+  dropRequestContext(workId: string): TurnContext | undefined {
+    const ctx = this.requests.get(workId);
+    this.requests.delete(workId);
+    return ctx;
+  }
+
   /** For tests: pretend the last connector call was this long ago. */
   ageLastCallForTests(ms: number): void {
     this.lastCallAt = Date.now() - ms;
