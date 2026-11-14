@@ -49,7 +49,6 @@ lives on the Tavern Master server; nothing about the campaign is stored in this 
     '.claude/skills/dm/SKILL.md': `---
 name: dm
 description: Run this Tavern Master campaign's table as its Dungeon Master until the table goes quiet.
-disable-model-invocation: true
 ---
 Run the table.
 

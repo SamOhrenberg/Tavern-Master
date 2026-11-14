@@ -335,8 +335,9 @@ describe('the campaign folder', () => {
     expect(byName.get('the-sunken-bell/.claude/agents/companion.md')).toContain(
       'tools: mcp__tavern-master__companion_view, mcp__tavern-master__companion_act',
     );
-    expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).toContain(
-      'disable-model-invocation: true',
+    // /loop starts the skill the way Claude would, so Claude must be allowed to.
+    expect(byName.get('the-sunken-bell/.claude/skills/dm/SKILL.md')).not.toContain(
+      'disable-model-invocation',
     );
     expect(slugOf('  ')).toBe('campaign');
     expect(slugOf('A'.repeat(60)).length).toBe(40);
