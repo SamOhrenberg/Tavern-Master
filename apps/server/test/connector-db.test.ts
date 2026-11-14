@@ -219,6 +219,64 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     await settle();
   });
 
+  it('lets a blind companion read its own view and act inside the turn Claude holds', async () => {
+    const owner = { userId: host, role: 'owner' as const };
+    const agent = { kind: 'npc' as const, controller: 'agent' as const, playerIds: [] };
+    await createCharacter(
+      camp,
+      owner,
+      { name: 'Gull', maxHp: 6, sheet: {}, persona: 'A gull-eyed lookout.' },
+      agent,
+    );
+    await createCharacter(camp, owner, { name: 'Kestrel', maxHp: 6, sheet: {} }, agent);
+    // Not without a turn in hand.
+    expect((await claude.call('companion_view', { character: 'Gull' })).isError).toBe(true);
+
+    const room = await openRoom(camp);
+    await room.action(annRef(), 'I signal the boat');
+    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(turn.text).toContain('Turn 4 is yours');
+    expect(turn.text).toContain('Companions with an AI of their own, not yet acted: Gull, Kestrel.');
+
+    const view = await claude.call('companion_view', { character: 'gull' });
+    expect(view.text).toContain('A gull-eyed lookout.');
+    expect(view.text).toContain('I signal the boat');
+    expect(view.text).toContain('call companion_act once');
+    // Only what the character could know: no secret, no notebook.
+    expect(view.text).not.toContain('drowned years ago');
+    expect(view.text).not.toContain('<dm_instructions>');
+    // Only own-AI companions have a view.
+    expect((await claude.call('companion_view', { character: 'Wren' })).isError).toBe(true);
+
+    expect(
+      (await claude.call('companion_act', { character: 'Gull', action: 'I shout a warning from the mast.' }))
+        .text,
+    ).toContain('Recorded');
+    expect((await claude.call('companion_act', { character: 'Gull', action: 'Again!' })).isError).toBe(true);
+    expect((await claude.call('companion_act', { character: 'Kestrel', action: 'PASS' })).text).toContain(
+      'Passed',
+    );
+
+    const again = await claude.call('wait_for_work', { wait_seconds: 0 });
+    expect(again.text).toContain('I shout a warning from the mast.');
+    expect(again.text).not.toContain('not yet acted');
+    const posted = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM messages WHERE campaign_id = $1 AND character_name = $2 AND (meta->>'ai')::boolean`,
+      [camp, 'Gull'],
+    );
+    expect(posted?.n).toBe(1);
+    const kestrel = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM messages WHERE campaign_id = $1 AND character_name = 'Kestrel'`,
+      [camp],
+    );
+    expect(kestrel?.n).toBe(0);
+    expect((await claude.call('narrate', { text: 'The boat turns toward the bell.' })).text).toContain(
+      'Posted turn 4',
+    );
+    await settle();
+    expect((await claude.call('companion_act', { character: 'Gull', action: 'Late.' })).isError).toBe(true);
+  });
+
   it('does one thing at a time: tools outside the request Claude holds are refused', async () => {
     const thread = (await q1<{ id: string }>(
       `INSERT INTO builder_threads (campaign_id, user_id) VALUES ($1, $2) RETURNING id`,

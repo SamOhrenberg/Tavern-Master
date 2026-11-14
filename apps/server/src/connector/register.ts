@@ -3,6 +3,7 @@
 import { onRoomOpened } from '../realtime/room.js';
 import './guide.js';
 import './chronicle.js';
+import './companions.js';
 import './setup.js';
 import './uploads.js';
 import { releaseClaims } from './work.js';

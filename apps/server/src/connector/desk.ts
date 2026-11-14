@@ -10,6 +10,8 @@ export interface DeskTurn {
   /** Shared by every tool call made for this turn, so citations and rolls collect in one place. */
   ctx: TurnContext;
   claimed: boolean;
+  /** Companions with an AI of their own that have acted (or passed) in this turn. */
+  companionsActed?: string[];
 }
 
 type Timer = (fn: () => void, ms: number) => { cancel(): void };

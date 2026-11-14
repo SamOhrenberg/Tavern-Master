@@ -146,12 +146,17 @@ export interface CompanionRun {
   signal?: AbortSignal;
 }
 
-/** Ask one companion what it does this turn. Returns null when it passes. */
-export async function companionTurn(run: CompanionRun): Promise<string | null> {
-  const { llm, campaign, character: c, story } = run;
-  const system = [{ text: companionSystem(campaign, c), cache: true }];
-  if (story.summaries) system.push({ text: `## The story so far\n${story.summaries}`, cache: true });
+/** What a companion is shown, without asking anyone yet. */
+export type CompanionView = Pick<CompanionRun, 'campaign' | 'character' | 'story' | 'scene' | 'turn'>;
 
+/**
+ * The prompt for one companion's turn: who it is and how to play (system),
+ * the story so far, and this turn. Nothing from the DM's notebook, secrets,
+ * DM-only documents or brief is in it. Shared by the built-in companion call
+ * and by Claude's blind companion subagent.
+ */
+export function companionPrompt(run: CompanionView): { system: string; storySoFar: string; text: string } {
+  const { campaign, character: c, story } = run;
   const vitals = [
     `hp="${c.hp}/${c.maxHp}"`,
     c.conditions.length ? `conditions="${escapeXml(c.conditions.join(', '))}"` : '',
@@ -176,6 +181,20 @@ export async function companionTurn(run: CompanionRun): Promise<string | null> {
   ]
     .filter(Boolean)
     .join('\n\n');
+  return {
+    system: companionSystem(campaign, c),
+    storySoFar: story.summaries ? `## The story so far\n${story.summaries}` : '',
+    text,
+  };
+}
+
+/** Ask one companion what it does this turn. Returns null when it passes. */
+export async function companionTurn(run: CompanionRun): Promise<string | null> {
+  const { llm } = run;
+  const prompt = companionPrompt(run);
+  const system = [{ text: prompt.system, cache: true }];
+  if (prompt.storySoFar) system.push({ text: prompt.storySoFar, cache: true });
+  const text = prompt.text;
 
   const done = await complete(llm.provider, {
     model: llm.model,

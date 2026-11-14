@@ -945,6 +945,36 @@ export class Room {
   }
 
   /**
+   * A companion with an AI of its own acted in the turn the outside DM holds:
+   * post its action to the table and add it to the turn, so the DM reads it
+   * the next time it is handed the turn. `text` null means it passed.
+   * Returns false when no turn is claimed or the companion already acted.
+   */
+  companionActed(name: string, text: string | null): Promise<boolean> {
+    return this.runFor(async () => {
+      const turn = this.desk.turn;
+      if (!turn?.claimed) return false;
+      const acted = (turn.companionsActed ??= []);
+      if (acted.includes(name)) return false;
+      acted.push(name);
+      if (!text) return true;
+      const message = await insertMessage({
+        campaignId: this.campaignId,
+        sessionId: turn.sessionId,
+        turnId: turn.id,
+        kind: 'action',
+        userId: null,
+        characterName: name,
+        content: text,
+        meta: { ai: true },
+      });
+      this.broadcast({ type: 'message', message });
+      turn.input.actions.push({ userId: '', displayName: COMPANION_LABEL, characterName: name, text });
+      return true;
+    });
+  }
+
+  /**
    * The context an outside DM's tool call runs in: the claimed turn's, or a
    * standing one for work between turns (planning, the opening scene), which
    * is cleared each time narration is posted. Also says which stream, if

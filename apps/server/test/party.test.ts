@@ -4,6 +4,7 @@ import {
   addressedBy,
   addressHint,
   companionAction,
+  companionPrompt,
   companionSystem,
   companionTurn,
 } from '../src/agent/companion.js';
@@ -139,6 +140,23 @@ describe('a companion with its own AI', () => {
     // Nothing from the DM's side of the screen: no brief, no notebook, no state tools.
     expect(sent).not.toMatch(/notebook|Campaign brief|UNREVEALED|write_note|reveal_secret/);
     expect(companionSystem(campaign, pip)).toContain('You speak and act for Pip and nobody else');
+  });
+
+  it('gives Claude’s blind companion the same view, and no more', () => {
+    const view = companionPrompt({
+      campaign,
+      character: pip,
+      story: { summaries: 'The party reached the keep.', recent: 'Dungeon Master: The door is ajar.' },
+      scene: 'A cold stone corridor.',
+      turn,
+    });
+    const all = `${view.system}\n${view.storySoFar}\n${view.text}`;
+    expect(view.system).toBe(companionSystem(campaign, pip));
+    expect(all).toContain('cheerful tinker');
+    expect(all).toContain('The party reached the keep.');
+    expect(all).toContain('The door is ajar.');
+    expect(all).toContain('I open the door');
+    expect(all).not.toMatch(/notebook|Campaign brief|UNREVEALED|secret|DM-only|write_note/i);
   });
 
   it('treats a player action as aimed at the world unless it names the companion', () => {
