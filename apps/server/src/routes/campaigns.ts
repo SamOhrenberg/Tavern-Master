@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { entityMatches, scopeEntity } from '../agent/codex.js';
 import { pgStore } from '../agent/store.js';
+import { queueChronicleIfDue } from '../agent/summarize.js';
 import { config } from '../config.js';
 import { projectInstructions } from '../connector/instructions.js';
 import { CONNECTOR_PATH } from '../connector/mcp.js';
@@ -32,12 +33,6 @@ import { areFriends } from './friends.js';
 
 const uuid = z.string().uuid();
 
-/** Run when a campaign becomes Claude's; the chronicle registers what it needs. */
-let switchedToClaude: (campaignId: string) => Promise<void> = async () => undefined;
-export function onSwitchToClaude(fn: (campaignId: string) => Promise<void>): void {
-  switchedToClaude = fn;
-}
-const afterSwitchToClaude = (campaignId: string) => switchedToClaude(campaignId).catch(() => undefined);
 const MAX_MEMBERS = 8;
 
 const createSchema = z.object({
@@ -202,7 +197,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       await enqueue('summarize_campaign', { campaignId });
     }
     if (body.dm) await room?.setMode(body.dm);
-    if (body.dm === 'claude') await afterSwitchToClaude(campaignId);
+    // Claude picks the chronicle up from wherever the built-in one left it.
+    if (body.dm === 'claude') await queueChronicleIfDue(campaignId).catch(() => undefined);
     room?.broadcast({ type: 'state_changed' });
     if (body.dm === 'server') void room?.maybeOpen();
     return { ok: true };

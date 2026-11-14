@@ -21,12 +21,13 @@ import {
 } from '../agent/context.js';
 import { redactSecrets, runAgentTurn, usedCitations } from '../agent/loop.js';
 import { pgStore, type Actor, type CharRow, type TurnContext } from '../agent/store.js';
-import { maybeQueueSummary } from '../agent/summarize.js';
+import { maybeQueueSummary, queueChronicleIfDue } from '../agent/summarize.js';
 import { gmTools } from '../agent/tools.js';
 import { config } from '../config.js';
 import { DmDesk } from '../connector/desk.js';
 import { dmMode, dmModeOf } from '../connector/mode.js';
 import { presenceOf } from '../connector/presence.js';
+import { queueWork } from '../connector/work.js';
 import { q, q1 } from '../db/pool.js';
 import { enqueue } from '../jobs/queue.js';
 import { LlmNotConfigured, resolveLlm } from '../llm/index.js';
@@ -148,8 +149,13 @@ async function ensureSession(campaignId: string): Promise<string> {
 
 export async function endSession(campaignId: string, sessionId: string): Promise<void> {
   await q('UPDATE play_sessions SET ended_at = now() WHERE id = $1 AND ended_at IS NULL', [sessionId]);
-  // With an outside DM the server calls no model; that DM writes the chronicle itself.
-  if ((await dmMode(campaignId)) === 'server') await enqueue('summarize_campaign', { campaignId, sessionId });
+  if ((await dmMode(campaignId)) === 'server') {
+    await enqueue('summarize_campaign', { campaignId, sessionId });
+    return;
+  }
+  // With Claude the server calls no model: Claude summarises the session, and whatever else is due.
+  await queueWork({ campaignId, kind: 'chronicle', subjectId: `session:${sessionId}` });
+  await queueChronicleIfDue(campaignId);
 }
 
 /** What became of narration sent in by an outside DM. */
