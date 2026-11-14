@@ -38,8 +38,13 @@ rules/      upload parsing, chunking, embeddings, retrieval, cataloguing
 agent/      dice, game state, DM tools, prompt context and brief, agent loop,
             summaries, companions, the character guide, reading sheets
 realtime/   websocket rooms, turn collection, chat messages
-connector/  the remote MCP endpoint that lets the Claude app run a campaign's
-            DM: bearer tokens, the turn desk, session tools, DM instructions
+connector/  the remote MCP endpoint that lets Claude be every AI in a
+            campaign: tokens, the turn desk, the work queue, presence, the
+            tool gate, one module per kind of request, the campaign folder
+oauth/      sign-in for the connector: discovery, client registration,
+            approval, tokens
+campaign.ts creating, changing, beginning and pausing a campaign (used by
+            routes and by the connector)
 jobs/       background queue
 party.ts    who is in a party and who may change what (used by routes and
             by the guide, so both follow the same rules)
@@ -53,18 +58,33 @@ There are four agents, each with its own prompt and its own slice of the data:
 | Companion | `agent/companion.ts` | its sheet, the public story, this turn | nothing: it returns one action |
 | Guide | `agent/builder.ts` | rules, premise, table-visible documents, one sheet | that one sheet |
 | Sheet reader | `agent/sheets.ts` | one upload | nothing: it returns a draft |
-| DM in the Claude app | `connector/` | what the DM sees, fetched through its tools | game state through the same tools |
+| Claude, in a Claude campaign | `connector/` | per request: a turn as the DM sees it, a guide chat as the guide does, one upload, one document, the chronicle | per request: game state, that one sheet, a draft, a catalogue entry, the chronicle |
 
 Keep them separate. A companion or the guide given the DM's prompt would know
 the plot.
 
-The Claude-app DM is the built-in DM's tool set run by a model the server does
-not control, so the same rule applies to it as to the built-in loop: every
-permission lives in the tools, never in its instructions. Connector tools take
-the campaign from the token's record (set by `open_campaign`, rechecked for
-ownership on every call), not from arguments. A new GM tool reaches the
-connector automatically; give it a player-safe line in `publicSummary` and, if
-it changes state, add it to `STATE_TOOLS`.
+In a Claude campaign one model the server does not control plays every one of
+those roles, so the same rule applies to it as to the built-in loop: every
+permission lives in the tools, never in its instructions.
+
+- **Which campaign.** On a pinned address (`/mcp/c/<id>`) the address decides;
+  on `/mcp` it is the connection's last `open_campaign`, rechecked for
+  ownership on every call, and every result starts with that campaign's name.
+  No tool takes a campaign as an argument.
+- **Which address.** A connection made by signing in is valid only on the
+  address it was approved for; a hand-made token is valid on both.
+- **Which tools, now.** Each connector tool declares when it may run
+  (`during`): always, only when Claude holds nothing, only during a turn, or
+  only while it holds a request of one kind. `gated()` in
+  `connector/tools.ts` enforces it. This is what keeps a player's words to the
+  guide from ever running a DM-only tool, so a new tool needs the narrowest
+  `during` that works.
+
+A new GM tool reaches the connector automatically; give it a player-safe line
+in `publicSummary` and, if it changes state, add it to `STATE_TOOLS`. A new
+campaign-scoped model call must go behind `requireServerAi` (or check the
+campaign's mode) and have a Claude path: a kind of request in the work queue
+with its handler and tools in `connector/`.
 
 Prompt order matters for cost. The DM request is built most-stable-first
 (`buildPrompt`): instructions, the stored brief, recent history, then the
@@ -118,9 +138,9 @@ npm test
 - **Configuration** is by environment variable only. A new variable needs an
   entry in `apps/server/src/config.ts` and a commented line in
   `.env.example`.
-- **Security-sensitive changes** (auth, sessions, uploads, tool permissions,
-  anything that widens what the DM's tools can do) should say so in the pull
-  request description.
+- **Security-sensitive changes** (auth, sessions, `oauth/`, uploads, tool
+  permissions and the connector's tool gate, anything that widens what the
+  DM's tools can do) should say so in the pull request description.
 - **Commits** are small, one logical change each, with a short plain-English
   subject.
 

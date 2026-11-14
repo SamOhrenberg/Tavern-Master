@@ -27,9 +27,11 @@ the party in structured state rather than in its memory.
 - **Bring any model.** Anthropic API, AWS Bedrock, Azure AI Foundry or any
   OpenAI-compatible endpoint, with per-task model routing, prompt caching,
   token budgets and cost tracking.
-- **Or run the DM from the Claude app.** The server is also a remote MCP
-  connector: add it to Claude, and the host runs a campaign's DM from a chat
-  on their own Claude plan while friends play in the app as usual.
+- **Or let Claude run the whole table.** Choose Claude when you make a
+  campaign and the host's Claude is every AI at it, on their own Claude plan:
+  the Dungeon Master, the character guide, the sheet reader and the
+  chronicler. Friends play in the app as usual. A server with no API key at
+  all is a supported install.
 - **Built for the open internet.** Invite-only sign-up, argon2id, TOTP,
   rate limiting, CSRF protection, strict headers, non-root read-only
   containers.
@@ -37,7 +39,7 @@ the party in structured state rather than in its memory.
 ## Quick start
 
 Requirements: Docker with the Compose plugin, and either an LLM API key or a
-Claude plan (to run the DM from the Claude app, see below).
+Claude plan (to run campaigns with Claude and no key at all, see below).
 
 ```bash
 git clone https://github.com/SamOhrenberg/tavern-master.git tavern && cd tavern
@@ -96,17 +98,40 @@ connector on one address. With Nginx Proxy Manager:
 Upgrade with `docker compose pull && docker compose up -d`; migrations run on
 start.
 
-### Running the DM from the Claude app
+### Running a campaign with Claude
 
-Set a campaign's Dungeon Master to *Claude app* in its Manage menu, and the
-host's Claude chat runs the table on their own Claude plan, with no API key
-needed for play. Make a token under *You → Claude connector*, then in Claude
-add a custom connector with the URL `BASE_URL/mcp` (for example
-`https://tavern.example.com/mcp`) and a request header `Authorization` whose
-value is `Bearer ` followed by the token. The server must be reachable over
-public HTTPS on port 443, since Anthropic's cloud makes the connection. The
-campaign's Manage menu gives you the instructions to paste into a Claude
-Project for that campaign.
+When you make a campaign, *Who runs the game?* offers **Claude** beside
+**Built-in AI**. With Claude, the server calls no model for that campaign:
+the host's Claude narrates, plays companions, guides players through making
+characters, reads uploaded sheets, catalogues documents and writes the
+chronicle, all through the connector. Set `LLM_PROVIDER=none` and the server
+needs no API key; every campaign is then run with Claude.
+
+After creating the campaign the app opens **Connect Claude**, three steps
+that tick themselves off:
+
+1. **Add Tavern Master to Claude.** In Claude, open *Customize → Connectors*,
+   choose *Add custom connector*, paste `BASE_URL/mcp` (for example
+   `https://tavern.example.com/mcp`) and press Connect. Claude sends you to
+   Tavern Master to approve the connection. There is nothing to paste but
+   the address.
+2. **Give Claude the campaign**, one of two ways:
+   - *Claude app*: make a Claude Project for the campaign and paste the
+     instructions the sheet gives you. A chat runs the table while you keep
+     it going: say *run the table*, and again when Claude stops.
+   - *Runs by itself*: download the campaign's folder, open it in Claude
+     Code (the terminal, or the Code tab of Claude Desktop) and type
+     `/loop /dm`. Claude runs the table until it goes quiet and checks back
+     on its own. This is the setup where a companion with an AI of its own
+     is played by a separate, blind Claude.
+3. **Say hello.** Everyone at the table sees whether Claude is there, and
+   what is waiting for it.
+
+The server must be reachable over public HTTPS, since Anthropic's cloud makes
+the connection for claude.ai, and Claude Code signs in only over HTTPS or to
+localhost. Clients that cannot sign in, or servers on plain HTTP, can use a
+hand-made token instead: *You → Claude → Use a token instead*, sent as an
+`Authorization: Bearer` header.
 
 ## Architecture
 
@@ -171,19 +196,31 @@ its sheet, the story as the players have seen it and this turn's actions. None
 of the DM's notes, secrets or DM-only documents are in that call, so it cannot
 act on them. Its action then reaches the DM like a player's.
 
-**The DM can live in the Claude app instead.** A campaign's owner can set its
-Dungeon Master to *Claude app*. The server then calls no model for play: a
-closed turn waits on a *desk* until the owner's Claude chat collects it through
-the connector at `BASE_URL/mcp` (`take_turn`), resolves it with the same GM
-tools the built-in DM uses, and posts it with `narrate`, which applies the same
-secret redaction and codex linking before the table sees it. `open_campaign`
-hands a new chat the full DM guide, the brief, the state and the latest play,
-so long campaigns survive the chat's context limit, and Claude writes the
-rolling summaries itself (`review_chronicle`, `save_chronicle`). The connector
-authenticates with per-user bearer tokens made under *You → Claude connector*,
-acts only on campaigns that user owns, and needs the server reachable over
-public HTTPS on port 443, since Anthropic's cloud makes the connection. Setup
-steps are in the app, on that screen and in the campaign's Manage menu.
+**Or Claude is every AI at the table.** A campaign's one switch is who its AI
+is. When it is Claude, the server calls no model for that campaign at all. A
+closed turn waits on an in-memory *desk*; everything else that needs an AI (a
+player's message to the character guide, an uploaded sheet, a new document,
+the chronicle) waits in a *work queue* in Postgres. Claude takes both from one
+tool, `wait_for_work`, does what it is handed with the same GM tools the
+built-in DM uses, and answers with the tool the request names (`narrate`,
+`reply_guide`, `submit_sheet`, `catalogue_document`, `save_chronicle`).
+Narration and guide replies get the same secret redaction as the built-in DM.
+Claude does one thing at a time, and the server enforces it: while it holds a
+request, tools that do not belong to that request are refused, so a player's
+words to the guide can never make a DM-only tool run. A claim left alone for
+`CONNECTOR_CLAIM_TIMEOUT_MINUTES` goes back to waiting, and a turn handed out
+again lists what was already applied. The room tracks *presence* (listening,
+working, away, never) from the connector's calls and tells the table.
+
+The connector has two kinds of address. `BASE_URL/mcp` is account-wide and
+acts on the campaign the client last opened, and every result starts with that
+campaign's name, so a chat can tell when another chat moved it.
+`BASE_URL/mcp/c/<campaign id>` is pinned to one campaign; the downloadable
+folder uses it. Clients connect by signing in: the server is an OAuth 2.1
+protected resource and its own authorization server (dynamic client
+registration, PKCE, rotating refresh tokens), and a connection is valid only
+on the address it was approved for, so one approved for a pinned address can
+never touch another campaign. Hand-made tokens still work on both.
 
 **Campaign documents.** Any player can upload setting notes, an adventure or
 house rules to a campaign. They go through the same ingestion as rulebooks and
