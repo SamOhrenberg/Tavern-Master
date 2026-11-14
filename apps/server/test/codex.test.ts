@@ -83,9 +83,7 @@ describe('resolveRefs', () => {
 
   it('resolves an alias to its canonical entry, case-insensitively', () => {
     const { refs } = resolveRefs('A shadow — [[the grey wolf]] — watches.', world);
-    expect(refs).toEqual([
-      { text: 'the grey wolf', entityId: 'e1', name: 'Captain Vane', kind: 'npc' },
-    ]);
+    expect(refs).toEqual([{ text: 'the grey wolf', entityId: 'e1', name: 'Captain Vane', kind: 'npc' }]);
   });
 
   it('strips a marker that matches nothing back to plain text', () => {

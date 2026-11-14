@@ -107,7 +107,8 @@ export class FakeStore implements GameStore {
     return { id, created: true };
   }
   async markFirstSeen(_campaignId: string, entityIds: string[], _messageId: number) {
-    for (const e of this.ents) if (entityIds.includes(e.id) && !e.firstSeenAt) e.firstSeenAt = '2026-01-01T00:00:00.000Z';
+    for (const e of this.ents)
+      if (entityIds.includes(e.id) && !e.firstSeenAt) e.firstSeenAt = '2026-01-01T00:00:00.000Z';
   }
   async revealSecret(_campaignId: string, kind: EntityRow['kind'], name: string) {
     const found = this.ents.find(

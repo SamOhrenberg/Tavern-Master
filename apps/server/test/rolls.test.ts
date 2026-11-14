@@ -16,12 +16,21 @@ describe('player dice rolls', () => {
     );
     expect(out).toMatchObject({
       ok: true,
-      roll: { expression: '2d6+3', total: 11, character: 'Thorn', kind: 'damage', reason: 'Longsword damage' },
+      roll: {
+        expression: '2d6+3',
+        total: 11,
+        character: 'Thorn',
+        kind: 'damage',
+        reason: 'Longsword damage',
+      },
     });
   });
 
   it('defaults kind to "other" and allows an unattributed roll', () => {
-    const out = buildPlayerRoll({ expression: '1d20' }, { userId: 'u-ann', characters: party, rng: () => 15 });
+    const out = buildPlayerRoll(
+      { expression: '1d20' },
+      { userId: 'u-ann', characters: party, rng: () => 15 },
+    );
     expect(out).toMatchObject({ ok: true, roll: { kind: 'other', character: null, total: 15, reason: '' } });
   });
 

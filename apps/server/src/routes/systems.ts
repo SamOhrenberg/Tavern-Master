@@ -208,9 +208,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const title = rawTitle.trim().slice(0, 120) || originalName.replace(/\.[^.]+$/, '');
     // A library document is rules by default; setting/flavour material is opt-in.
     const kindField = part.fields.kind;
-    const docKind = (kindField && 'value' in kindField ? String(kindField.value) : '') === 'setting'
-      ? 'setting'
-      : null;
+    const docKind =
+      (kindField && 'value' in kindField ? String(kindField.value) : '') === 'setting' ? 'setting' : null;
 
     // Stored outside the web root under a random name; the client's file name
     // is kept only as a label.

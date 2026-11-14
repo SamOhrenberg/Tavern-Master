@@ -242,7 +242,11 @@ export function ManageSheet({
                   : 'The server’s own DM answers every turn, using the configured model.'
               }
             >
-              <select className="select" value={dm} onChange={(e) => setDm(e.target.value as 'server' | 'claude')}>
+              <select
+                className="select"
+                value={dm}
+                onChange={(e) => setDm(e.target.value as 'server' | 'claude')}
+              >
                 <option value="server">Built-in</option>
                 <option value="claude">Claude app (connector)</option>
               </select>
@@ -374,8 +378,8 @@ function ClaudeSetup({ campaignId }: { campaignId: string }) {
         </li>
         <li>In Claude, make a Project for this campaign and paste these as its instructions.</li>
         <li>
-          Start a chat in the project with the connector on. Say “next” to collect turns; tell it what your own
-          character does and it joins the turn.
+          Start a chat in the project with the connector on. Say “next” to collect turns; tell it what your
+          own character does and it joins the turn.
         </li>
       </ol>
       {setup.data && (

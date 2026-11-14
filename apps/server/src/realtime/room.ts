@@ -314,8 +314,8 @@ export class Room {
       );
       const want = characterName?.trim().toLowerCase();
       const pick = want
-        ? mine.find((c) => c.name.toLowerCase() === want) ??
-          mine.find((c) => c.name.toLowerCase().startsWith(want))
+        ? (mine.find((c) => c.name.toLowerCase() === want) ??
+          mine.find((c) => c.name.toLowerCase().startsWith(want)))
         : (mine.find((c) => !this.collector.hasActed(c.id)) ?? mine[0]);
       if (want && !pick) {
         return {
@@ -326,7 +326,12 @@ export class Room {
         ? { id: pick.id, name: pick.name, userIds: pick.playerIds, characterId: pick.id }
         : { id: `u:${user.id}`, name: user.displayName, userIds: [user.id], characterId: null };
       this.known.set(seat.id, seat);
-      const where = this.collector.phase === 'resolving' ? 'queued' : this.collector.phase === 'idle' ? 'opened' : 'added';
+      const where =
+        this.collector.phase === 'resolving'
+          ? 'queued'
+          : this.collector.phase === 'idle'
+            ? 'opened'
+            : 'added';
       await this.submit({ seat: seat.id, userId: user.id, text });
       return { where, as: seat.name };
     });
@@ -771,7 +776,8 @@ export class Room {
       },
     });
     // The first narration that names an entry records when the party met it.
-    if (refs.length) await pgStore.markFirstSeen(this.campaignId, [...new Set(refs.map((r) => r.entityId))], message.id);
+    if (refs.length)
+      await pgStore.markFirstSeen(this.campaignId, [...new Set(refs.map((r) => r.entityId))], message.id);
     this.broadcast({ type: 'message', message });
     if (ctx.stateChanged) this.broadcast({ type: 'state_changed' });
     return { redacted: safe.redacted };

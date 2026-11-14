@@ -470,11 +470,14 @@ export const TOOLS: ToolSpec[] = [
       "Search this world's setting material for voice, vocabulary and in-fiction colour — how a place sounds, a " +
       'turn of phrase, a device the source uses. This is flavour, never rules: borrow its tone and words, but do ' +
       'not treat anything here as a mechanic or a ruling, and do not cite it with an [R#] marker.',
-    schema: z.object({ query: z.string().trim().min(2).max(300).describe('The mood, name or detail you want colour for') }),
+    schema: z.object({
+      query: z.string().trim().min(2).max(300).describe('The mood, name or detail you want colour for'),
+    }),
     async run(input, ctx, store) {
       // The system comes from the campaign record, like lookup_rules.
       const hits = await store.searchSetting(ctx.systemId, input.query, 4);
-      if (!hits.length) return 'No setting material matches. Lean on the established voice and invent in keeping with it.';
+      if (!hits.length)
+        return 'No setting material matches. Lean on the established voice and invent in keeping with it.';
       return excerpts(
         'Setting colour (flavour, not rules — do not cite)',
         'setting',

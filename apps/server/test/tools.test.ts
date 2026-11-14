@@ -50,12 +50,23 @@ describe('tool dispatch', () => {
       content: 'Rolled for Thorn (Longsword to hit): 1d20+2 → [15] +2 = 17',
     });
     expect(ctx.rolls).toHaveLength(1);
-    expect(ctx.rolls[0]).toMatchObject({ total: 17, character: 'Thorn', expression: '1d20+2', kind: 'attack' });
+    expect(ctx.rolls[0]).toMatchObject({
+      total: 17,
+      character: 'Thorn',
+      expression: '1d20+2',
+      kind: 'attack',
+    });
   });
 
   it('defaults a roll with no kind to "other"', async () => {
     const ctx = context();
-    await dispatchTool('roll_dice', { expression: '1d6', reason: 'something' }, ctx, new FakeStore(), () => 4);
+    await dispatchTool(
+      'roll_dice',
+      { expression: '1d6', reason: 'something' },
+      ctx,
+      new FakeStore(),
+      () => 4,
+    );
     expect(ctx.rolls[0]).toMatchObject({ kind: 'other' });
   });
 

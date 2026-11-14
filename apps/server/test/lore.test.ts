@@ -101,7 +101,14 @@ describe('setting lore distillation', () => {
 
   it('gives up cleanly when the model calls cannot_distil', async () => {
     const provider = scripted([
-      [{ type: 'tool_use', id: 't1', name: 'cannot_distil', input: { reason: 'This is only a rules table.' } }],
+      [
+        {
+          type: 'tool_use',
+          id: 't1',
+          name: 'cannot_distil',
+          input: { reason: 'This is only a rules table.' },
+        },
+      ],
     ]);
     const out = await runLoreReader({ provider, ...deps });
     expect(out).toEqual({ ok: false, reason: 'This is only a rules table.' });

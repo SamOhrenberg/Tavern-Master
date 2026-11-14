@@ -31,10 +31,7 @@ export function scopeEntity(e: EntityRow): Entity {
  * markup reaches the reader. Matching is case-insensitive. Only `in_codex`
  * entries resolve, so bookkeeping entities never link.
  */
-export function resolveRefs(
-  text: string,
-  entities: EntityRow[],
-): { content: string; refs: EntityRef[] } {
+export function resolveRefs(text: string, entities: EntityRow[]): { content: string; refs: EntityRef[] } {
   const lookup = new Map<string, EntityRow>();
   for (const e of entities) {
     if (!e.inCodex) continue;

@@ -102,8 +102,7 @@ export function Story({
         const key = `b${i}`;
         const rows = block.split('\n');
         if (/^(-{3,}|\*{3,})$/.test(block)) return <hr key={key} />;
-        if (/^#{1,4}\s/.test(block))
-          return <h3 key={key}>{inline(block.replace(/^#+\s*/, ''), m, key)}</h3>;
+        if (/^#{1,4}\s/.test(block)) return <h3 key={key}>{inline(block.replace(/^#+\s*/, ''), m, key)}</h3>;
         if (rows.every((r) => /^\s*[-*•]\s+/.test(r))) {
           return (
             <ul key={key}>
@@ -238,13 +237,7 @@ interface ItemProps {
   onRef?: (entityId: string) => void;
 }
 
-export const MessageItem = memo(function MessageItem({
-  message: m,
-  mine,
-  joined,
-  onCite,
-  onRef,
-}: ItemProps) {
+export const MessageItem = memo(function MessageItem({ message: m, mine, joined, onCite, onRef }: ItemProps) {
   if (m.kind === 'dm') {
     const cite = (ref: string) => {
       const hit = m.citations?.find((c) => c.ref === ref);

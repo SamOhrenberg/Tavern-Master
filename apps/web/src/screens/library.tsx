@@ -190,8 +190,8 @@ function LorePreview({ lore }: { lore: NonNullable<GameSystem['lore']> }) {
       )}
       {lore.cautions.length > 0 && (
         <p className="small faint">
-          {lore.cautions.length} {lore.cautions.length === 1 ? 'spoiler' : 'spoilers'} kept back from the DM&rsquo;s
-          working notes.
+          {lore.cautions.length} {lore.cautions.length === 1 ? 'spoiler' : 'spoilers'} kept back from the
+          DM&rsquo;s working notes.
         </p>
       )}
     </div>
@@ -199,7 +199,11 @@ function LorePreview({ lore }: { lore: NonNullable<GameSystem['lore']> }) {
 }
 
 /** One line per entry; blank lines dropped. The DM reads these as a flat list. */
-const splitLines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+const splitLines = (s: string) =>
+  s
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
 const joinLines = (xs: string[]) => xs.join('\n');
 
 /**
@@ -265,29 +269,61 @@ function EditLore({
           anything the reader misheard. One entry per line in the lists.
         </p>
         <Field label="How it sounds" hint="A few sentences on the world's voice.">
-          <textarea className="textarea" rows={4} value={voice} maxLength={600}
-            onChange={(e) => setVoice(e.target.value)} />
+          <textarea
+            className="textarea"
+            rows={4}
+            value={voice}
+            maxLength={600}
+            onChange={(e) => setVoice(e.target.value)}
+          />
         </Field>
         <Field label="How it moves" hint="How scenes move; what a beat feels like.">
-          <textarea className="textarea" rows={3} value={pacing} maxLength={400}
-            onChange={(e) => setPacing(e.target.value)} />
+          <textarea
+            className="textarea"
+            rows={3}
+            value={pacing}
+            maxLength={400}
+            onChange={(e) => setPacing(e.target.value)}
+          />
         </Field>
 
-        <div className="section-title"><span>In-world vocabulary</span></div>
+        <div className="section-title">
+          <span>In-world vocabulary</span>
+        </div>
         <div className="stack">
           {glossary.map((g, i) => (
             <div key={i} className="card stack glossary-row">
               <div className="row">
-                <input className="input grow" value={g.term} placeholder="Term" maxLength={60}
-                  onChange={(e) => setRow(i, { term: e.target.value })} />
-                <button type="button" className="icon-btn" aria-label="Remove term" onClick={() => removeRow(i)}>
+                <input
+                  className="input grow"
+                  value={g.term}
+                  placeholder="Term"
+                  maxLength={60}
+                  onChange={(e) => setRow(i, { term: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Remove term"
+                  onClick={() => removeRow(i)}
+                >
                   <IconTrash />
                 </button>
               </div>
-              <input className="input" value={g.meaning} placeholder="What it means" maxLength={300}
-                onChange={(e) => setRow(i, { meaning: e.target.value })} />
-              <input className="input" value={g.soundsLike} placeholder="Say it like… (optional)" maxLength={120}
-                onChange={(e) => setRow(i, { soundsLike: e.target.value })} />
+              <input
+                className="input"
+                value={g.meaning}
+                placeholder="What it means"
+                maxLength={300}
+                onChange={(e) => setRow(i, { meaning: e.target.value })}
+              />
+              <input
+                className="input"
+                value={g.soundsLike}
+                placeholder="Say it like… (optional)"
+                maxLength={120}
+                onChange={(e) => setRow(i, { soundsLike: e.target.value })}
+              />
             </div>
           ))}
           <button type="button" className="btn sm ghost" onClick={addRow}>
@@ -296,16 +332,34 @@ function EditLore({
         </div>
 
         <Field label="Recurring devices" hint='One per line, e.g. "System messages in boxes".'>
-          <textarea className="textarea" rows={3} value={presentation}
-            onChange={(e) => setPresentation(e.target.value)} />
+          <textarea
+            className="textarea"
+            rows={3}
+            value={presentation}
+            onChange={(e) => setPresentation(e.target.value)}
+          />
         </Field>
-        <Field label="Touchstones" hint="Names, places and motifs the DM may reference as known. One per line.">
-          <textarea className="textarea" rows={3} value={touchstones}
-            onChange={(e) => setTouchstones(e.target.value)} />
+        <Field
+          label="Touchstones"
+          hint="Names, places and motifs the DM may reference as known. One per line."
+        >
+          <textarea
+            className="textarea"
+            rows={3}
+            value={touchstones}
+            onChange={(e) => setTouchstones(e.target.value)}
+          />
         </Field>
-        <Field label="Do not pre-empt" hint="Spoilers the DM must let players reach on their own. One per line.">
-          <textarea className="textarea" rows={3} value={cautions}
-            onChange={(e) => setCautions(e.target.value)} />
+        <Field
+          label="Do not pre-empt"
+          hint="Spoilers the DM must let players reach on their own. One per line."
+        >
+          <textarea
+            className="textarea"
+            rows={3}
+            value={cautions}
+            onChange={(e) => setCautions(e.target.value)}
+          />
         </Field>
 
         <button type="submit" className="btn primary block" disabled={busy}>
@@ -533,11 +587,7 @@ export function SystemScreen() {
           {admin && !locked && (
             <>
               {!loreBusy && (system.lore || system.settingDocumentCount > 0) && (
-                <button
-                  type="button"
-                  className="btn block"
-                  onClick={() => setEditingLore(true)}
-                >
+                <button type="button" className="btn block" onClick={() => setEditingLore(true)}>
                   {system.lore ? 'Edit the voice' : 'Write the voice by hand'}
                 </button>
               )}

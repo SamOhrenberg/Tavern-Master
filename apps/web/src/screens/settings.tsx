@@ -16,7 +16,17 @@ import {
   IconUsers,
 } from '../icons';
 import { isStandalone, openInstallGuide } from '../install';
-import { Avatar, ConfirmButton, Field, PageHead, Sheet, copyText, formatTokens, formatUsd, timeAgo } from '../ui';
+import {
+  Avatar,
+  ConfirmButton,
+  Field,
+  PageHead,
+  Sheet,
+  copyText,
+  formatTokens,
+  formatUsd,
+  timeAgo,
+} from '../ui';
 import { TwoFactorSheet } from './twofactor';
 
 type Panel = 'profile' | 'password' | 'twofactor' | 'devices' | 'apikey' | 'connector' | null;
@@ -358,7 +368,8 @@ function CopyRow({ label, value, secret }: { label: string; value: string; secre
         disabled={busy}
         onClick={() =>
           void run(async () => {
-            if (!(await copyText(value))) throw new Error('Could not copy. Select the text and copy it instead.');
+            if (!(await copyText(value)))
+              throw new Error('Could not copy. Select the text and copy it instead.');
           }, 'Copied')
         }
       >
@@ -392,8 +403,8 @@ function ConnectorSheet({ onClose }: { onClose: () => void }) {
   return (
     <Sheet title="Claude connector" onClose={onClose} tall>
       <p className="small muted">
-        Let the Claude app be the Dungeon Master, on your Claude plan instead of an API key. Add Tavern Master to
-        Claude as a custom connector, then set a campaign’s Dungeon Master to “Claude app”.
+        Let the Claude app be the Dungeon Master, on your Claude plan instead of an API key. Add Tavern Master
+        to Claude as a custom connector, then set a campaign’s Dungeon Master to “Claude app”.
       </p>
 
       <div className="section-title">
@@ -468,16 +479,17 @@ function ConnectorSheet({ onClose }: { onClose: () => void }) {
       </div>
       <ol className="steps small">
         <li>
-          On claude.ai (Safari is fine), open <b>Customize → Connectors</b> and choose <b>Add custom connector</b>.
+          On claude.ai (Safari is fine), open <b>Customize → Connectors</b> and choose{' '}
+          <b>Add custom connector</b>.
         </li>
         <li>Name it Tavern Master and paste the server URL above.</li>
         <li>
-          Under <b>Request headers</b>, add <span className="mono">Authorization</span> with the header value of
-          your token.
+          Under <b>Request headers</b>, add <span className="mono">Authorization</span> with the header value
+          of your token.
         </li>
         <li>
-          Make a Claude Project for your campaign, paste the instructions from the campaign’s Manage menu, and turn
-          the connector on in its chats. Allow its tools so play is not interrupted.
+          Make a Claude Project for your campaign, paste the instructions from the campaign’s Manage menu, and
+          turn the connector on in its chats. Allow its tools so play is not interrupted.
         </li>
       </ol>
     </Sheet>

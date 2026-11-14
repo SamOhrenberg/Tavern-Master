@@ -238,7 +238,11 @@ export function mockProvider(): ChatProvider {
                   voice: 'Wry, breathless and knowing, like a late-night broadcast narrating your doom.',
                   pacing: 'Short beats crash forward, punctuated by sudden System announcements.',
                   glossary: [
-                    { term: 'the Crawl', meaning: 'The televised dungeon the survivors descend.', sounds_like: 'the Crawl' },
+                    {
+                      term: 'the Crawl',
+                      meaning: 'The televised dungeon the survivors descend.',
+                      sounds_like: 'the Crawl',
+                    },
                   ],
                   presentation: ['System messages delivered in boxed announcements'],
                   touchstones: ['the System', 'the Syndicate'],

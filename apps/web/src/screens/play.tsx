@@ -360,8 +360,7 @@ function Play({ id, campaign, state, template }: TableProps) {
               ))}
               {messages.map((m, i) => {
                 const prev = messages[i - 1];
-                const joined =
-                  m.kind === 'action' && prev?.kind === 'action' && prev.user?.id === m.user?.id;
+                const joined = m.kind === 'action' && prev?.kind === 'action' && prev.user?.id === m.user?.id;
                 return (
                   <Fragment key={m.id}>
                     <MessageItem

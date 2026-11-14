@@ -253,14 +253,7 @@ export type BuilderEvent =
   | { type: 'done'; message: BuilderMessage; characterId: string | null }
   | { type: 'error'; message: string };
 
-export type EntityKind =
-  | 'npc'
-  | 'location'
-  | 'quest'
-  | 'item'
-  | 'faction'
-  | 'event'
-  | 'term';
+export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
 
 export interface Entity {
   id: string;

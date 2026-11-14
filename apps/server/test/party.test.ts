@@ -144,7 +144,11 @@ describe('a companion with its own AI', () => {
   it('treats a player action as aimed at the world unless it names the companion', () => {
     const by = (text: string, character = 'Thorn', name = 'Pip') =>
       addressedBy(
-        { number: 1, actions: [{ userId: 'u', displayName: 'Ann', characterName: character, text }], passed: [] },
+        {
+          number: 1,
+          actions: [{ userId: 'u', displayName: 'Ann', characterName: character, text }],
+          passed: [],
+        },
         name,
       );
     // A generic action is directed at the DM and the world, not at Pip.

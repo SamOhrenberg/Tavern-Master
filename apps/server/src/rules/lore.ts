@@ -30,7 +30,10 @@ const loreShape = z.object({
 });
 
 const text = (max: number) =>
-  z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string().transform((s) => s.trim().slice(0, max)));
+  z.preprocess(
+    (v) => (typeof v === 'string' ? v : ''),
+    z.string().transform((s) => s.trim().slice(0, max)),
+  );
 const list = <T extends z.ZodType>(item: T, cap: number) =>
   z.preprocess((v) => (Array.isArray(v) ? v.slice(0, cap) : []), z.array(item));
 
@@ -58,19 +61,21 @@ export const loreSchema = z
       cautions: list(text(300), 30),
     }),
   )
-  .transform(
-    (l): SettingLore => ({
-      version: 1,
-      voice: l.voice,
-      pacing: l.pacing,
-      glossary: l.glossary
-        .filter((g) => g.term && g.meaning)
-        .map((g) => ({ term: g.term, meaning: g.meaning, ...(g.sounds_like ? { soundsLike: g.sounds_like } : {}) })),
-      presentation: l.presentation.filter(Boolean),
-      touchstones: l.touchstones.filter(Boolean),
-      cautions: l.cautions.filter(Boolean),
-    }),
-  );
+  .transform((l): SettingLore => ({
+    version: 1,
+    voice: l.voice,
+    pacing: l.pacing,
+    glossary: l.glossary
+      .filter((g) => g.term && g.meaning)
+      .map((g) => ({
+        term: g.term,
+        meaning: g.meaning,
+        ...(g.sounds_like ? { soundsLike: g.sounds_like } : {}),
+      })),
+    presentation: l.presentation.filter(Boolean),
+    touchstones: l.touchstones.filter(Boolean),
+    cautions: l.cautions.filter(Boolean),
+  }));
 
 /**
  * Parse a human correction to a system's distilled lore. Accepts the protocol
@@ -97,19 +102,21 @@ export const editLoreSchema = z
       cautions: list(text(300), 30),
     }),
   )
-  .transform(
-    (l): SettingLore => ({
-      version: 1,
-      voice: l.voice,
-      pacing: l.pacing,
-      glossary: l.glossary
-        .filter((g) => g.term && g.meaning)
-        .map((g) => ({ term: g.term, meaning: g.meaning, ...(g.soundsLike ? { soundsLike: g.soundsLike } : {}) })),
-      presentation: l.presentation.filter(Boolean),
-      touchstones: l.touchstones.filter(Boolean),
-      cautions: l.cautions.filter(Boolean),
-    }),
-  );
+  .transform((l): SettingLore => ({
+    version: 1,
+    voice: l.voice,
+    pacing: l.pacing,
+    glossary: l.glossary
+      .filter((g) => g.term && g.meaning)
+      .map((g) => ({
+        term: g.term,
+        meaning: g.meaning,
+        ...(g.soundsLike ? { soundsLike: g.soundsLike } : {}),
+      })),
+    presentation: l.presentation.filter(Boolean),
+    touchstones: l.touchstones.filter(Boolean),
+    cautions: l.cautions.filter(Boolean),
+  }));
 
 // ---------- the reader's tools ----------
 
@@ -149,7 +156,8 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'cannot_distil',
-    description: 'Give up if the material carries no usable voice or vocabulary (e.g. it is only rules or tables).',
+    description:
+      'Give up if the material carries no usable voice or vocabulary (e.g. it is only rules or tables).',
     inputSchema: jsonSchema(cannotArgs),
   },
 ];
@@ -212,7 +220,9 @@ export async function runLoreReader(deps: LoreReaderDeps): Promise<LoreOutcome> 
 
     if (done.stop === 'refusal') return { ok: false, reason: 'the model declined to read this material' };
 
-    const calls = done.content.filter((b): b is Extract<typeof b, { type: 'tool_use' }> => b.type === 'tool_use');
+    const calls = done.content.filter(
+      (b): b is Extract<typeof b, { type: 'tool_use' }> => b.type === 'tool_use',
+    );
     if (done.stop !== 'tool_use' || !calls.length) {
       return { ok: false, reason: 'the reader finished without recording any lore' };
     }
@@ -233,7 +243,10 @@ export async function runLoreReader(deps: LoreReaderDeps): Promise<LoreOutcome> 
       }
       if (call.name === 'cannot_distil') {
         const parsed = cannotArgs.safeParse(call.input ?? {});
-        return { ok: false, reason: parsed.success ? parsed.data.reason : 'the material could not be distilled' };
+        return {
+          ok: false,
+          reason: parsed.success ? parsed.data.reason : 'the material could not be distilled',
+        };
       }
       let content: string;
       try {
@@ -303,18 +316,17 @@ const sumUsage = (a: Usage, b: Usage): Usage => ({
  * only — the result never enters the rules corpus.
  */
 export async function distilLore(systemId: string): Promise<void> {
-  const sys = await q1<{ created_by: string | null }>(
-    'SELECT created_by FROM game_systems WHERE id = $1',
-    [systemId],
-  );
+  const sys = await q1<{ created_by: string | null }>('SELECT created_by FROM game_systems WHERE id = $1', [
+    systemId,
+  ]);
   if (!sys) return; // system deleted while queued
 
   const corpus = await settingCorpus(systemId);
   if (!corpus.length) {
-    await q('UPDATE game_systems SET lore = NULL, lore_status = $2, lore_error = NULL, lore_at = NULL WHERE id = $1', [
-      systemId,
-      'none',
-    ]);
+    await q(
+      'UPDATE game_systems SET lore = NULL, lore_status = $2, lore_error = NULL, lore_at = NULL WHERE id = $1',
+      [systemId, 'none'],
+    );
     return;
   }
 
@@ -346,7 +358,10 @@ export async function distilLore(systemId: string): Promise<void> {
         const slice = corpus.slice(section, section + count);
         if (!slice.length) return 'No sections at that index.';
         return slice
-          .map((c, i) => `[${section + i}] ${[c.title, c.heading].filter(Boolean).join(' — ')}\n${c.content.slice(0, 1500)}`)
+          .map(
+            (c, i) =>
+              `[${section + i}] ${[c.title, c.heading].filter(Boolean).join(' — ')}\n${c.content.slice(0, 1500)}`,
+          )
           .join('\n\n');
       },
     });
