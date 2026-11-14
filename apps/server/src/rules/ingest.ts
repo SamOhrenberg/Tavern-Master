@@ -1,5 +1,7 @@
 import { q, q1, tx } from '../db/pool.js';
 import { enqueue, hasPending } from '../jobs/queue.js';
+import { dmMode } from '../connector/mode.js';
+import { queueWork } from '../connector/work.js';
 import { log } from '../log.js';
 import { uploadPath } from '../storage.js';
 import { catalogue } from './catalogue.js';
@@ -29,6 +31,16 @@ const setStatus = (id: string, status: string, error: string | null = null) =>
 async function describe(doc: DocRow, chunks: Chunk[]): Promise<void> {
   if (!doc.campaign_id) return;
   try {
+    // In a Claude campaign the server calls no model: Claude catalogues it when it is next at the table.
+    if ((await dmMode(doc.campaign_id)) === 'claude') {
+      await queueWork({
+        campaignId: doc.campaign_id,
+        kind: 'catalogue',
+        subjectId: doc.id,
+        requestedBy: doc.uploaded_by,
+      });
+      return;
+    }
     const owner = await q1<{ owner_id: string }>('SELECT owner_id FROM campaigns WHERE id = $1', [
       doc.campaign_id,
     ]);
