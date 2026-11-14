@@ -872,3 +872,38 @@ button.code-box {
   max-width: 14em;
   vertical-align: bottom;
 }
+
+/* ---------- approving a connection from Claude ---------- */
+.connect {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  min-height: 100dvh;
+  max-width: 460px;
+  margin: 0 auto;
+}
+.connect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.connect-icon {
+  width: 34px;
+  height: 34px;
+  color: var(--gold);
+}
+.connect-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.connect-body {
+  line-height: 1.5;
+}
+.connect-who {
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}

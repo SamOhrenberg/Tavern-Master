@@ -19,6 +19,10 @@ export default defineConfig({
     proxy: {
       '/api': { target: api },
       '/ws': { target: api, ws: true },
+      // The connector and its sign-in, so Claude can be pointed at the dev server too.
+      '/mcp': { target: api },
+      '/oauth': { target: api },
+      '/.well-known': { target: api },
     },
   },
 });

@@ -7,6 +7,7 @@ import { IconBook, IconCampfire, IconCog, IconShield, IconUsers } from './icons'
 import { AdminScreen } from './screens/admin';
 import { AuthScreen } from './screens/auth';
 import { CampaignsScreen } from './screens/campaigns';
+import { ConnectScreen } from './screens/connect';
 import { FriendsScreen } from './screens/friends';
 import { LibraryScreen, SystemScreen } from './screens/library';
 import { PlayScreen } from './screens/play';
@@ -104,6 +105,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/c/:id" element={<PlayScreen />} />
+      <Route path="/connect" element={<ConnectScreen />} />
       <Route element={<Shell />}>
         <Route index element={<CampaignsScreen />} />
         <Route path="friends" element={<FriendsScreen />} />
