@@ -1,3 +1,4 @@
+import type { ServerMeta } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
@@ -10,6 +11,7 @@ import { createToken, listTokens, revokeToken } from '../connector/tokens.js';
 import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireUser } from '../http/security.js';
+import { builtInAiFor } from '../llm/index.js';
 import { usageTotals } from '../llm/usage.js';
 import { decryptSecret, encryptSecret } from '../security/crypto.js';
 import { displayNameSchema } from './auth.js';
@@ -41,7 +43,31 @@ async function checkPassword(userId: string, password: string): Promise<boolean>
   return !!row && (await verifyPassword(row.password_hash, password));
 }
 
+/** Whether this user has a connection to Claude that has been used at least once. */
+export async function claudeConnected(userId: string): Promise<boolean> {
+  const row = await q1(
+    `SELECT 1 FROM connector_tokens
+      WHERE user_id = $1 AND revoked_at IS NULL AND last_used_at IS NOT NULL LIMIT 1`,
+    [userId],
+  );
+  return !!row;
+}
+
 export async function accountRoutes(app: FastifyInstance): Promise<void> {
+  /** What this server can do for you, for screens that offer a choice. */
+  app.get('/api/meta', async (req): Promise<ServerMeta> => {
+    const auth = requireUser(req);
+    const [builtInAi, connected] = await Promise.all([
+      builtInAiFor(auth.user.id),
+      claudeConnected(auth.user.id),
+    ]);
+    return {
+      builtInAi,
+      connectorUrl: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
+      claudeConnected: connected,
+    };
+  });
+
   app.patch('/api/account/profile', async (req) => {
     const auth = requireUser(req);
     const body = parse(profileSchema, req.body);

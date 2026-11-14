@@ -246,6 +246,7 @@ export class Room {
             you: user,
             present: this.present(),
             turn: this.turnState(),
+            dm: { mode: 'server', state: 'listening', lastSeenAt: null, waiting: 0 },
           } satisfies ServerMessage),
         );
       }

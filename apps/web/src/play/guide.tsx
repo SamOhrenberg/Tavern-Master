@@ -115,7 +115,7 @@ export function GuideSheet({
             done = true;
             setMessages((list) => [...list, ev.message]);
             setSaved(ev.characterId);
-          } else {
+          } else if (ev.type === 'error') {
             notify(ev.message, 'error');
           }
         },

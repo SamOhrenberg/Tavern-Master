@@ -2,7 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { setConfigForTests, testConfig } from '../src/config.js';
 import { anthropicProvider, isAdaptiveModel } from '../src/llm/anthropic.js';
-import { resolveLlm, setProviderForTests } from '../src/llm/index.js';
+import { instanceAiConfigured, resolveLlm, setProviderForTests } from '../src/llm/index.js';
 import { mockProvider } from '../src/llm/mock.js';
 import { openAiProvider } from '../src/llm/openai.js';
 import { costMicroUsd, priceFor } from '../src/llm/pricing.js';
@@ -272,6 +272,16 @@ describe('provider selection and pricing', () => {
       expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
       expect(events.at(-1)!.type).toBe('done');
     }
+  });
+
+  it('has no built-in model with LLM_PROVIDER=none', async () => {
+    setConfigForTests(testConfig({ LLM_PROVIDER: 'none' }));
+    setProviderForTests();
+    await expect(resolveLlm('narration')).rejects.toThrow('no built-in AI');
+    expect(instanceAiConfigured()).toBe(false);
+    setConfigForTests(testConfig());
+    setProviderForTests();
+    expect(instanceAiConfigured()).toBe(true);
   });
 
   it('picks a model per task from configuration', async () => {

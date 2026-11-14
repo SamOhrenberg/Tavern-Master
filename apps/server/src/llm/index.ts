@@ -66,8 +66,36 @@ function instanceProvider(): ChatProvider {
     case 'openai':
       instance = openAiProvider({ baseUrl: cfg.OPENAI_BASE_URL, apiKey: cfg.OPENAI_API_KEY });
       break;
+    case 'none':
+      throw new LlmNotConfigured('This server has no built-in AI. Run the campaign with Claude.');
   }
   return instance!;
+}
+
+/** Whether the server itself has a model it can call, before any user's own key. */
+export function instanceAiConfigured(): boolean {
+  if (override) return true;
+  const cfg = config();
+  switch (cfg.LLM_PROVIDER) {
+    case 'none':
+      return false;
+    case 'anthropic':
+      return !!cfg.ANTHROPIC_API_KEY;
+    case 'foundry':
+      return !!cfg.ANTHROPIC_FOUNDRY_RESOURCE;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Whether a campaign this user owns could run on a built-in model: the
+ * server has one, or the user stored a key of their own.
+ */
+export async function builtInAiFor(userId: string): Promise<boolean> {
+  if (instanceAiConfigured()) return true;
+  const row = await q1('SELECT 1 FROM user_api_keys WHERE user_id = $1 AND enabled', [userId]);
+  return !!row;
 }
 
 interface KeyRow {

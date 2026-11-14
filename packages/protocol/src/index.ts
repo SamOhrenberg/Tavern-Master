@@ -120,6 +120,8 @@ export interface CampaignSummary {
   phase: CampaignPhase;
   memberCount: number;
   role: 'owner' | 'player';
+  /** Who is every AI for this campaign. */
+  dm: DmMode;
 }
 
 export interface CampaignMember extends UserRef {
@@ -135,6 +137,8 @@ export interface CampaignDetail extends CampaignSummary {
   pendingInvites: { id: string; invitee: UserRef }[];
   /** Your own wishes for the story. Only you and the GM read them. */
   myWishes: string;
+  /** Where the campaign's AI is right now. */
+  dmStatus: DmStatus;
 }
 
 export interface CampaignSettings {
@@ -143,20 +147,67 @@ export interface CampaignSettings {
   /** 'gm' lets the GM edit sheets itself as the story changes the characters. */
   sheets: 'players' | 'gm';
   /**
-   * Who runs the Dungeon Master: 'server' is the built-in one on the
-   * configured model; 'claude' is the owner's Claude app, through the connector.
+   * Who is every AI for this campaign: 'server' is the built-in one on the
+   * configured model; 'claude' is the owner's Claude, through the connector,
+   * and then the server calls no model for this campaign at all.
    */
-  dm: 'server' | 'claude';
+  dm: DmMode;
 }
 
-/** A token that lets an MCP client, such as the Claude app, run your campaigns. Never includes the token. */
+/** Who is every AI for a campaign: the server's built-in model, or the owner's Claude. */
+export type DmMode = 'server' | 'claude';
+
+/** Where a campaign's AI is right now. For the built-in DM it is always listening. */
+export interface DmStatus {
+  mode: DmMode;
+  /**
+   * listening: Claude is polling for work now, or called a tool in the last 75 s.
+   * working:   Claude holds a turn or another request.
+   * away:      Claude has run this campaign before but is not here now.
+   * never:     Claude has not opened this campaign yet.
+   */
+  state: 'listening' | 'working' | 'away' | 'never';
+  lastSeenAt: string | null;
+  /** Requests waiting for Claude, a gathered turn counting as one. */
+  waiting: number;
+}
+
+/** What this server can do, for screens that offer a choice. */
+export interface ServerMeta {
+  /** A built-in model is usable: the server has one configured, or you stored your own key. */
+  builtInAi: boolean;
+  connectorUrl: string;
+  /** You have a connection (approved sign-in or hand-made token) that has been used at least once. */
+  claudeConnected: boolean;
+}
+
+/** A sign-in request from an MCP client, shown on the approval screen. */
+export interface ConnectRequest {
+  id: string;
+  /** The name the client registered with, e.g. "Claude". Untrusted text. */
+  clientName: string;
+  /** Where the client will be sent back to: its host only, e.g. "claude.ai" or "localhost". */
+  redirectHost: string;
+  /** Set when the request is for one campaign's pinned address. */
+  campaign: { id: string; name: string } | null;
+}
+
+/**
+ * A connection that lets an MCP client, such as the Claude app, run your
+ * campaigns: one made by signing in, or a hand-made token. Never includes a secret.
+ */
 export interface ConnectorToken {
   id: string;
+  kind: 'signin' | 'token';
   label: string;
+  /** The name the client signed in with. Untrusted text. */
+  clientName: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   /** The campaign it last opened. */
   campaignName: string | null;
+  /** The one campaign this connection is limited to, when it was made for a pinned address. */
+  scope: string | null;
 }
 
 export interface CampaignInvite {
@@ -209,6 +260,17 @@ export interface CharacterDraft {
   persona: string;
 }
 
+/** An uploaded sheet waiting for, or read by, Claude. */
+export interface PendingSheet {
+  id: string;
+  fileName: string;
+  status: 'waiting' | 'claimed' | 'done' | 'failed';
+  /** Who will run the character, as chosen when it was uploaded. */
+  control: { kind: CharacterKind; controller: CharacterController; playerIds: string[] };
+  draft?: CharacterDraft;
+  error?: string;
+}
+
 // ---------- campaign documents ----------
 
 export type CampaignDocKind = 'rules' | 'setting' | 'adventure' | 'character' | 'handout' | 'other';
@@ -251,6 +313,8 @@ export type BuilderEvent =
   | { type: 'delta'; text: string }
   | { type: 'tool'; tool: string; summary: string }
   | { type: 'done'; message: BuilderMessage; characterId: string | null }
+  /** The message was stored and handed to Claude; the reply arrives later. */
+  | { type: 'queued' }
   | { type: 'error'; message: string };
 
 export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
@@ -383,7 +447,7 @@ export type ClientMessage =
   | { type: 'ping' };
 
 export type ServerMessage =
-  | { type: 'hello'; you: UserRef; present: UserRef[]; turn: TurnState }
+  | { type: 'hello'; you: UserRef; present: UserRef[]; turn: TurnState; dm: DmStatus }
   | { type: 'presence'; present: UserRef[] }
   | { type: 'message'; message: ChatMessage }
   /** A standalone dice roll (a player rolled), to animate and append to the log. */
@@ -394,6 +458,12 @@ export type ServerMessage =
   | { type: 'dm_tool'; turnId: string; tool: string; summary: string }
   | { type: 'dm_end'; turnId: string; ok: boolean }
   | { type: 'state_changed' }
+  /** Where the campaign's AI is changed. */
+  | { type: 'dm_status'; dm: DmStatus }
+  /** Your guide chat has a new reply. Sent only to the thread's owner. */
+  | { type: 'guide'; threadId: string }
+  /** An uploaded sheet of yours moved on. Sent only to the uploader. */
+  | { type: 'sheet'; id: string; status: PendingSheet['status'] }
   | { type: 'error'; code: string; message: string }
   | { type: 'pong' };
 

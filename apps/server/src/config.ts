@@ -64,7 +64,7 @@ const schema = z.object({
   PARSE_MEMORY_MB: int(512, 128),
 
   // --- llm ---
-  LLM_PROVIDER: z.enum(['anthropic', 'bedrock', 'foundry', 'openai', 'mock']).default('anthropic'),
+  LLM_PROVIDER: z.enum(['anthropic', 'bedrock', 'foundry', 'openai', 'mock', 'none']).default('anthropic'),
   LLM_MODEL_NARRATION: z.string().default('claude-opus-5-5'),
   LLM_MODEL_UTILITY: z.string().default('claude-haiku-5-5'),
   LLM_EFFORT_NARRATION: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
@@ -110,6 +110,17 @@ const schema = z.object({
   // With the Claude app as DM, how long a gathered turn waits for it before
   // the table is given the floor back.
   CONNECTOR_TURN_TIMEOUT_MINUTES: int(120, 5, 1440),
+  // The longest one wait_for_work call blocks. Keep it under the reverse proxy's read timeout.
+  CONNECTOR_MAX_WAIT_SECONDS: int(50, 10, 600),
+  // A turn or request Claude claimed and then left alone this long goes back to waiting.
+  CONNECTOR_CLAIM_TIMEOUT_MINUTES: int(10, 2, 120),
+  // With no players connected and nothing to do for this long, Claude is told to stop polling.
+  CONNECTOR_IDLE_MINUTES: int(10, 1, 240),
+  // The largest uploaded sheet photo handed to Claude as an image.
+  CONNECTOR_IMAGE_MAX_BYTES: int(3_000_000, 100_000),
+  // Signing in from Claude: how long an access token lasts, and how long an unused connection stays signed in.
+  OAUTH_ACCESS_TOKEN_MINUTES: int(60, 5, 1440),
+  OAUTH_REFRESH_TOKEN_DAYS: int(90, 1, 365),
 
   // --- budgets (tokens per rolling 24h; 0 disables) ---
   USER_DAILY_TOKEN_BUDGET: int(8_000_000),

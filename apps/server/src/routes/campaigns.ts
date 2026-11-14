@@ -1,5 +1,6 @@
 import type {
   CampaignDetail,
+  DmStatus,
   CampaignInvite,
   CampaignSettings,
   CampaignSummary,
@@ -20,6 +21,7 @@ import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
 import { requireUser } from '../http/security.js';
+import { builtInAiFor } from '../llm/index.js';
 import { usageTotals } from '../llm/usage.js';
 import { listMessages } from '../realtime/messages.js';
 import { endSession, getRoom } from '../realtime/room.js';
@@ -35,8 +37,9 @@ const createSchema = z.object({
   premise: z.string().trim().max(2000).default(''),
   tone: z.string().trim().max(300).default(''),
   sheets: z.enum(['players', 'gm']).default('players'),
-  dm: z.enum(['server', 'claude']).default('server'),
+  dm: z.enum(['server', 'claude']).optional(),
 });
+const NO_BUILT_IN = 'This server has no built-in AI. Choose Claude.';
 const patchSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   premise: z.string().trim().max(2000).optional(),
@@ -54,6 +57,13 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
     dm: dmModeOf(raw),
   };
 }
+
+const placeholderStatus = (mode: DmStatus['mode']): DmStatus => ({
+  mode,
+  state: mode === 'server' ? 'listening' : 'never',
+  lastSeenAt: null,
+  waiting: 0,
+});
 
 const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, c.owner_id, c.status,
                             c.phase, c.settings, c.scene, m.role, m.wishes,
@@ -74,6 +84,7 @@ function toSummary(r: Record<string, unknown>): CampaignSummary {
     phase: r.phase as 'prep' | 'active',
     memberCount: r.member_count as number,
     role: r.role as 'owner' | 'player',
+    dm: dmModeOf(r.settings as { dm?: unknown }),
   };
 }
 
@@ -89,6 +100,9 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const body = parse(createSchema, req.body);
     if (!(await q1('SELECT 1 FROM game_systems WHERE id = $1', [body.systemId])))
       throw badRequest('Unknown game system.');
+    const builtIn = await builtInAiFor(auth.user.id);
+    const dm = body.dm ?? (builtIn ? 'server' : 'claude');
+    if (dm === 'server' && !builtIn) throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
     const id = await tx(async (client) => {
       const row = await q1<{ id: string }>(
         `INSERT INTO campaigns (system_id, owner_id, name, premise, settings) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -97,7 +111,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           auth.user.id,
           body.name,
           body.premise,
-          JSON.stringify({ tone: body.tone, sheets: body.sheets, dm: body.dm }),
+          JSON.stringify({ tone: body.tone, sheets: body.sheets, dm }),
         ],
         client,
       );
@@ -147,13 +161,16 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         invitee: { id: p.uid, username: p.username, displayName: p.display_name },
       })),
       myWishes: row.wishes,
+      dmStatus: placeholderStatus(dmModeOf(row.settings)),
     };
     return { campaign: detail };
   });
 
   app.patch<{ Params: { id: string } }>('/api/campaigns/:id', async (req) => {
-    const { campaignId } = await requireMember(req, true);
+    const { auth, campaignId } = await requireMember(req, true);
     const body = parse(patchSchema, req.body);
+    if (body.dm === 'server' && !(await builtInAiFor(auth.user.id)))
+      throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
     const settings: Partial<CampaignSettings> = {};
     if (body.tone !== undefined) settings.tone = body.tone;
     if (body.gatherWindowSeconds !== undefined) settings.gatherWindowSeconds = body.gatherWindowSeconds;
