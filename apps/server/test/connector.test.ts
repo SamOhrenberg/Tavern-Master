@@ -5,7 +5,11 @@ import { DmDesk, type DeskTurn } from '../src/connector/desk.js';
 import { connectorGuide, projectInstructions } from '../src/connector/instructions.js';
 import { dmModeOf } from '../src/connector/mode.js';
 import { presenceOf, type PresenceFacts } from '../src/connector/presence.js';
-import { CONNECTOR_TOOLS } from '../src/connector/tools.js';
+import '../src/connector/register.js';
+import { gateAllows } from '../src/connector/toolkit.js';
+import { connectorTools } from '../src/connector/tools.js';
+
+const CONNECTOR_TOOLS = connectorTools();
 
 /** Timers the test fires by hand. */
 function manualTimers() {
@@ -165,12 +169,15 @@ describe('connector tools', () => {
     for (const name of [
       'list_campaigns',
       'open_campaign',
-      'take_turn',
+      'wait_for_work',
+      'host_action',
+      'close_turn',
       'narrate',
-      'review_chronicle',
-      'save_chronicle',
+      'skip_work',
     ])
       expect(names).toContain(name);
+    expect(names).not.toContain('take_turn');
+    expect(names).not.toContain('review_chronicle');
     for (const t of TOOLS) expect(names).toContain(t.name);
     expect(names).toContain('edit_sheet');
   });
@@ -190,6 +197,35 @@ describe('connector tools', () => {
     expect(hint('narrate')).toBe(false);
     expect(hint('update_character')).toBe(false);
   });
+
+  it('lets each tool run only while Claude holds the right thing', () => {
+    const during = (name: string) => CONNECTOR_TOOLS.find((t) => t.name === name)!.during;
+    // Nothing held: the GM tools and narration, not request tools.
+    expect(gateAllows(during('narrate'), null, false)).toBe(true);
+    expect(gateAllows(during('update_character'), null, false)).toBe(true);
+    // A claimed turn counts as free.
+    expect(gateAllows(during('narrate'), null, true)).toBe(true);
+    // A guide request: dice and rules, nothing that changes the world or speaks to the table.
+    expect(gateAllows(during('roll_dice'), 'guide', false)).toBe(true);
+    expect(gateAllows(during('lookup_rules'), 'guide', false)).toBe(true);
+    expect(gateAllows(during('search_documents'), 'guide', false)).toBe(true);
+    expect(gateAllows(during('update_character'), 'guide', false)).toBe(false);
+    expect(gateAllows(during('write_note'), 'guide', false)).toBe(false);
+    expect(gateAllows(during('narrate'), 'guide', false)).toBe(false);
+    expect(gateAllows(during('roll_dice'), 'sheet', false)).toBe(false);
+    // Always allowed, whatever is held.
+    for (const kind of ['guide', 'sheet', 'catalogue', 'chronicle'] as const) {
+      expect(gateAllows(during('wait_for_work'), kind, false)).toBe(true);
+      expect(gateAllows(during('skip_work'), kind, false)).toBe(true);
+      expect(gateAllows(during('open_campaign'), kind, true)).toBe(true);
+    }
+    // Turn-only tools.
+    expect(gateAllows(['turn'], null, false)).toBe(false);
+    expect(gateAllows(['turn'], null, true)).toBe(true);
+    expect(gateAllows(['turn'], 'guide', true)).toBe(false);
+    expect(gateAllows(['sheet'], 'sheet', false)).toBe(true);
+    expect(gateAllows(['sheet'], null, false)).toBe(false);
+  });
 });
 
 describe('connector instructions', () => {
@@ -201,12 +237,16 @@ describe('connector instructions', () => {
     systemName: 'SRD 5.1',
   };
 
-  it('extends the built-in DM guide with how the chat table works', () => {
+  it('extends the built-in DM guide with how Claude runs every AI at the table', () => {
     const guide = connectorGuide(info);
     expect(guide).toContain('Dungeon Master for "The Sunken Bell"');
     expect(guide).toContain('A drowned town rings at low tide.');
-    expect(guide).toContain('## Running this table from a chat');
-    expect(guide).toContain('take_turn');
+    expect(guide).toContain('## Running this table from Claude');
+    expect(guide).toContain('wait_for_work');
+    expect(guide).not.toContain('take_turn');
+    // Both ways of playing an own-AI companion: a blind subagent, or Claude itself.
+    expect(guide).toContain('start it once for each, in parallel');
+    expect(guide).toContain('If you cannot start subagents');
   });
 
   it('gives the project a short, stable instruction that starts every chat with open_campaign', () => {

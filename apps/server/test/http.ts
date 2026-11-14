@@ -75,7 +75,7 @@ export function mcpClient(app: FastifyInstance, bearer: string, path = '/mcp') {
       },
       payload: { jsonrpc: '2.0', id: 1, method, params },
     });
-    let body: { result?: unknown; error?: { message: string } } = {};
+    let body: { result?: unknown; error?: { message: string } };
     try {
       body = res.json();
     } catch {
