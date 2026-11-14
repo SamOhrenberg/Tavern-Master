@@ -23,6 +23,7 @@ export async function signedIn(app: FastifyInstance, userId: string) {
     url: string,
     payload?: unknown,
     headers: Record<string, string> = {},
+    raw?: Buffer,
   ): Promise<Reply<T>> => {
     const res = await app.inject({
       method,
@@ -33,7 +34,7 @@ export async function signedIn(app: FastifyInstance, userId: string) {
         ...(payload !== undefined ? { 'content-type': 'application/json' } : {}),
         ...headers,
       },
-      ...(payload !== undefined ? { payload: JSON.stringify(payload) } : {}),
+      ...(raw ? { payload: raw } : payload !== undefined ? { payload: JSON.stringify(payload) } : {}),
     });
     let body: unknown;
     try {

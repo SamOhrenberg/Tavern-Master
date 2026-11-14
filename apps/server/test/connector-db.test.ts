@@ -224,7 +224,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
       `INSERT INTO builder_threads (campaign_id, user_id) VALUES ($1, $2) RETURNING id`,
       [camp, ann],
     ))!.id;
-    await q(`INSERT INTO builder_messages (thread_id, role, content) VALUES ($1, 'user', 'Help me')`, [thread]);
+    await q(`INSERT INTO builder_messages (thread_id, role, content) VALUES ($1, 'user', 'Help me')`, [
+      thread,
+    ]);
     const workId = await queueWork({ campaignId: camp, kind: 'guide', subjectId: thread, requestedBy: ann });
     expect(workId).toBeTruthy();
     // The same subject is never queued twice.

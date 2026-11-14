@@ -1,4 +1,6 @@
-import type { BuilderThread } from '@tavern/protocol';
+import type { BuilderThread, CampaignDocument, PendingSheet } from '@tavern/protocol';
+import { existsSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,6 +12,8 @@ import { closeDb, q, q1 } from '../src/db/pool.js';
 import { setProviderForTests } from '../src/llm/index.js';
 import type { ChatProvider } from '../src/llm/types.js';
 import { openRoom } from '../src/realtime/room.js';
+import { ingestDocument } from '../src/rules/ingest.js';
+import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from '../src/storage.js';
 import { mcpClient, signedIn, type SignedIn } from './http.js';
 
 /** Any model call in a Claude campaign is a bug: this provider makes it fail loudly. */
@@ -20,6 +24,35 @@ const forbidden: ChatProvider = {
     throw new Error('the server called a model in a Claude campaign');
   },
 };
+
+/** A multipart body with fields first, then one file, as the browser's FormData sends it. */
+function multipart(fields: Record<string, string>, file: { name: string; type: string; data: Buffer }) {
+  const boundary = '----tavern-test-boundary';
+  const parts: Buffer[] = [];
+  for (const [k, v] of Object.entries(fields))
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  parts.push(
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\nContent-Type: ${file.type}\r\n\r\n`,
+    ),
+    file.data,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  );
+  return { payload: Buffer.concat(parts), type: `multipart/form-data; boundary=${boundary}` };
+}
+
+/** The smallest PNG there is: one transparent pixel. */
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+const SHEET_TEXT = `Name: Brine
+Class: Fighter 2
+STR 16 DEX 12
+Hit points: 20
+Equipment: rope, gaff hook, lantern
+A dockhand who owes money to the wrong people.`;
 
 /** A player's socket that records what the room sends them. */
 function recordingSocket() {
@@ -162,5 +195,128 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
     expect((await claude.call('write_note', { title: 'Plans', content: 'The tide turns.' })).isError).toBe(
       false,
     );
+  });
+
+  const upload = async (file: { name: string; type: string; data: Buffer }, control?: unknown) => {
+    const body = multipart(control ? { control: JSON.stringify(control) } : {}, file);
+    return asAnn.send<{ pending?: PendingSheet; error?: { message: string } }>(
+      'POST',
+      `/api/campaigns/${camp}/characters/import`,
+      undefined,
+      { 'content-type': body.type },
+      body.payload,
+    );
+  };
+
+  it('hands an uploaded sheet to Claude to read, and the player gets a draft to check', async () => {
+    const sent = await upload({ name: 'brine.txt', type: 'text/plain', data: Buffer.from(SHEET_TEXT) });
+    expect(sent.status).toBe(200);
+    expect(sent.body.pending).toMatchObject({ fileName: 'brine.txt', status: 'waiting' });
+    const id = sent.body.pending!.id;
+
+    const work = await claude.call('wait_for_work', { wait_seconds: 0 });
+    expect(work.text).toContain(`Sheet request ${id}`);
+    expect(work.text).toContain('A dockhand who owes money');
+    expect(work.text).toContain('calling submit_sheet once');
+    // Only the sheet's own tool runs now.
+    expect((await claude.call('roll_dice', { expression: '1d4', reason: 'x', kind: 'other' })).isError).toBe(
+      true,
+    );
+    expect((await claude.call('submit_sheet', { work_id: id, name: 'Brine', max_hp: 20 })).text).toContain(
+      'Recorded Brine',
+    );
+    expect(annSocket.sent).toContainEqual({ type: 'sheet', id, status: 'done' });
+
+    const mine = await asAnn.get<{ sheets: PendingSheet[] }>(`/api/campaigns/${camp}/sheets`);
+    expect(mine.body.sheets[0]).toMatchObject({ id, status: 'done', draft: { name: 'Brine', maxHp: 20 } });
+    // The host sees only their own uploads.
+    expect(
+      (await asHost.get<{ sheets: PendingSheet[] }>(`/api/campaigns/${camp}/sheets`)).body.sheets,
+    ).toEqual([]);
+    expect((await asAnn.del(`/api/campaigns/${camp}/sheets/${id}`)).status).toBe(200);
+    expect(
+      (await asAnn.get<{ sheets: PendingSheet[] }>(`/api/campaigns/${camp}/sheets`)).body.sheets,
+    ).toEqual([]);
+  });
+
+  it('shows Claude a photo of a sheet, and tells the player why it could not be read', async () => {
+    const sent = await upload({ name: 'blurry.png', type: 'image/png', data: PNG });
+    expect(sent.status).toBe(200);
+    const id = sent.body.pending!.id;
+    const kept = await q1<{ payload: { image: { storageName: string } } }>(
+      'SELECT payload FROM dm_work WHERE id = $1',
+      [id],
+    );
+    const path = uploadPath(kept!.payload.image.storageName);
+    expect(existsSync(path)).toBe(true);
+
+    const work = await claude.call('wait_for_work', { wait_seconds: 0 });
+    expect(work.text).toContain('The sheet is the attached image.');
+    expect(work.images).toEqual([{ type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' }]);
+    await claude.call('skip_work', { work_id: id, reason: 'The photo is one blank pixel.' });
+    expect(existsSync(path)).toBe(false);
+    const mine = await asAnn.get<{ sheets: PendingSheet[] }>(`/api/campaigns/${camp}/sheets`);
+    expect(mine.body.sheets[0]).toMatchObject({
+      id,
+      status: 'failed',
+      error: 'The photo is one blank pixel.',
+    });
+    expect(annSocket.sent).toContainEqual({ type: 'sheet', id, status: 'failed' });
+    // Only the owner may upload a sheet for a companion.
+    const companion = await upload(
+      { name: 'pal.txt', type: 'text/plain', data: Buffer.from(SHEET_TEXT) },
+      { kind: 'npc', controller: 'gm', playerIds: [] },
+    );
+    expect(companion.status).toBe(403);
+  });
+
+  it('has Claude catalogue a new campaign document instead of a model', async () => {
+    await ensureDataDirs(uploadsDir());
+    const storage = newStorageName();
+    await writeFile(
+      uploadPath(storage),
+      '# The Drowned Quarter\n\nStreets under water at high tide. The smugglers meet at the Bell.\n',
+    );
+    const doc = (await q1<{ id: string }>(
+      `INSERT INTO documents (system_id, campaign_id, title, original_name, storage_name, mime, size_bytes, sha256,
+                              uploaded_by)
+       VALUES ($1, $2, 'Drowned Quarter', 'quarter.md', $3, 'text/markdown', 80, 'x', $4) RETURNING id`,
+      [system, camp, storage, ann],
+    ))!.id;
+    await ingestDocument(doc, undefined);
+
+    const work = await claude.call('wait_for_work', { wait_seconds: 0 });
+    const workId = /Catalogue request ([0-9a-f-]{36})/.exec(work.text)?.[1];
+    expect(workId).toBeTruthy();
+    expect(work.text).toContain('<title>Drowned Quarter</title>');
+    expect(work.text).toContain('The smugglers meet at the Bell');
+    expect(work.text).not.toContain('Reply with JSON');
+    await claude.call('catalogue_document', {
+      work_id: workId,
+      kind: 'setting',
+      summary: 'A district of the city that floods at high tide; where the smugglers meet.',
+    });
+    const docs = await asAnn.get<{ documents: CampaignDocument[] }>(`/api/campaigns/${camp}/documents`);
+    expect(docs.body.documents.find((d) => d.id === doc)).toMatchObject({
+      kind: 'setting',
+      summary: 'A district of the city that floods at high tide; where the smugglers meet.',
+    });
+  });
+
+  it('cancels what was waiting for Claude when the campaign switches to the built-in AI', async () => {
+    const sent = await upload({ name: 'late.txt', type: 'text/plain', data: Buffer.from(SHEET_TEXT) });
+    const id = sent.body.pending!.id;
+    expect((await asHost.patch(`/api/campaigns/${camp}`, { dm: 'server' })).status).toBe(200);
+    const mine = await asAnn.get<{ sheets: PendingSheet[] }>(`/api/campaigns/${camp}/sheets`);
+    expect(mine.body.sheets.find((s) => s.id === id)).toMatchObject({
+      status: 'failed',
+      error: 'This campaign switched to the built-in AI. Upload it again.',
+    });
+    const open = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM dm_work WHERE campaign_id = $1 AND status IN ('waiting', 'claimed')`,
+      [camp],
+    );
+    expect(open?.n).toBe(0);
+    await asHost.patch(`/api/campaigns/${camp}`, { dm: 'claude' });
   });
 });
