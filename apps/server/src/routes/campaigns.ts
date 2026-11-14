@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { entityMatches, scopeEntity } from '../agent/codex.js';
 import { pgStore } from '../agent/store.js';
+import { endCurrentSession, insertCampaign, startCampaign, updateCampaign } from '../campaign.js';
 import { queueChronicleIfDue } from '../agent/summarize.js';
 import { config } from '../config.js';
 import { projectInstructions } from '../connector/instructions.js';
@@ -27,7 +28,7 @@ import { requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
 import { usageTotals } from '../llm/usage.js';
 import { listMessages } from '../realtime/messages.js';
-import { dmStatusOf, endSession, getRoom } from '../realtime/room.js';
+import { dmStatusOf, getRoom } from '../realtime/room.js';
 import { uploadPath } from '../storage.js';
 import { areFriends } from './friends.js';
 
@@ -100,24 +101,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const builtIn = await builtInAiFor(auth.user.id);
     const dm = body.dm ?? (builtIn ? 'server' : 'claude');
     if (dm === 'server' && !builtIn) throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
-    const id = await tx(async (client) => {
-      const row = await q1<{ id: string }>(
-        `INSERT INTO campaigns (system_id, owner_id, name, premise, settings) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [
-          body.systemId,
-          auth.user.id,
-          body.name,
-          body.premise,
-          JSON.stringify({ tone: body.tone, sheets: body.sheets, dm }),
-        ],
-        client,
-      );
-      await client.query(
-        `INSERT INTO campaign_members (campaign_id, user_id, role) VALUES ($1, $2, 'owner')`,
-        [row!.id, auth.user.id],
-      );
-      return row!.id;
-    });
+    const id = await insertCampaign({ ownerId: auth.user.id, ...body, dm });
     return { id };
   });
 
@@ -168,18 +152,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const body = parse(patchSchema, req.body);
     if (body.dm === 'server' && !(await builtInAiFor(auth.user.id)))
       throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
-    const settings: Partial<CampaignSettings> = {};
-    if (body.tone !== undefined) settings.tone = body.tone;
-    if (body.gatherWindowSeconds !== undefined) settings.gatherWindowSeconds = body.gatherWindowSeconds;
-    if (body.sheets !== undefined) settings.sheets = body.sheets;
-    if (body.dm !== undefined) settings.dm = body.dm;
-    await q(
-      `UPDATE campaigns SET name = coalesce($2, name), premise = coalesce($3, premise),
-                            status = coalesce($4, status), settings = settings || $5::jsonb WHERE id = $1`,
-      [campaignId, body.name ?? null, body.premise ?? null, body.status ?? null, JSON.stringify(settings)],
-    );
+    await updateCampaign(campaignId, body);
     const room = getRoom(campaignId);
-    if (room && body.gatherWindowSeconds) room.collector.windowMs = body.gatherWindowSeconds * 1000;
     if (body.dm === 'server') {
       // Nothing waits for Claude any more: turns go back to the table, requests are cancelled.
       room?.releaseDesk();
@@ -221,17 +195,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post<{ Params: { id: string } }>('/api/campaigns/:id/start', async (req) => {
     const { campaignId } = await requireMember(req, true);
-    const rows = await q(
-      `UPDATE campaigns SET phase = 'active', started_at = now()
-        WHERE id = $1 AND phase = 'prep' AND status = 'active' RETURNING id`,
-      [campaignId],
-    );
-    if (!rows.length) throw conflict('This campaign has already begun.');
-    const room = getRoom(campaignId);
-    room?.broadcast({ type: 'state_changed' });
-    // A polling Claude hears about the opening at once.
-    await room?.workChanged();
-    void room?.maybeOpen();
+    await startCampaign(campaignId);
     return { ok: true };
   });
 
@@ -453,13 +417,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { id: string } }>('/api/campaigns/:id/end-session', async (req) => {
     const { campaignId } = await requireMember(req, true);
-    if (getRoom(campaignId)?.busy) throw conflict('Wait for the current turn to finish.');
-    const open = await q1<{ id: string }>(
-      'SELECT id FROM play_sessions WHERE campaign_id = $1 AND ended_at IS NULL',
-      [campaignId],
-    );
-    if (!open) throw badRequest('There is no session in progress.');
-    await endSession(campaignId, open.id);
+    await endCurrentSession(campaignId);
     return { ok: true };
   });
 
