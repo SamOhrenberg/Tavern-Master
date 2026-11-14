@@ -4,6 +4,7 @@ import { TOOLS } from '../src/agent/tools.js';
 import { DmDesk, type DeskTurn } from '../src/connector/desk.js';
 import { connectorGuide, projectInstructions } from '../src/connector/instructions.js';
 import { dmModeOf } from '../src/connector/mode.js';
+import { presenceOf, type PresenceFacts } from '../src/connector/presence.js';
 import { CONNECTOR_TOOLS } from '../src/connector/tools.js';
 
 /** Timers the test fires by hand. */
@@ -43,7 +44,58 @@ const turn = (n = 1): DeskTurn => ({
   claimed: false,
 });
 
+describe('presence of an outside DM', () => {
+  const now = Date.parse('2026-11-14T20:00:00Z');
+  const base: PresenceFacts = {
+    mode: 'claude',
+    polls: 0,
+    lastCallAt: 0,
+    claimed: false,
+    seenAt: null,
+    waiting: 0,
+    now,
+    listenMs: 75_000,
+  };
+
+  it('is always listening for the built-in DM', () => {
+    expect(presenceOf({ ...base, mode: 'server', waiting: 3 })).toEqual({
+      mode: 'server',
+      state: 'listening',
+      lastSeenAt: null,
+      waiting: 0,
+    });
+  });
+
+  it('tells never, away, listening and working apart', () => {
+    expect(presenceOf(base).state).toBe('never');
+    const seen = new Date(now - 3_600_000);
+    expect(presenceOf({ ...base, seenAt: seen })).toMatchObject({
+      state: 'away',
+      lastSeenAt: seen.toISOString(),
+    });
+    // A poll open counts as listening however long ago the last call began.
+    expect(presenceOf({ ...base, seenAt: seen, polls: 1, lastCallAt: now - 600_000 }).state).toBe(
+      'listening',
+    );
+    expect(presenceOf({ ...base, lastCallAt: now - 30_000 }).state).toBe('listening');
+    expect(presenceOf({ ...base, lastCallAt: now - 80_000 }).state).toBe('away');
+    expect(presenceOf({ ...base, polls: 1, claimed: true, waiting: 2 })).toMatchObject({
+      state: 'working',
+      waiting: 2,
+    });
+  });
+});
+
 describe('DM desk', () => {
+  it('wakes a waiter without a turn when poked', async () => {
+    const timers = manualTimers();
+    const desk = new DmDesk({ setTimer: timers.setTimer });
+    const waiting = desk.waitForTurn(60_000);
+    desk.poke();
+    await expect(waiting).resolves.toBeNull();
+    expect(timers.count()).toBe(0);
+  });
+
   it('holds a turn until it is narrated', async () => {
     const timers = manualTimers();
     const desk = new DmDesk({ setTimer: timers.setTimer });
