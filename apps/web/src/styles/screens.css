@@ -700,6 +700,15 @@ button.code-box {
   border-color: rgba(230, 185, 101, 0.55);
   background: var(--gold-wash);
 }
+.choice:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.choice small.choice-note {
+  margin-top: 4px;
+  color: var(--faint);
+  font-style: italic;
+}
 .choice-mark,
 .tick {
   display: grid;

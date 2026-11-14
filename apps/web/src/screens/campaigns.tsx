@@ -1,11 +1,11 @@
-import type { CampaignSummary, GameSystem } from '@tavern/protocol';
-import { useState, type FormEvent } from 'react';
+import type { CampaignSummary, DmMode, GameSystem } from '@tavern/protocol';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import { useAction, useMe, useQuery } from '../app';
+import { useAction, useMe, useMeta, useQuery } from '../app';
 import { IconAlert, IconCampfire, IconChevron, IconCrown, IconPlus, IconUsers } from '../icons';
 import { useInbox } from '../routes';
-import { Avatar, Empty, Field, PageHead, Sheet, Skeletons } from '../ui';
+import { Avatar, Choices, Empty, Field, PageHead, Sheet, Skeletons } from '../ui';
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -35,6 +35,7 @@ function CampaignCard({ c }: { c: CampaignSummary }) {
             Yours
           </span>
         )}
+        {c.dm === 'claude' && <span className="pill arcane">Claude</span>}
         {c.phase === 'prep' && c.status === 'active' && <span className="pill jade">Getting ready</span>}
         {c.status === 'archived' && <span className="pill">Archived</span>}
       </div>
@@ -42,9 +43,22 @@ function CampaignCard({ c }: { c: CampaignSummary }) {
   );
 }
 
+const LAST_DM = 'tm.dm';
+
+function lastDm(): DmMode | null {
+  try {
+    const v = localStorage.getItem(LAST_DM);
+    return v === 'claude' || v === 'server' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 function NewCampaign({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
+  const meta = useMeta();
   const systems = useQuery(() => api<{ systems: GameSystem[] }>('/systems'), []);
+  const [dm, setDm] = useState<DmMode | null>(null);
   const [name, setName] = useState('');
   const [systemId, setSystemId] = useState('');
   const [premise, setPremise] = useState('');
@@ -55,19 +69,56 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
   const list = systems.data?.systems ?? [];
   const chosen = systemId || list[0]?.id || '';
 
+  // The last choice, else Claude when it is already connected or the only option.
+  useEffect(() => {
+    if (!meta || dm) return;
+    const last = lastDm();
+    if (last && (last === 'claude' || meta.builtInAi)) setDm(last);
+    else setDm(meta.claudeConnected || !meta.builtInAi ? 'claude' : 'server');
+  }, [meta, dm]);
+  const runner: DmMode = dm ?? 'claude';
+  const claude = runner === 'claude';
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
     void run(async () => {
       const res = await api<{ id: string }>('/campaigns', {
-        body: { name, systemId: chosen, premise, tone, sheets },
+        body: { name, systemId: chosen, premise, tone, sheets, dm: runner },
       });
-      navigate(`/c/${res.id}`);
+      try {
+        localStorage.setItem(LAST_DM, runner);
+      } catch {
+        // Private browsing: the default is simply not remembered.
+      }
+      navigate(claude ? `/c/${res.id}?setup=claude` : `/c/${res.id}`);
     });
   };
 
   return (
     <Sheet title="New campaign" onClose={onClose}>
       <form className="stack" onSubmit={submit}>
+        <div className="field">
+          <span>Who runs the game?</span>
+          <Choices
+            label="Who runs the game?"
+            value={runner}
+            onChange={setDm}
+            options={[
+              {
+                value: 'claude',
+                title: 'Claude',
+                body: 'Your Claude app is the Dungeon Master, the character guide and the chronicler. Runs on your Claude plan, with no API key.',
+              },
+              {
+                value: 'server',
+                title: 'Built-in AI',
+                body: 'The server’s own AI answers by itself, on its API key.',
+                disabled: meta ? !meta.builtInAi : false,
+                note: meta && !meta.builtInAi ? 'Not set up on this server' : undefined,
+              },
+            ]}
+          />
+        </div>
         <Field label="Name">
           <input
             className="input"
@@ -79,7 +130,14 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
             required
           />
         </Field>
-        <Field label="Rules system" hint="The DM only looks rules up in this system's books.">
+        <Field
+          label="Rules system"
+          hint={
+            claude
+              ? 'Claude only looks rules up in this system’s books.'
+              : 'The DM only looks rules up in this system’s books.'
+          }
+        >
           <select className="select" value={chosen} onChange={(e) => setSystemId(e.target.value)} required>
             {list.map((s) => (
               <option key={s.id} value={s.id}>
@@ -121,8 +179,8 @@ function NewCampaign({ onClose }: { onClose: () => void }) {
             <option value="gm">The DM keeps them</option>
           </select>
         </Field>
-        <button type="submit" className="btn primary block" disabled={busy || !chosen}>
-          Gather the party
+        <button type="submit" className="btn primary block" disabled={busy || !chosen || !meta}>
+          {claude ? 'Create and connect Claude' : 'Gather the party'}
         </button>
         <p className="small faint center">
           Next you invite friends, build characters and add any documents. The story starts when you say so.

@@ -11,7 +11,7 @@ import { useRef, useState } from 'react';
 import { api, errorMessage } from '../api';
 import { useAction, useMe, useToast } from '../app';
 import { IconChat, IconCheck, IconChevron, IconD20, IconScroll, IconSparkle, IconUpload } from '../icons';
-import { Avatar, Field, Segmented, Sheet } from '../ui';
+import { Avatar, Choices, Field, Segmented, Sheet, type ChoiceOption } from '../ui';
 import { CharacterSheet, type Control } from './character';
 import { GuideSheet } from './guide';
 
@@ -44,7 +44,7 @@ export function playedBy(c: Character, campaign: CampaignDetail, meId: string): 
   return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`;
 }
 
-const CONTROLLERS: { value: CharacterController; title: string; body: string }[] = [
+const CONTROLLERS: ChoiceOption<CharacterController>[] = [
   {
     value: 'player',
     title: 'Players',
@@ -69,28 +69,9 @@ function ControllerChoice({
 }: {
   value: CharacterController;
   onChange: (value: CharacterController) => void;
-  options?: typeof CONTROLLERS;
+  options?: ChoiceOption<CharacterController>[];
 }) {
-  return (
-    <div className="choices" role="radiogroup">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={o.value === value}
-          className={`choice${o.value === value ? ' on' : ''}`}
-          onClick={() => onChange(o.value)}
-        >
-          <span className="choice-mark">{o.value === value && <IconCheck />}</span>
-          <span className="grow">
-            <b>{o.title}</b>
-            <small>{o.body}</small>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+  return <Choices value={value} onChange={onChange} options={options} label="Who plays them" />;
 }
 
 /** The first step of adding someone to the party: whose they are, and how to make the sheet. */

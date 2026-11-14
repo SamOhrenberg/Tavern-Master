@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { IconBack, IconClose } from './icons';
+import { IconBack, IconCheck, IconClose } from './icons';
 
 /** Stable colour per person so avatars are recognisable at a glance. */
 function hue(seed: string): number {
@@ -77,6 +77,51 @@ export function Segmented<T extends string>({
           onClick={() => onChange(o.value)}
         >
           {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export interface ChoiceOption<T extends string> {
+  value: T;
+  title: string;
+  body: string;
+  disabled?: boolean;
+  /** Shown under the body, e.g. why an option cannot be picked. */
+  note?: string;
+}
+
+/** A short list of options, each with a line of explanation. One is always picked. */
+export function Choices<T extends string>({
+  value,
+  onChange,
+  options,
+  label,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: ChoiceOption<T>[];
+  label?: string;
+}) {
+  return (
+    <div className="choices" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          className={`choice${o.value === value ? ' on' : ''}`}
+          disabled={o.disabled}
+          onClick={() => onChange(o.value)}
+        >
+          <span className="choice-mark">{o.value === value && <IconCheck />}</span>
+          <span className="grow">
+            <b>{o.title}</b>
+            <small>{o.body}</small>
+            {o.note && <small className="choice-note">{o.note}</small>}
+          </span>
         </button>
       ))}
     </div>

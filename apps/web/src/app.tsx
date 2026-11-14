@@ -1,4 +1,4 @@
-import type { Me } from '@tavern/protocol';
+import type { Me, ServerMeta } from '@tavern/protocol';
 import {
   createContext,
   useCallback,
@@ -29,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const setMe = useCallback((next: Me | null) => {
     setCsrfToken(next?.csrfToken ?? '');
+    if (next?.id !== metaFor) resetMeta(next?.id ?? null);
     setMeState(next);
   }, []);
 
@@ -65,6 +66,46 @@ export function useMe(): Me {
   const { me } = useAuth();
   if (!me) throw new Error('not signed in');
   return me;
+}
+
+// ---------- what this server can do ----------
+
+let metaFor: string | null = null;
+let metaValue: ServerMeta | undefined;
+let metaLoad: Promise<void> | null = null;
+const metaListeners = new Set<(meta: ServerMeta) => void>();
+
+function resetMeta(userId: string | null): void {
+  metaFor = userId;
+  metaValue = undefined;
+  metaLoad = null;
+}
+
+/** Load the server's capabilities again, e.g. after Claude connects. */
+export function reloadMeta(): Promise<void> {
+  metaLoad = api<ServerMeta>('/meta')
+    .then((meta) => {
+      metaValue = meta;
+      for (const fn of metaListeners) fn(meta);
+    })
+    .catch(() => {
+      metaLoad = null;
+    });
+  return metaLoad;
+}
+
+/** What this server can do for the signed-in user. Loaded once per session; undefined until it arrives. */
+export function useMeta(): ServerMeta | undefined {
+  const [meta, setMeta] = useState(metaValue);
+  useEffect(() => {
+    metaListeners.add(setMeta);
+    if (metaValue) setMeta(metaValue);
+    else if (!metaLoad) void reloadMeta();
+    return () => {
+      metaListeners.delete(setMeta);
+    };
+  }, []);
+  return meta;
 }
 
 // ---------- toasts ----------
