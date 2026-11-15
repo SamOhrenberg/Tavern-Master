@@ -922,3 +922,11 @@ button.code-box {
 .token-details[open] summary {
   margin-bottom: 8px;
 }
+
+.system-tag {
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+.homebrew-card p {
+  margin: 0;
+}

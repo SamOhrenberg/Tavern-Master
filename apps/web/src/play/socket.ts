@@ -41,6 +41,8 @@ interface Handlers {
   onSignedOut: () => void;
   /** Your guide chat has a new reply. */
   onGuide?: (threadId: string) => void;
+  /** The rules desk has a new message or ruling. */
+  onRules?: () => void;
   /** An uploaded sheet of yours moved on. */
   onSheet?: (id: string, status: PendingSheet['status']) => void;
 }
@@ -132,6 +134,9 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
           break;
         case 'guide':
           h.current.onGuide?.(msg.threadId);
+          break;
+        case 'rules':
+          h.current.onRules?.();
           break;
         case 'sheet':
           h.current.onSheet?.(msg.id, msg.status);

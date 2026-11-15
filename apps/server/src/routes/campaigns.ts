@@ -66,7 +66,7 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
   };
 }
 
-const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, c.owner_id, c.status,
+const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, s.homebrew, c.owner_id, c.status,
                             c.phase, c.settings, c.scene, m.role, m.wishes,
                             (SELECT count(*)::int FROM campaign_members x WHERE x.campaign_id = c.id) AS member_count
                        FROM campaigns c
@@ -86,6 +86,7 @@ function toSummary(r: Record<string, unknown>): CampaignSummary {
     memberCount: r.member_count as number,
     role: r.role as 'owner' | 'player',
     dm: dmModeOf(r.settings as { dm?: unknown }),
+    homebrew: r.homebrew as boolean,
   };
 }
 

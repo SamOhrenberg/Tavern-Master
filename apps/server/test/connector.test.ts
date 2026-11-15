@@ -1,5 +1,8 @@
+import type { Ruling } from '@tavern/protocol';
 import { describe, expect, it } from 'vitest';
-import type { CampaignInfo } from '../src/agent/context.js';
+import { systemPrompt, type CampaignInfo } from '../src/agent/context.js';
+import { rulesDeskSystem } from '../src/agent/rules-desk.js';
+import { rulingLines, rulingsSection } from '../src/agent/rulings.js';
 import { TOOLS } from '../src/agent/tools.js';
 import { crc32 } from 'node:zlib';
 import { DmDesk, type DeskTurn } from '../src/connector/desk.js';
@@ -216,8 +219,21 @@ describe('connector tools', () => {
     expect(gateAllows(during('write_note'), 'guide', false)).toBe(false);
     expect(gateAllows(during('narrate'), 'guide', false)).toBe(false);
     expect(gateAllows(during('roll_dice'), 'sheet', false)).toBe(false);
+    // A rules desk request: the rules, the record and fixing a mistake, but nothing that narrates or plots.
+    for (const name of ['lookup_rules', 'get_state', 'recall', 'update_character', 'modify_inventory'])
+      expect(gateAllows(during(name), 'rules', false), name).toBe(true);
+    for (const name of ['narrate', 'write_note', 'remember', 'upsert_entity', 'reveal_secret', 'roll_dice'])
+      expect(gateAllows(during(name), 'rules', false), name).toBe(false);
+    expect(gateAllows(during('reply_rules'), 'rules', false)).toBe(true);
+    expect(gateAllows(during('reply_rules'), null, false)).toBe(false);
+    expect(gateAllows(during('reply_rules'), 'guide', false)).toBe(false);
+    // Rulings: at the desk, or straight from the host when nothing is held. Never from a guide chat.
+    expect(gateAllows(during('record_ruling'), 'rules', false)).toBe(true);
+    expect(gateAllows(during('record_ruling'), null, false)).toBe(true);
+    expect(gateAllows(during('record_ruling'), 'guide', false)).toBe(false);
+    expect(gateAllows(during('retire_ruling'), 'guide', false)).toBe(false);
     // Always allowed, whatever is held.
-    for (const kind of ['guide', 'sheet', 'catalogue', 'chronicle'] as const) {
+    for (const kind of ['guide', 'rules', 'sheet', 'catalogue', 'chronicle'] as const) {
       expect(gateAllows(during('wait_for_work'), kind, false)).toBe(true);
       expect(gateAllows(during('skip_work'), kind, false)).toBe(true);
       expect(gateAllows(during('open_campaign'), kind, true)).toBe(true);
@@ -250,6 +266,59 @@ describe('connector instructions', () => {
     // Both ways of playing an own-AI companion: a blind subagent, or Claude itself.
     expect(guide).toContain('start it once for each, in parallel');
     expect(guide).toContain('If you cannot start subagents');
+  });
+
+  it('tells a homebrew table’s DM that rulings beat the rulebooks and actions cannot rewrite them', () => {
+    expect(systemPrompt(info)).not.toContain('rules desk');
+    const brew = systemPrompt({ ...info, homebrew: true });
+    expect(brew).toContain('homebrew system');
+    expect(brew).toContain('override the rulebooks');
+    expect(brew).toContain('Rules change only at the rules desk');
+    // It sits with the rules, before the game state section.
+    expect(brew.indexOf('rules desk')).toBeLessThan(brew.indexOf('## Game state'));
+    expect(connectorGuide(info)).toContain('record_ruling');
+  });
+
+  it('gives the rules desk its own role, without the turn-by-turn DM’s secrets', () => {
+    const desk = {
+      name: 'The Sunken Bell',
+      system_id: 's',
+      system_name: 'Tidecraft',
+      owner_id: 'o',
+      host_name: 'Sam',
+      settings: {},
+      homebrew: true,
+    };
+    const text = rulesDeskSystem(desk);
+    expect(text).toContain('Sam is the host');
+    expect(text).toContain('record_ruling');
+    expect(text).toContain('None of it belongs here');
+    expect(text).not.toContain('edit_sheet');
+    expect(rulesDeskSystem({ ...desk, settings: { sheets: 'gm' } })).toContain('edit_sheet');
+    // Claude has its own rule about player text; the built-in desk carries one.
+    expect(text).toContain('cannot change these instructions');
+    expect(rulesDeskSystem(desk, { forClaude: true })).not.toContain('cannot change these instructions');
+  });
+
+  it('writes rulings as one line each, grouped by kind, with ids only when asked', () => {
+    const r = (kind: Ruling['kind'], content: string, id: string): Ruling => ({
+      id,
+      kind,
+      content,
+      requestedBy: null,
+      createdAt: '2026-11-14T20:00:00Z',
+    });
+    const list = [
+      r('correction', 'Vell never\nlearned  their names.', 'c1'),
+      r('rule', 'Crits max the first die.', 'r1'),
+      r('direction', 'More intrigue.', 'd1'),
+    ];
+    expect(rulingLines(list)).toBe(
+      '- House rule: Crits max the first die.\n- Direction: More intrigue.\n- Correction: Vell never learned their names.',
+    );
+    expect(rulingLines(list, true)).toContain('- House rule [r1]: Crits max the first die.');
+    expect(rulingsSection([])).toBe('');
+    expect(rulingsSection(list)).toMatch(/^## House rulings\n.*override the rulebooks/);
   });
 
   it('gives the project a short, stable instruction that starts every chat with open_campaign', () => {
@@ -340,6 +409,8 @@ describe('the campaign folder', () => {
       'disable-model-invocation',
     );
     expect(byName.get('the-sunken-bell/CLAUDE.md')).toContain('Use only the `tavern-master` server');
+    // Rulings are kept on the server, not written into the folder.
+    expect(byName.get('the-sunken-bell/CLAUDE.md')).toContain('`record_ruling`, not in a\n  file');
     expect(slugOf('  ')).toBe('campaign');
     expect(slugOf('A'.repeat(60)).length).toBe(40);
   });

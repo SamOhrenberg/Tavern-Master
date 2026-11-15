@@ -2,6 +2,7 @@
 // here, by being imported. The connector imports this module once.
 import { onRoomOpened } from '../realtime/room.js';
 import './guide.js';
+import './rules.js';
 import './chronicle.js';
 import './companions.js';
 import './setup.js';

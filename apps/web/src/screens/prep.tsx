@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast } from '../app';
-import { IconBack, IconBook, IconDots, IconPlus, IconSparkle, IconUsers } from '../icons';
+import { IconBack, IconBook, IconDots, IconGavel, IconPlus, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { ClaudeSetupSheet, DmChip, dmAbsent, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
 import { ManageSheet } from '../play/manage';
+import { RulesSheet } from '../play/rules';
 import { CharacterCard } from '../play/party';
 import { useTable } from '../play/socket';
 import { Avatar, ConfirmButton, Empty, Field, Segmented } from '../ui';
@@ -42,6 +43,8 @@ export function Prep({ id, campaign, state, template }: TableProps) {
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   }, []);
   const [managing, setManaging] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rulesSignal, setRulesSignal] = useState(0);
   const [wishes, setWishes] = useState(c.myWishes);
   const [busy, run] = useAction();
 
@@ -69,6 +72,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
     onReconnect: reload,
     onSignedOut: () => setMe(null),
     onGuide: () => setGuideSignal((n) => n + 1),
+    onRules: () => setRulesSignal((n) => n + 1),
     onSheet: () => void reloadSheets(),
   });
   useEffect(() => {
@@ -137,6 +141,16 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             </p>
           )}
         </div>
+        {c.homebrew && (
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setRulesOpen(true)}
+            aria-label="Rules desk"
+          >
+            <IconGavel />
+          </button>
+        )}
         <button
           type="button"
           className="icon-btn"
@@ -406,6 +420,17 @@ export function Prep({ id, campaign, state, template }: TableProps) {
           dm={dm}
           onChanged={() => void reloadCampaign()}
           onClose={() => setSettingUp(false)}
+        />
+      )}
+      {rulesOpen && (
+        <RulesSheet
+          campaignId={id}
+          owner={c.role === 'owner'}
+          claude={c.dm === 'claude'}
+          dm={dm}
+          hostName={host?.displayName ?? 'the host'}
+          signal={rulesSignal}
+          onClose={() => setRulesOpen(false)}
         />
       )}
     </div>

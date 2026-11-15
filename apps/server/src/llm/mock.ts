@@ -254,6 +254,31 @@ export function mockProvider(): ChatProvider {
           );
           return;
         }
+        case 'rules': {
+          // "House rule: …" from a player is recorded as it stands; anything else gets a plain answer.
+          const said = /<said by="[^"]*"[^>]*>([\s\S]*?)<\/said>\s*$/.exec(lastSaid(req.messages))?.[1] ?? '';
+          const rule = /house rule:\s*(.{8,400})/i.exec(said)?.[1];
+          if (results.length === 0 && rule) {
+            yield finish(
+              [
+                {
+                  type: 'tool_use',
+                  id: 'mock_ruling',
+                  name: 'record_ruling',
+                  input: { kind: 'rule', content: rule.replace(/&apos;/g, "'").replace(/&quot;/g, '"') },
+                },
+              ],
+              'tool_use',
+            );
+            return;
+          }
+          yield* say(
+            results.length
+              ? 'Agreed, and **written down**. I will play it that way from now on.'
+              : 'Good question. The rulebooks here do not settle it, so tell me how you would like it to work and I will keep it as a house rule.',
+          );
+          return;
+        }
         default:
           break;
       }

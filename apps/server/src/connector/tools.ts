@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { briefAndChanges, buildOpening, renderTurn, stateSnapshot } from '../agent/context.js';
+import { briefAndChanges, buildOpening, recentPlay, renderTurn, stateSnapshot } from '../agent/context.js';
+import { rulingsBlock } from '../agent/rulings.js';
 import { systemRng } from '../agent/dice.js';
 import { publicSummary } from '../agent/loop.js';
 import { pgStore, type TurnContext } from '../agent/store.js';
@@ -39,36 +40,12 @@ import {
   openWork,
   releaseStale,
   type WorkItem,
+  type WorkKind,
 } from './work.js';
 
 export type { ConnectorCall, ConnectorTool } from './toolkit.js';
 
-const RECENT_MESSAGES = 12;
-
 // ---------------------------------------------------------------- what Claude is shown
-
-async function recentPlay(campaignId: string): Promise<string> {
-  const rows = await q<{
-    kind: string;
-    content: string;
-    character_name: string | null;
-    display_name: string | null;
-  }>(
-    `SELECT * FROM (
-       SELECT m.id, m.kind, m.content, m.character_name, u.display_name
-         FROM messages m LEFT JOIN users u ON u.id = m.user_id
-        WHERE m.campaign_id = $1 AND m.kind IN ('action', 'dm') ORDER BY m.id DESC LIMIT $2
-     ) r ORDER BY r.id`,
-    [campaignId, RECENT_MESSAGES],
-  );
-  return rows
-    .map((r) =>
-      r.kind === 'dm'
-        ? `DM: ${r.content}`
-        : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`,
-    )
-    .join('\n\n');
-}
 
 /** What the outside DM already did for a turn, so a turn handed out again is not resolved twice. */
 async function alreadyApplied(turnId: string): Promise<string[]> {
@@ -215,11 +192,12 @@ export async function campaignBrief(t: Table): Promise<string> {
     rolls: [],
     stateChanged: false,
   };
-  const [{ brief, changes }, snapshot, recent, waiting] = await Promise.all([
+  const [{ brief, changes }, snapshot, recent, waiting, rulings] = await Promise.all([
     briefAndChanges(t.id),
     stateSnapshot(ctx, pgStore),
     recentPlay(t.id),
     waitingBlock(t),
+    rulingsBlock(t.id),
   ]);
 
   let next: string;
@@ -241,6 +219,7 @@ export async function campaignBrief(t: Table): Promise<string> {
     `<dm_instructions>\n${connectorGuide(info)}\n</dm_instructions>`,
     brief ? `<brief>\n${brief}\n</brief>` : '',
     changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
+    rulings,
     snapshot,
     recent ? `<recent_play>\n${recent}\n</recent_play>` : '',
     waiting,
@@ -349,7 +328,8 @@ export const SESSION_TOOLS: ConnectorTool[] = [
     name: 'wait_for_work',
     description:
       'Get the next thing that needs you at this table: a gathered turn, the opening scene, a player waiting on ' +
-      'the character guide, an uploaded sheet to read, a document to catalogue, or the chronicle. Waits up to ' +
+      'the character guide or at the rules desk, an uploaded sheet to read, a document to catalogue, or the ' +
+      'chronicle. Waits up to ' +
       'wait_seconds when nothing is ready. Handle what it returns, then call it again.',
     schema: z.object({
       wait_seconds: z
@@ -530,6 +510,23 @@ async function afterNarration(campaignId: string): Promise<void> {
 const READ_ONLY = new Set(['get_state', 'lookup_rules', 'recall', 'search_documents', 'search_setting']);
 /** GM tools that also help a guide request: rolling and reading the rules. */
 const GUIDE_TOO = new Set(['roll_dice', 'lookup_rules', 'search_documents']);
+/** GM tools that also serve the rules desk: the rules, the record, and putting a mistake right. */
+const RULES_TOO = new Set([
+  'lookup_rules',
+  'get_state',
+  'recall',
+  'search_documents',
+  'update_character',
+  'modify_inventory',
+  'edit_sheet',
+]);
+
+/** When a GM tool may run: always when Claude holds nothing, and during the requests it also serves. */
+const gmGate = (name: string): Gate[] => [
+  'free',
+  ...(GUIDE_TOO.has(name) ? (['guide'] as const) : []),
+  ...(RULES_TOO.has(name) ? (['rules'] as const) : []),
+];
 
 /** Replaces a GM tool while a request of some kind is held, e.g. a table-only document search for the guide. */
 type Variant = (
@@ -537,17 +534,19 @@ type Variant = (
   t: Table,
   held: WorkItem,
 ) => Promise<{ content: string; isError: boolean }> | null;
-const variants = new Map<string, Variant>();
+const variants = new Map<string, Variant[]>();
+/** Several kinds of request may replace the same tool; the first variant that answers wins. */
 export function gmVariant(name: string, variant: Variant): void {
-  variants.set(name, variant);
+  variants.set(name, [...(variants.get(name) ?? []), variant]);
 }
 
 /** The context a GM tool call runs in for a request Claude holds, e.g. the guide's dice. */
 type RequestContext = (t: Table, held: WorkItem) => TurnContext | null;
-let requestContext: RequestContext = () => null;
-export function setRequestContext(fn: RequestContext): void {
-  requestContext = fn;
+const requestContexts = new Map<WorkKind, RequestContext>();
+export function setRequestContext(kind: WorkKind, fn: RequestContext): void {
+  requestContexts.set(kind, fn);
 }
+const requestContext = (t: Table, held: WorkItem) => requestContexts.get(held.kind)?.(t, held) ?? null;
 
 /**
  * The built-in DM's tools, unchanged: same validation, same rules about whose
@@ -565,7 +564,7 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
       destructiveHint: false,
       openWorldHint: false,
     },
-    during: GUIDE_TOO.has(spec.name) ? ['free', 'guide'] : ['free'],
+    during: gmGate(spec.name),
     async call(input, call) {
       let t: Table;
       try {
@@ -582,9 +581,10 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
       }
       const held = await currentWork(t.id);
       if (held) {
-        const variant = variants.get(spec.name)?.(input, t, held);
-        if (variant) {
-          const out = await variant;
+        for (const variant of variants.get(spec.name) ?? []) {
+          const answer = variant(input, t, held);
+          if (!answer) continue;
+          const out = await answer;
           return { text: out.content, isError: out.isError };
         }
       }

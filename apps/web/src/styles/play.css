@@ -947,6 +947,24 @@
   background: var(--arcane);
 }
 
+/* ---------- rules desk ---------- */
+.rulings .section-title {
+  margin-top: 4px;
+}
+.ruling {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ruling p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ruling-meta {
+  gap: 8px;
+  min-width: 0;
+}
+
 /* ---------- Claude at the table ---------- */
 .dm-chip {
   display: inline-flex;

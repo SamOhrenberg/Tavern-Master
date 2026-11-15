@@ -21,6 +21,7 @@ const uuid = z.string().uuid();
 const systemSchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(600).default(''),
+  homebrew: z.boolean().default(false),
   abilities: z.array(z.string().trim().min(1).max(30)).max(12).default([]),
   fields: z
     .array(
@@ -84,7 +85,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/systems', async (req) => {
     requireUser(req);
     const rows = await q(
-      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status,
+      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status, s.homebrew,
               (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id AND d.campaign_id IS NULL) AS docs,
               (SELECT count(*)::int FROM documents d
                  WHERE d.system_id = s.id AND d.campaign_id IS NULL AND d.kind = 'setting') AS setting_docs,
@@ -102,6 +103,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       settingDocumentCount: r.setting_docs,
       loreStatus: r.lore_status,
       lore: r.lore ?? null,
+      homebrew: r.homebrew,
     }));
     return { systems };
   });
@@ -113,9 +115,16 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const template = { abilities: body.abilities, fields: body.fields ?? DEFAULT_FIELDS };
     for (let n = 0; n < 20; n++) {
       const row = await q1<{ id: string }>(
-        `INSERT INTO game_systems (slug, name, description, sheet_template, created_by)
-         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (slug) DO NOTHING RETURNING id`,
-        [n ? `${base}-${n + 1}` : base, body.name, body.description, JSON.stringify(template), auth.user.id],
+        `INSERT INTO game_systems (slug, name, description, sheet_template, created_by, homebrew)
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (slug) DO NOTHING RETURNING id`,
+        [
+          n ? `${base}-${n + 1}` : base,
+          body.name,
+          body.description,
+          JSON.stringify(template),
+          auth.user.id,
+          body.homebrew,
+        ],
       );
       if (row) {
         await audit('system.created', {
@@ -128,6 +137,32 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     throw conflict('A system with that name already exists.');
+  });
+
+  /**
+   * Mark a system homebrew, or not. Tables on a homebrew system get the rules
+   * desk, and their GMs follow the rulings made there. Every campaign on the
+   * system has its brief compiled again on its next turn, so the rulings come
+   * in or go out with the switch.
+   */
+  app.patch<{ Params: { id: string } }>('/api/systems/:id', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const { homebrew } = parse(z.object({ homebrew: z.boolean() }), req.body);
+    const row = await q1<{ id: string }>('UPDATE game_systems SET homebrew = $2 WHERE id = $1 RETURNING id', [
+      id,
+      homebrew,
+    ]);
+    if (!row) throw notFound();
+    await q('UPDATE campaigns SET brief_at = NULL WHERE system_id = $1', [id]);
+    await audit('system.updated', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+      meta: { homebrew },
+    });
+    return { ok: true };
   });
 
   app.delete<{ Params: { id: string } }>('/api/systems/:id', async (req) => {

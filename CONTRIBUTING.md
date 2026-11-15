@@ -50,7 +50,7 @@ party.ts    who is in a party and who may change what (used by routes and
             by the guide, so both follow the same rules)
 ```
 
-There are four agents, each with its own prompt and its own slice of the data:
+There are five agents, each with its own prompt and its own slice of the data:
 
 | Agent | File | Sees | Can change |
 |---|---|---|---|
@@ -58,7 +58,8 @@ There are four agents, each with its own prompt and its own slice of the data:
 | Companion | `agent/companion.ts` | its sheet, the public story, this turn | nothing: it returns one action |
 | Guide | `agent/builder.ts` | rules, premise, table-visible documents, one sheet | that one sheet |
 | Sheet reader | `agent/sheets.ts` | one upload | nothing: it returns a draft |
-| Claude, in a Claude campaign | `connector/` | per request: a turn as the DM sees it, a guide chat as the guide does, one upload, one document, the chronicle | per request: game state, that one sheet, a draft, a catalogue entry, the chronicle |
+| Rules desk (homebrew systems) | `agent/rules-desk.ts`, `agent/rulings.ts` | rules, house rulings, recent play, the party; no notebook or DM-only documents | rulings, and hit points, conditions, inventory (and the sheet when the GM keeps sheets) to fix a mistake |
+| Claude, in a Claude campaign | `connector/` | per request: a turn as the DM sees it, a guide chat as the guide does, the rules desk as the desk does, one upload, one document, the chronicle | per request: game state, that one sheet, rulings, a draft, a catalogue entry, the chronicle |
 
 Keep them separate. A companion or the guide given the DM's prompt would know
 the plot.

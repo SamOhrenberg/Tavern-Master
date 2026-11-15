@@ -4,9 +4,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
 import { useAction, useMe, useQuery, useToast } from '../app';
 import { IconAlert, IconBook, IconChevron, IconPlus, IconSearch, IconTrash, IconUpload } from '../icons';
-import { ConfirmButton, Empty, Field, PageHead, Sheet, Skeletons, ruleSource } from '../ui';
+import { ConfirmButton, Empty, Field, PageHead, Segmented, Sheet, Skeletons, ruleSource } from '../ui';
 
 const DEFAULT_ABILITIES = 'Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma';
+
+const HOMEBREW_OPTIONS: { value: 'published' | 'homebrew'; label: string }[] = [
+  { value: 'published', label: 'Published' },
+  { value: 'homebrew', label: 'Homebrew' },
+];
+const HOMEBREW_HINT =
+  'Homebrew gives each table a rules desk: players talk rules over with the GM, and what they settle is kept and followed.';
 
 function useCanManage(): { admin: boolean; locked: boolean } {
   const me = useMe();
@@ -28,6 +35,7 @@ function NewSystem({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [abilities, setAbilities] = useState(DEFAULT_ABILITIES);
+  const [homebrew, setHomebrew] = useState<'published' | 'homebrew'>('published');
   const [busy, run] = useAction();
 
   const submit = (e: FormEvent) => {
@@ -37,6 +45,7 @@ function NewSystem({ onClose }: { onClose: () => void }) {
         body: {
           name,
           description,
+          homebrew: homebrew === 'homebrew',
           abilities: abilities
             .split(',')
             .map((a) => a.trim())
@@ -75,6 +84,9 @@ function NewSystem({ onClose }: { onClose: () => void }) {
           hint="Comma separated. These become the boxes on every character sheet."
         >
           <input className="input" value={abilities} onChange={(e) => setAbilities(e.target.value)} />
+        </Field>
+        <Field label="Whose rules" hint={HOMEBREW_HINT}>
+          <Segmented value={homebrew} onChange={setHomebrew} options={HOMEBREW_OPTIONS} />
         </Field>
         <button type="submit" className="btn primary block" disabled={busy}>
           Create system
@@ -130,7 +142,10 @@ export function LibraryScreen() {
                   <IconBook />
                 </span>
                 <div className="grow">
-                  <h2 className="truncate">{s.name}</h2>
+                  <h2 className="truncate">
+                    {s.name}
+                    {s.homebrew && <span className="pill gold system-tag">Homebrew</span>}
+                  </h2>
                   <p className="small muted">
                     {s.documentCount} {s.documentCount === 1 ? 'book' : 'books'} ·{' '}
                     {s.chunkCount.toLocaleString()} passages
@@ -619,6 +634,38 @@ export function SystemScreen() {
               onSaved={() => void reloadSystems()}
             />
           )}
+        </>
+      )}
+
+      {system && (admin || system.homebrew) && (
+        <>
+          <div className="section-title">
+            <span>Whose rules</span>
+          </div>
+          <div className="card stack homebrew-card">
+            {admin && !locked ? (
+              <Segmented
+                value={system.homebrew ? 'homebrew' : 'published'}
+                options={HOMEBREW_OPTIONS}
+                onChange={(v) =>
+                  void run(
+                    async () => {
+                      await api(`/systems/${id}`, { method: 'PATCH', body: { homebrew: v === 'homebrew' } });
+                      await reloadSystems();
+                    },
+                    v === 'homebrew' ? 'Marked as homebrew' : 'Marked as published',
+                  )
+                }
+              />
+            ) : (
+              <span className="pill gold">Homebrew</span>
+            )}
+            <p className="small muted">
+              {system.homebrew
+                ? 'Tables playing this system have a rules desk: a side chat where players talk rules over with the GM, change them, steer the campaign and put right calls that went wrong. The GM follows what they settle on every turn.'
+                : 'The GM plays these rules as written. Mark the system homebrew to give its tables a rules desk where the players can change them.'}
+            </p>
+          </div>
         </>
       )}
 

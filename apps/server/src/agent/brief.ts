@@ -1,4 +1,5 @@
 import { q, q1 } from '../db/pool.js';
+import { activeRulings, rulingLines, rulingsSection } from './rulings.js';
 
 /**
  * The GM's brief: one compiled page holding its notebook, the durable facts,
@@ -33,7 +34,8 @@ const docLine = (d: DocRow) =>
   `- "${oneLine(d.title, 80)}" (${d.kind ?? 'not yet catalogued'}${d.audience === 'gm' ? ', for your eyes only' : ''})${d.summary ? `: ${oneLine(d.summary, 400)}` : ''}`;
 
 export async function compileBrief(campaignId: string): Promise<string> {
-  const [wishes, notes, memories, summaries, docs] = await Promise.all([
+  const [rulings, wishes, notes, memories, summaries, docs] = await Promise.all([
+    activeRulings(campaignId),
     q<{ display_name: string; wishes: string }>(
       `SELECT u.display_name, m.wishes FROM campaign_members m JOIN users u ON u.id = m.user_id
         WHERE m.campaign_id = $1 AND m.wishes <> '' ORDER BY m.joined_at`,
@@ -62,6 +64,9 @@ export async function compileBrief(campaignId: string): Promise<string> {
     '# Campaign brief',
     'Your own compiled record of this campaign. The players never see it. Trust it over your sense of what probably happened.',
   ];
+  // First, because they change how everything after them is read.
+  const house = rulingsSection(rulings);
+  if (house) parts.push(house);
   if (wishes.length) {
     parts.push(
       '## What the players asked for',
@@ -99,9 +104,10 @@ export async function refreshBrief(campaignId: string): Promise<string> {
   return text;
 }
 
-/** What the GM has written down, and what was uploaded, since the brief was compiled. */
+/** What the GM has written down, what was uploaded and what the table ruled, since the brief was compiled. */
 export async function changesSince(campaignId: string, since: Date): Promise<string> {
-  const [notes, memories, docs] = await Promise.all([
+  const [rulings, notes, memories, docs] = await Promise.all([
+    activeRulings(campaignId, since),
     q<NoteRow>(
       'SELECT title, content FROM gm_notes WHERE campaign_id = $1 AND updated_at > $2 ORDER BY updated_at',
       [campaignId, since],
@@ -118,6 +124,11 @@ export async function changesSince(campaignId: string, since: Date): Promise<str
     ),
   ]);
   const parts: string[] = [];
+  if (rulings.length)
+    parts.push(
+      `New house rulings, settled with the table at the rules desk. They override the rulebooks and your earlier calls:
+${rulingLines(rulings)}`,
+    );
   for (const n of notes) parts.push(`Notebook page "${n.title}" now reads:\n${n.content}`);
   if (memories.length) parts.push(memories.map((m) => `- (${m.kind}) ${m.content}`).join('\n'));
   if (docs.length) parts.push(`New documents at the table:\n${docs.map(docLine).join('\n')}`);

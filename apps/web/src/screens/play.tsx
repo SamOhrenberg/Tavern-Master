@@ -11,12 +11,13 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast, useVisualViewport, type Query } from '../app';
-import { IconBack, IconChevron, IconDots, IconScroll, IconSparkle, IconUsers } from '../icons';
+import { IconBack, IconChevron, IconDots, IconGavel, IconScroll, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
 import { Composer, TurnBar, type Mode } from '../play/composer';
 import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
 import { ManageSheet } from '../play/manage';
+import { RulesSheet } from '../play/rules';
 import { PartySheet } from '../play/party';
 import { ClaudeSetupSheet, dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
@@ -104,6 +105,8 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [unseen, setUnseen] = useState(false);
   const [guideSignal, setGuideSignal] = useState(0);
   const [settingUp, setSettingUp] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rulesSignal, setRulesSignal] = useState(0);
   const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
@@ -151,6 +154,7 @@ function Play({ id, campaign, state, template }: TableProps) {
     },
     onSignedOut: () => setMe(null),
     onGuide: () => setGuideSignal((n) => n + 1),
+    onRules: () => setRulesSignal((n) => n + 1),
   });
 
   // ---- scrolling: stay at the newest line unless the reader has scrolled up ----
@@ -342,6 +346,16 @@ function Play({ id, campaign, state, template }: TableProps) {
         >
           <IconUsers />
         </button>
+        {c.homebrew && (
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setRulesOpen(true)}
+            aria-label="Rules desk"
+          >
+            <IconGavel />
+          </button>
+        )}
         <button
           type="button"
           className="icon-btn"
@@ -534,6 +548,17 @@ function Play({ id, campaign, state, template }: TableProps) {
         </Sheet>
       )}
       {entry && <CodexSheet entity={entry} onClose={() => setEntry(null)} />}
+      {rulesOpen && (
+        <RulesSheet
+          campaignId={id}
+          owner={c.role === 'owner'}
+          claude={c.dm === 'claude'}
+          dm={dm}
+          hostName={c.members.find((m) => m.role === 'owner')?.displayName ?? 'the host'}
+          signal={rulesSignal}
+          onClose={() => setRulesOpen(false)}
+        />
+      )}
     </div>
   );
 }

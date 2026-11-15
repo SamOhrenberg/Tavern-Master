@@ -10,8 +10,8 @@ import { log } from '../log.js';
  * per campaign is claimed at a time, so Claude does one thing at a time.
  */
 
-export type WorkKind = 'guide' | 'sheet' | 'catalogue' | 'chronicle';
-export const WORK_KINDS: WorkKind[] = ['guide', 'sheet', 'catalogue', 'chronicle'];
+export type WorkKind = 'guide' | 'rules' | 'sheet' | 'catalogue' | 'chronicle';
+export const WORK_KINDS: WorkKind[] = ['guide', 'rules', 'sheet', 'catalogue', 'chronicle'];
 export type WorkStatus = 'waiting' | 'claimed' | 'done' | 'failed' | 'cancelled';
 
 export interface WorkItem {
@@ -64,8 +64,8 @@ const toItem = (r: Row): WorkItem => ({
 
 export const WORK_CHANNEL = 'dm_work';
 
-/** Claim order: a waiting player first, then the bookkeeping. Turns and the opening outrank all of it. */
-const PRIORITY = `CASE kind WHEN 'guide' THEN 0 WHEN 'sheet' THEN 1 WHEN 'chronicle' THEN 2 ELSE 3 END`;
+/** Claim order: waiting players first, then the bookkeeping. Turns and the opening outrank all of it. */
+const PRIORITY = `CASE kind WHEN 'guide' THEN 0 WHEN 'rules' THEN 0 WHEN 'sheet' THEN 1 WHEN 'chronicle' THEN 2 ELSE 3 END`;
 
 let localHook: ((campaignId: string) => void) | null = null;
 /** Called in this process whenever work for a campaign changes, beside the NOTIFY for other processes. */

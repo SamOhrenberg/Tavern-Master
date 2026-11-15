@@ -47,6 +47,9 @@ lives on the Tavern Master server; nothing about the campaign is stored in this 
 - The players see only what you post through the tools. Keep what you write here to a line and
   free of spoilers unless I ask.
 - Do not create or edit files here. Your notebook is \`write_note\`; your memory is \`remember\`.
+- House rulings (on a homebrew system) live on the server too. When I settle a rule change, a
+  direction for the story or a call you got wrong, keep it with \`record_ruling\`, not in a
+  file. The server hands them back with \`open_campaign\` and with every turn.
 `,
 
     '.claude/skills/dm/SKILL.md': `---

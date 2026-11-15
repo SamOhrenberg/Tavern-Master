@@ -10,6 +10,10 @@ the party in structured state rather than in its memory.
   job queue all run on your hardware.
 - **Any rules system.** Admins create game systems and upload PDFs, Markdown
   or text. The DM retrieves from the campaign's system only, and cites it.
+- **Homebrew that grows at the table.** Mark a system homebrew and every
+  table playing it gets a rules desk: a side chat where the players talk
+  rules over with the DM, change them, steer the campaign or point out a bad
+  call. What they settle becomes a ruling the DM follows from then on.
 - **Multiplayer.** Friends, campaign invites, real-time play. Actions from
   several players are gathered into one turn with clear attribution.
 - **A party, not just a player.** Each campaign has its own characters. Fill
@@ -221,6 +225,21 @@ protected resource and its own authorization server (dynamic client
 registration, PKCE, rotating refresh tokens), and a connection is valid only
 on the address it was approved for, so one approved for a pinned address can
 never touch another campaign. Hand-made tokens still work on both.
+
+**Homebrew and the rules desk.** A system marked homebrew gives each of its
+campaigns a rules desk: one out-of-character chat the whole table shares
+with the GM. The GM there is a separate agent (`agent/rules-desk.ts`) with
+the rules, the house rulings, recent play and the party, but not the DM's
+notebook or DM-only documents, and anything secret it repeats is blacked
+out. It can put a mistake right with the same validated state tools the DM
+uses, and keeps what the table settles with `record_ruling`: a house rule,
+direction for the story, or a correction. Rulings are stored per campaign and
+reach the DM like its own notes: at the top of the brief, and in the notes
+since the brief until the next rebuild. In a Claude campaign the desk is a
+work-queue request like the guide, every turn handed to Claude carries the
+rulings, and the host can record one by telling Claude directly. They live on
+the server rather than in a Claude Code `CLAUDE.md`, so they reach every
+route, survive a compacted conversation and stay the same on every machine.
 
 **Campaign documents.** Any player can upload setting notes, an adventure or
 house rules to a campaign. They go through the same ingestion as rulebooks and

@@ -104,12 +104,13 @@ export interface CampaignRow {
   system_name: string;
   lore: SettingLore | null;
   lore_status: string;
+  homebrew: boolean;
 }
 
 export async function loadCampaign(campaignId: string): Promise<CampaignRow> {
   const row = await q1<CampaignRow>(
     `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id,
-            s.name AS system_name, s.lore, s.lore_status
+            s.name AS system_name, s.lore, s.lore_status, s.homebrew
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
     [campaignId],
   );
@@ -126,6 +127,7 @@ export const infoOf = (id: string, c: CampaignRow): CampaignInfo => ({
   gmSheets: c.settings.sheets === 'gm',
   // Only lean on the voice once it has actually been read.
   lore: c.lore_status === 'ready' ? c.lore : null,
+  homebrew: c.homebrew,
 });
 
 /** Find the open play session, or start a new one after a long gap. */

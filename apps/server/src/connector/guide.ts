@@ -128,9 +128,7 @@ async function postReply(t: Table, item: WorkItem, text: string, rolls: unknown[
 }
 
 // The guide's dice roll in a context of its own, which is never shown to the table.
-setRequestContext((t, held) =>
-  held.kind === 'guide' ? t.room.requestContext(held.id, t.systemId, []) : null,
-);
+setRequestContext('guide', (t, held) => t.room.requestContext(held.id, t.systemId, []));
 
 // While guiding, a document search reads only what the whole table may read.
 gmVariant('search_documents', (input, t, held) => {

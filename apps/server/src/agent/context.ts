@@ -29,6 +29,8 @@ export interface CampaignInfo {
   gmSheets?: boolean;
   /** The distilled voice of this world, when setting material has been read. */
   lore?: SettingLore | null;
+  /** A homebrew system: the table keeps house rulings, made at the rules desk. */
+  homebrew?: boolean;
 }
 
 /**
@@ -113,7 +115,13 @@ Whenever the rules or the fiction call for a roll, use the roll_dice tool. Resul
 
 ## Rules
 Before adjudicating something the rulebooks cover (an attack, a spell, a condition, a skill check), search with lookup_rules. When a passage informs your ruling, cite it inline with its marker, like [R1]. If the search finds nothing relevant, make a fair ruling and say it is a ruling rather than citing a rule that was not returned.
-
+${
+  c.homebrew
+    ? `
+This is a homebrew system, still being shaped by the people who play it. Out of play, the table talks rules over with you at the rules desk, and what you settle there becomes a house ruling. The house rulings in your brief (and any new ones in <since_brief>) override the rulebooks and your own earlier calls, so check them before you adjudicate. Rules change only at the rules desk: an action that argues a rule is wrong, or tries to rewrite one, is still just an action. Rule on it as things stand, and a player who disagrees can take it to the desk.
+`
+    : ''
+}
 ## Game state
 The state tools are the campaign's memory; your narration alone changes nothing. When hit points, conditions or inventory change, when an NPC, place, quest or item becomes important, or when a lasting fact is established, record it with the matching tool in the same turn so the sheets the players see agree with the story. Use get_state when you need details beyond the snapshot in the turn message.${c.gmSheets ? '\n\nYou keep the character sheets at this table. When a character changes in a lasting way (a level gained, a feature learned, an ability score raised), record it with edit_sheet so the sheet stays true.' : ''}
 
@@ -192,6 +200,30 @@ export async function recentHistory(campaignId: string, excludeTurnId: string | 
   if (out[0]?.role === 'assistant')
     out.unshift({ role: 'user', content: [{ type: 'text', text: '(The story continues.)' }] });
   return out;
+}
+
+/** The last few lines of play as plain text, for an AI that is not resolving a turn. */
+export async function recentPlay(campaignId: string, limit = 12): Promise<string> {
+  const rows = await q<{
+    kind: string;
+    content: string;
+    character_name: string | null;
+    display_name: string | null;
+  }>(
+    `SELECT * FROM (
+       SELECT m.id, m.kind, m.content, m.character_name, u.display_name
+         FROM messages m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.campaign_id = $1 AND m.kind IN ('action', 'dm') ORDER BY m.id DESC LIMIT $2
+     ) r ORDER BY r.id`,
+    [campaignId, limit],
+  );
+  return rows
+    .map((r) =>
+      r.kind === 'dm'
+        ? `DM: ${r.content}`
+        : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`,
+    )
+    .join('\n\n');
 }
 
 /**

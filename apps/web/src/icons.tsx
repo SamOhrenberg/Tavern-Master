@@ -114,6 +114,7 @@ export const IconKey = icon(
     <path d="M11 12l8.500-8.500M16 7l2.500 2.500M13.500 9.500l2 2" />
   </>,
 );
+export const IconGavel = icon(<path d="M8.500 9.500l5-5 4 4-5 5zM10.500 11.500L4 18M13 20h7" />);
 export const IconCrown = icon(<path d="M4 17.500L3 8l5 3.500L12 5l4 6.500L21 8l-1 9.500zM4 20.500h16" />);
 export const IconSparkle = icon(
   <path d="M12 3l1.800 5.200L19 10l-5.200 1.800L12 17l-1.800-5.200L5 10l5.200-1.800zM19 16l.7 2.300L22 19l-2.300.7L19 22l-.7-2.300L16 19l2.300-.7z" />,

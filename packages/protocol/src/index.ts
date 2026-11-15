@@ -40,6 +40,11 @@ export interface GameSystem {
   loreStatus: LoreStatus;
   /** The distilled voice of this world, once read; null until ready. */
   lore: SettingLore | null;
+  /**
+   * A homebrew system: tables that play it get a rules desk, where players
+   * talk rules over with the GM and the rulings they settle on are kept.
+   */
+  homebrew: boolean;
 }
 
 export type LoreStatus = 'none' | 'queued' | 'reading' | 'ready' | 'failed';
@@ -122,6 +127,8 @@ export interface CampaignSummary {
   role: 'owner' | 'player';
   /** Who is every AI for this campaign. */
   dm: DmMode;
+  /** The campaign's system is homebrew, so the table has a rules desk. */
+  homebrew: boolean;
 }
 
 export interface CampaignMember extends UserRef {
@@ -317,6 +324,52 @@ export type BuilderEvent =
   | { type: 'queued' }
   | { type: 'error'; message: string };
 
+// ---------- rules desk (homebrew systems) ----------
+
+/**
+ * What a table settled on with its GM. rule: a house rule or a change to the
+ * system's rules. direction: how the table wants the campaign to play out.
+ * correction: a call the GM got wrong, and how the story stands now.
+ */
+export type RulingKind = 'rule' | 'direction' | 'correction';
+
+export interface Ruling {
+  id: string;
+  kind: RulingKind;
+  content: string;
+  /** The player whose conversation led to it. */
+  requestedBy: UserRef | null;
+  createdAt: string;
+}
+
+export interface RulesMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  /** Who said it; null for the GM. */
+  author: UserRef | null;
+  createdAt: string;
+}
+
+export interface RulesDesk {
+  messages: RulesMessage[];
+  rulings: Ruling[];
+  /** Someone's message is waiting for the GM's answer. */
+  waiting: boolean;
+}
+
+/**
+ * One line of the GM's answer at the rules desk, streamed as it works. The
+ * text itself arrives whole, after secrets are checked, never word by word.
+ */
+export type RulesEvent =
+  | { type: 'tool'; tool: string; summary: string }
+  /** An answer was stored. The desk may hold more than this one message now. */
+  | { type: 'done'; message: RulesMessage }
+  /** The message was stored; the answer arrives later (Claude, or the GM is answering someone else). */
+  | { type: 'queued' }
+  | { type: 'error'; message: string };
+
 export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
 
 export interface Entity {
@@ -462,6 +515,8 @@ export type ServerMessage =
   | { type: 'dm_status'; dm: DmStatus }
   /** Your guide chat has a new reply. Sent only to the thread's owner. */
   | { type: 'guide'; threadId: string }
+  /** The rules desk has a new message or ruling. */
+  | { type: 'rules' }
   /** An uploaded sheet of yours moved on. Sent only to the uploader. */
   | { type: 'sheet'; id: string; status: PendingSheet['status'] }
   | { type: 'error'; code: string; message: string }
