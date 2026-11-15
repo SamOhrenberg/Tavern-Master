@@ -43,6 +43,8 @@ interface Handlers {
   onGuide?: (threadId: string) => void;
   /** The rules desk has a new message or ruling. */
   onRules?: () => void;
+  /** Messages already posted changed: the story was rewound, or the DM corrected itself. */
+  onHistoryChanged?: () => void;
   /** An uploaded sheet of yours moved on. */
   onSheet?: (id: string, status: PendingSheet['status']) => void;
 }
@@ -125,6 +127,9 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
           break;
         case 'dm_end':
           setStream(null);
+          break;
+        case 'history_changed':
+          h.current.onHistoryChanged?.();
           break;
         case 'state_changed':
           h.current.onStateChanged();

@@ -16,12 +16,14 @@ import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
 import { Composer, TurnBar, type Mode } from '../play/composer';
 import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
+import { MessageMenu } from '../play/history';
 import { ManageSheet } from '../play/manage';
+import { RecapView, TalkBox } from '../play/recap';
 import { RulesSheet } from '../play/rules';
 import { PartySheet } from '../play/party';
 import { ClaudeSetupSheet, dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
-import { LiveDm, MessageItem } from '../play/story';
+import { LiveDm, MessageItem, sameSpeaker } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
 import { Prep } from './prep';
 
@@ -107,6 +109,10 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [settingUp, setSettingUp] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rulesSignal, setRulesSignal] = useState(0);
+  // The message whose menu (edit, rewind) is open.
+  const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
+  // Between sessions, reading the full story instead of the recap.
+  const [reading, setReading] = useState(false);
   const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
@@ -155,7 +161,21 @@ function Play({ id, campaign, state, template }: TableProps) {
     onSignedOut: () => setMe(null),
     onGuide: () => setGuideSignal((n) => n + 1),
     onRules: () => setRulesSignal((n) => n + 1),
+    // The story was rewound or corrected: what is on screen may no longer have been said.
+    onHistoryChanged: () => {
+      setMessages([]);
+      setRolls([]);
+      setHasMore(false);
+      setMenuFor(null);
+      void loadLatest();
+      void reloadState();
+      void reloadCampaign();
+    },
   });
+
+  // A new break between sessions opens on the recap, not on the story.
+  const restingSince = c?.restingSince ?? null;
+  useEffect(() => setReading(false), [restingSince]);
 
   // ---- scrolling: stay at the newest line unless the reader has scrolled up ----
   const toBottom = useCallback((smooth = false) => {
@@ -282,6 +302,14 @@ function Play({ id, campaign, state, template }: TableProps) {
   }
 
   const archived = c.status === 'archived';
+  const resting = !!c.restingSince && !archived;
+  // Table talk since the break began, for the recap.
+  const talk = messages.filter((m) => m.kind === 'ooc' && m.createdAt >= (c.restingSince ?? ''));
+  const owner = c.role === 'owner';
+  // The host may edit any narration or action; a player, their own actions.
+  const canEdit = (m: ChatMessage) =>
+    !archived &&
+    ((owner && (m.kind === 'dm' || m.kind === 'action')) || (m.kind === 'action' && m.user?.id === me.id));
   const opening = table.turn.status === 'resolving' && messages.length === 0;
   const others = table.present.filter((u) => u.id !== me.id).length;
   const claude = c.dm === 'claude';
@@ -366,132 +394,157 @@ function Play({ id, campaign, state, template }: TableProps) {
         </button>
       </header>
 
-      <div className="feed" ref={feed} onScroll={onScroll}>
-        <div className="feed-inner">
-          {hasMore && (
-            <button
-              type="button"
-              className="btn sm ghost load-older"
-              disabled={loadingMore}
-              onClick={() => void loadOlder()}
-            >
-              {loadingMore ? 'Loading…' : 'Earlier in the story'}
-            </button>
-          )}
-          {!loaded ? (
-            <Loading />
-          ) : messages.length === 0 && rolls.length === 0 && !opening ? (
-            <div className="opening">
-              <IconSparkle />
-              <h2>{c.name}</h2>
-              <p className="story-lede">
-                {claude
-                  ? 'Claude will write the opening scene when it is at the table.'
-                  : c.premise ||
-                    'Every tale starts with someone doing something. The Dungeon Master is listening.'}
-              </p>
-              {!archived && !claude && (
-                <div className="stack tight">
-                  {OPENERS.map((line) => (
-                    <button key={line} type="button" className="opener" onClick={() => setDraft(line)}>
-                      {line}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {(rollsAfter.get(0) ?? []).map((r) => (
-                <AnimatedRoll key={r.id} roll={r} />
-              ))}
-              {messages.map((m, i) => {
-                const prev = messages[i - 1];
-                const joined = m.kind === 'action' && prev?.kind === 'action' && prev.user?.id === m.user?.id;
-                return (
-                  <Fragment key={m.id}>
-                    <MessageItem
-                      message={m}
-                      mine={m.user?.id === me.id}
-                      joined={joined}
-                      onCite={setCitation}
-                      onRef={openRef}
-                    />
-                    {(rollsAfter.get(m.id) ?? []).map((r) => (
-                      <AnimatedRoll key={r.id} roll={r} />
-                    ))}
-                  </Fragment>
-                );
-              })}
-            </>
-          )}
-          {table.stream && <LiveDm stream={table.stream} />}
-          {!table.stream && table.turn.status === 'resolving' && (
-            <LiveDm
-              stream={{ turnId: '', text: '', tools: [] }}
-              waitingOn={
-                stalled
-                  ? `Waiting for Claude. ${host} runs the Dungeon Master from their Claude app.`
-                  : undefined
-              }
-            >
-              {stalled && c.role === 'owner' && (
+      {resting && !reading ? (
+        <RecapView
+          campaign={c}
+          meId={me.id}
+          talk={talk}
+          onTalk={(text) => send('talk', text)}
+          onChanged={reloadCampaign}
+          onRead={() => setReading(true)}
+        />
+      ) : (
+        <>
+          <div className="feed" ref={feed} onScroll={onScroll}>
+            <div className="feed-inner">
+              {hasMore && (
                 <button
                   type="button"
-                  className="btn sm ghost give-back"
-                  disabled={busy}
-                  onClick={() => void giveBack()}
+                  className="btn sm ghost load-older"
+                  disabled={loadingMore}
+                  onClick={() => void loadOlder()}
                 >
-                  Give the turn back
+                  {loadingMore ? 'Loading…' : 'Earlier in the story'}
                 </button>
               )}
-            </LiveDm>
-          )}
-        </div>
-      </div>
+              {!loaded ? (
+                <Loading />
+              ) : messages.length === 0 && rolls.length === 0 && !opening ? (
+                <div className="opening">
+                  <IconSparkle />
+                  <h2>{c.name}</h2>
+                  <p className="story-lede">
+                    {claude
+                      ? 'Claude will write the opening scene when it is at the table.'
+                      : c.premise ||
+                        'Every tale starts with someone doing something. The Dungeon Master is listening.'}
+                  </p>
+                  {!archived && !claude && (
+                    <div className="stack tight">
+                      {OPENERS.map((line) => (
+                        <button key={line} type="button" className="opener" onClick={() => setDraft(line)}>
+                          {line}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {(rollsAfter.get(0) ?? []).map((r) => (
+                    <AnimatedRoll key={r.id} roll={r} />
+                  ))}
+                  {messages.map((m, i) => {
+                    const prev = messages[i - 1];
+                    const joined = m.kind === 'action' && prev?.kind === 'action' && sameSpeaker(prev, m);
+                    return (
+                      <Fragment key={m.id}>
+                        <MessageItem
+                          message={m}
+                          mine={m.user?.id === me.id}
+                          joined={joined}
+                          onCite={setCitation}
+                          onRef={openRef}
+                          canEdit={canEdit(m)}
+                          onMenu={setMenuFor}
+                        />
+                        {(rollsAfter.get(m.id) ?? []).map((r) => (
+                          <AnimatedRoll key={r.id} roll={r} />
+                        ))}
+                      </Fragment>
+                    );
+                  })}
+                </>
+              )}
+              {table.stream && <LiveDm stream={table.stream} />}
+              {!table.stream && table.turn.status === 'resolving' && (
+                <LiveDm
+                  stream={{ turnId: '', text: '', tools: [] }}
+                  waitingOn={
+                    stalled
+                      ? `Waiting for Claude. ${host} runs the Dungeon Master from their Claude app.`
+                      : undefined
+                  }
+                >
+                  {stalled && c.role === 'owner' && (
+                    <button
+                      type="button"
+                      className="btn sm ghost give-back"
+                      disabled={busy}
+                      onClick={() => void giveBack()}
+                    >
+                      Give the turn back
+                    </button>
+                  )}
+                </LiveDm>
+              )}
+            </div>
+          </div>
 
-      <footer className="play-foot">
-        {unseen && (
-          <button type="button" className="jump" onClick={() => toBottom(true)}>
-            New in the story
-          </button>
-        )}
-        {archived ? (
-          <p className="archived-note">This campaign is archived. Its story stays here to read.</p>
-        ) : (
-          <>
-            {loaded && game && mine.length === 0 && (
-              <button type="button" className="char-nudge" onClick={() => setCast({ kind: 'add' })}>
-                <IconSparkle />
-                <span className="grow">
-                  <b>Create your character</b>
-                  <small>So the DM knows who you are and what you can do.</small>
-                </span>
-                <IconChevron className="chev" />
+          <footer className="play-foot">
+            {unseen && (
+              <button type="button" className="jump" onClick={() => toBottom(true)}>
+                New in the story
               </button>
             )}
-            <TurnBar
-              turn={table.turn}
-              meId={me.id}
-              isOwner={c.role === 'owner'}
-              onPass={() => table.send({ type: 'pass' })}
-              onForce={() => table.send({ type: 'force' })}
-            />
-            <DiceTray character={actingAs} onRoll={roll} />
-            <Composer
-              characters={mine}
-              actingAs={actingAs}
-              onActAs={setActAs}
-              acted={acted}
-              resolving={table.turn.status === 'resolving'}
-              draft={draft}
-              onDraft={setDraft}
-              onSend={send}
-            />
-          </>
-        )}
-      </footer>
+            {archived ? (
+              <p className="archived-note">This campaign is archived. Its story stays here to read.</p>
+            ) : resting ? (
+              <>
+                <TalkBox onTalk={(text) => send('talk', text)} />
+                <button type="button" className="btn primary block" onClick={() => setReading(false)}>
+                  Back to the recap
+                </button>
+              </>
+            ) : (
+              <>
+                {loaded && game && mine.length === 0 && (
+                  <button type="button" className="char-nudge" onClick={() => setCast({ kind: 'add' })}>
+                    <IconSparkle />
+                    <span className="grow">
+                      <b>Create your character</b>
+                      <small>So the DM knows who you are and what you can do.</small>
+                    </span>
+                    <IconChevron className="chev" />
+                  </button>
+                )}
+                <TurnBar
+                  turn={table.turn}
+                  meId={me.id}
+                  isOwner={c.role === 'owner'}
+                  onPass={() => table.send({ type: 'pass' })}
+                  onForce={() => table.send({ type: 'force' })}
+                />
+                <DiceTray character={actingAs} onRoll={roll} />
+                <Composer
+                  characters={mine}
+                  actingAs={actingAs}
+                  onActAs={setActAs}
+                  acted={acted}
+                  resolving={table.turn.status === 'resolving'}
+                  draft={draft}
+                  onDraft={setDraft}
+                  onSend={send}
+                />
+              </>
+            )}
+          </footer>
+        </>
+      )}
 
+      {menuFor && (
+        <MessageMenu campaignId={id} message={menuFor} owner={owner} onClose={() => setMenuFor(null)} />
+      )}
       {panel === 'party' && game && (
         <PartySheet
           campaign={c}

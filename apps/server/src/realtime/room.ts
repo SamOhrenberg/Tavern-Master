@@ -10,7 +10,7 @@ import type {
 import type { WebSocket } from 'ws';
 import { refreshBrief } from '../agent/brief.js';
 import { resolveRefs } from '../agent/codex.js';
-import { companionTurn, publicStory } from '../agent/companion.js';
+import { companionTurn, knownEntries, publicStory } from '../agent/companion.js';
 import {
   buildOpening,
   buildPrompt,
@@ -28,17 +28,25 @@ import { DmDesk } from '../connector/desk.js';
 import { dmMode, dmModeOf } from '../connector/mode.js';
 import { presenceOf } from '../connector/presence.js';
 import { queueWork } from '../connector/work.js';
-import { q, q1 } from '../db/pool.js';
+import { q, q1, tx } from '../db/pool.js';
 import { enqueue } from '../jobs/queue.js';
 import { LlmNotConfigured, resolveLlm } from '../llm/index.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { log } from '../log.js';
-import { insertMessage } from './messages.js';
+import { conflict } from '../errors.js';
+import { snapshotState } from '../rewind.js';
+import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll, type RollRequest } from './rolls.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
 
 const SESSION_GAP_HOURS = 6;
+/**
+ * DM tools that change a message already posted. The one message is sent again,
+ * the way a host's edit is, so nobody's screen reloads and loses its place.
+ */
+export const HISTORY_TOOLS = new Set(['correct_narration']);
 export const STATE_TOOLS = new Set([
+  'delete_entity',
   'update_character',
   'modify_inventory',
   'edit_sheet',
@@ -105,12 +113,16 @@ export interface CampaignRow {
   lore: SettingLore | null;
   lore_status: string;
   homebrew: boolean;
+  gm_instructions: string;
+  outside_ais: { name: string; note: string }[];
 }
 
 export async function loadCampaign(campaignId: string): Promise<CampaignRow> {
   const row = await q1<CampaignRow>(
     `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id,
-            s.name AS system_name, s.lore, s.lore_status, s.homebrew
+            s.name AS system_name, s.lore, s.lore_status, s.homebrew, s.gm_instructions,
+            (SELECT coalesce(json_agg(json_build_object('name', a.name, 'note', a.note) ORDER BY lower(a.name)), '[]')
+               FROM outside_ais a) AS outside_ais
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
     [campaignId],
   );
@@ -128,19 +140,17 @@ export const infoOf = (id: string, c: CampaignRow): CampaignInfo => ({
   // Only lean on the voice once it has actually been read.
   lore: c.lore_status === 'ready' ? c.lore : null,
   homebrew: c.homebrew,
+  gmInstructions: c.gm_instructions,
+  outsideAis: c.outside_ais,
 });
 
-/** Find the open play session, or start a new one after a long gap. */
+/** Find the open play session, or start the first or next one. A session ends only through endSession. */
 async function ensureSession(campaignId: string): Promise<string> {
-  const open = await q1<{ id: string; fresh: boolean }>(
-    `SELECT s.id,
-            coalesce((SELECT max(created_at) FROM messages WHERE session_id = s.id), s.started_at)
-              > now() - make_interval(hours => $2) AS fresh
-       FROM play_sessions s WHERE s.campaign_id = $1 AND s.ended_at IS NULL ORDER BY s.number DESC LIMIT 1`,
-    [campaignId, SESSION_GAP_HOURS],
+  const open = await q1<{ id: string }>(
+    'SELECT id FROM play_sessions WHERE campaign_id = $1 AND ended_at IS NULL ORDER BY number DESC LIMIT 1',
+    [campaignId],
   );
-  if (open?.fresh) return open.id;
-  if (open) await endSession(campaignId, open.id);
+  if (open) return open.id;
   const row = await q1<{ id: string }>(
     `INSERT INTO play_sessions (campaign_id, number)
      VALUES ($1, (SELECT coalesce(max(number), 0) + 1 FROM play_sessions WHERE campaign_id = $1)) RETURNING id`,
@@ -149,8 +159,28 @@ async function ensureSession(campaignId: string): Promise<string> {
   return row!.id;
 }
 
-export async function endSession(campaignId: string, sessionId: string): Promise<void> {
-  await q('UPDATE play_sessions SET ended_at = now() WHERE id = $1 AND ended_at IS NULL', [sessionId]);
+/**
+ * Close a session and have it chronicled. With `rest` the table also goes
+ * to the recap: play stops until everyone has readied up and the host
+ * starts the next session. All of that is one change, so a failure leaves
+ * the session open rather than half closed.
+ */
+export async function endSession(
+  campaignId: string,
+  sessionId: string,
+  opts: { rest?: boolean } = {},
+): Promise<void> {
+  await tx(async (client) => {
+    await q(
+      'UPDATE play_sessions SET ended_at = now() WHERE id = $1 AND ended_at IS NULL',
+      [sessionId],
+      client,
+    );
+    if (opts.rest) {
+      await q('UPDATE campaigns SET resting_since = now() WHERE id = $1', [campaignId], client);
+      await q('UPDATE campaign_members SET ready_at = NULL WHERE campaign_id = $1', [campaignId], client);
+    }
+  });
   if ((await dmMode(campaignId)) === 'server') {
     await enqueue('summarize_campaign', { campaignId, sessionId });
     return;
@@ -158,6 +188,51 @@ export async function endSession(campaignId: string, sessionId: string): Promise
   // With Claude the server calls no model: Claude summarises the session, and whatever else is due.
   await queueWork({ campaignId, kind: 'chronicle', subjectId: `session:${sessionId}` });
   await queueChronicleIfDue(campaignId);
+}
+
+/**
+ * A session left open and untouched for SESSION_GAP_HOURS is over: the table
+ * went home without ending it. It is closed and sent to the recap like any
+ * other, so a return the next week starts with the recap and the ready check.
+ */
+export async function endIfStale(campaignId: string): Promise<boolean> {
+  const stale = await q1<{ id: string }>(
+    `SELECT s.id FROM play_sessions s
+      WHERE s.campaign_id = $1 AND s.ended_at IS NULL
+        AND greatest(coalesce((SELECT max(created_at) FROM messages WHERE session_id = s.id), s.started_at),
+                     coalesce(s.resumed_at, s.started_at))
+              <= now() - make_interval(hours => $2)
+      ORDER BY s.number DESC LIMIT 1`,
+    [campaignId, SESSION_GAP_HOURS],
+  );
+  if (!stale) return false;
+  await endSession(campaignId, stale.id, { rest: true });
+  return true;
+}
+
+/** Between sessions: the host ended one and play waits for the next. */
+export async function isResting(campaignId: string): Promise<boolean> {
+  const row = await q1<{ resting: boolean }>(
+    'SELECT resting_since IS NOT NULL AS resting FROM campaigns WHERE id = $1',
+    [campaignId],
+  );
+  return row?.resting ?? false;
+}
+
+/** Open the next session and say so at the table. Returns its number. */
+export async function beginSession(campaignId: string): Promise<number> {
+  const sessionId = await ensureSession(campaignId);
+  const row = await q1<{ number: number }>('SELECT number FROM play_sessions WHERE id = $1', [sessionId]);
+  const message = await insertMessage({
+    campaignId,
+    sessionId,
+    turnId: null,
+    kind: 'system',
+    userId: null,
+    content: `Session ${row!.number} begins.`,
+  });
+  getRoom(campaignId)?.broadcast({ type: 'message', message });
+  return row!.number;
 }
 
 /** What became of narration sent in by an outside DM. */
@@ -394,6 +469,57 @@ export class Room {
     return out;
   }
 
+  /**
+   * Change the story's past: rewind, or start a session over. Waits for the
+   * table's queue, refuses while the DM is writing, and drops a turn still
+   * being gathered (its actions are among what goes).
+   */
+  rewrite<T>(fn: () => Promise<T>): Promise<T> {
+    return this.runFor(async () => {
+      if (this.collector.phase === 'resolving' || this.opening || this.desk.turn) {
+        throw conflict('Wait for the Dungeon Master to finish writing first.', 'dm_busy');
+      }
+      this.collector.reset();
+      this.turn = null;
+      this.known = new Map(this.seats);
+      const out = await fn();
+      this.broadcast({ type: 'history_changed' });
+      this.broadcast({ type: 'state_changed' });
+      this.broadcast({ type: 'turn', turn: this.turnState() });
+      return out;
+    });
+  }
+
+  /**
+   * Run `fn` only while the table is quiet: after everything already queued,
+   * and refused while a turn is being gathered or the DM is writing. Nothing
+   * can open a turn between this check and `fn`, because actions wait in the
+   * same queue.
+   */
+  whenQuiet<T>(fn: () => Promise<T>): Promise<T> {
+    return this.runFor(async () => {
+      if (this.collector.phase !== 'idle' || this.opening || this.desk.turn) {
+        throw conflict('Wait for the current turn to finish.', 'dm_busy');
+      }
+      return fn();
+    });
+  }
+
+  /** The DM rewrote its latest scene: show everyone that one message as it now reads. */
+  async announceCorrection(): Promise<void> {
+    const last = await q1<{ id: number }>(
+      `SELECT id FROM messages WHERE campaign_id = $1 AND kind = 'dm' ORDER BY id DESC LIMIT 1`,
+      [this.campaignId],
+    );
+    const message = last ? await getMessage(last.id) : undefined;
+    if (message) this.broadcast({ type: 'message', message });
+  }
+
+  /** An action not yet resolved was edited: the DM gets the new words. */
+  editPending(messageId: number, text: string): 'ok' | 'resolving' | 'none' {
+    return this.collector.editAction(messageId, text);
+  }
+
   present(): UserRef[] {
     const seen = new Map<string, UserRef>();
     for (const u of this.sockets.values()) seen.set(u.id, u);
@@ -507,9 +633,26 @@ export class Room {
     if (!this.sockets.delete(ws)) return;
     void this.run(async () => {
       await this.syncSeats();
+      await this.unreadIfGone();
       this.broadcast({ type: 'presence', present: this.present() });
       this.broadcast({ type: 'turn', turn: this.turnState() });
     });
+  }
+
+  /**
+   * Between sessions, being ready means being here. A player who tapped ready
+   * and then left the app is no longer ready, so the host cannot start the
+   * next session without them by mistake.
+   */
+  private async unreadIfGone(): Promise<void> {
+    if (!(await isResting(this.campaignId))) return;
+    const here = this.present().map((u) => u.id);
+    const gone = await q(
+      `UPDATE campaign_members SET ready_at = NULL
+        WHERE campaign_id = $1 AND ready_at IS NOT NULL AND NOT (user_id = ANY($2::uuid[])) RETURNING user_id`,
+      [this.campaignId, here],
+    );
+    if (gone.length) this.broadcast({ type: 'state_changed' });
   }
 
   /** Characters were added, removed or handed to someone else. */
@@ -532,6 +675,19 @@ export class Room {
 
   action(user: UserRef, text: string, characterId?: string): Promise<void> {
     return this.run(async () => {
+      if (await endIfStale(this.campaignId)) {
+        this.broadcast({ type: 'state_changed' });
+        return this.tell(
+          user.id,
+          'It has been a while, so the last session was wrapped up. Read the recap and ready up; play resumes when the host starts the next one.',
+        );
+      }
+      if (await isResting(this.campaignId)) {
+        return this.tell(
+          user.id,
+          'The session has ended. Ready up on the recap, and play resumes when the host starts the next one.',
+        );
+      }
       const mine = this.seatsOf(user.id);
       let seat: TurnSeat | undefined;
       if (characterId) {
@@ -558,6 +714,10 @@ export class Room {
     characterName?: string,
   ): Promise<{ error: string } | { where: 'opened' | 'added' | 'queued'; as: string }> {
     return this.runFor(async () => {
+      if (await endIfStale(this.campaignId)) this.broadcast({ type: 'state_changed' });
+      if (await isResting(this.campaignId)) {
+        return { error: 'The session has ended. The host resumes play from the recap screen in the app.' };
+      }
       const mine = (await pgStore.characters(this.campaignId)).filter(
         (c) => c.controller === 'player' && c.playerIds.includes(user.id),
       );
@@ -679,6 +839,8 @@ export class Room {
         turn.id,
         closed.reason,
       ]);
+      // The world as it stands before this turn, so the story can be rewound to here.
+      await snapshotState(this.campaignId, turn.id);
       this.broadcast({ type: 'turn', turn: this.turnState() });
     });
     const active = turn as ActiveTurn | null;
@@ -721,10 +883,13 @@ export class Room {
     payers: string[],
   ): Promise<TurnAction[]> {
     const llm = await resolveLlm('companion', ownerId);
-    const [story, scene] = await Promise.all([
+    const [story, scene, party, entities] = await Promise.all([
       publicStory(this.campaignId, turn.id),
       pgStore.scene(this.campaignId),
+      pgStore.characters(this.campaignId),
+      pgStore.entities(this.campaignId),
     ]);
+    const known = knownEntries(entities);
     const replies = await Promise.all(
       chars.map((character) =>
         companionTurn({
@@ -733,6 +898,8 @@ export class Room {
           character,
           story,
           scene,
+          party,
+          known,
           turn: input,
           signal: AbortSignal.timeout(45_000),
           onUsage: (usage, model) =>
@@ -864,7 +1031,7 @@ export class Room {
     const result = await runAgentTurn({
       llm,
       task: 'narration',
-      tools: gmTools({ sheets: !!info.gmSheets }),
+      tools: gmTools({ sheets: !!info.gmSheets, askAi: !!info.outsideAis?.length }),
       system: prompt.system,
       messages: prompt.messages,
       ctx,
@@ -876,6 +1043,7 @@ export class Room {
       onTool: (tool, summary) => {
         this.broadcast({ type: 'dm_tool', turnId: turn.id, tool, summary });
         if (STATE_TOOLS.has(tool)) this.broadcast({ type: 'state_changed' });
+        if (HISTORY_TOOLS.has(tool)) void this.announceCorrection().catch(() => undefined);
       },
       onUsage: (usage, model) =>
         recordUsage({
@@ -1139,7 +1307,7 @@ export class Room {
       llm,
       task: 'opening',
       // The same tools as every later turn, so the first turn reuses this call's cached prefix.
-      tools: gmTools({ sheets: !!info.gmSheets }),
+      tools: gmTools({ sheets: !!info.gmSheets, askAi: !!info.outsideAis?.length }),
       system: prompt.system,
       messages: prompt.messages,
       ctx,

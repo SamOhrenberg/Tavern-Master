@@ -56,6 +56,10 @@ export class FakeStore implements GameStore {
         : x,
     );
   }
+  async setWhereabouts(_campaignId: string, places: { id: string; place: string }[]) {
+    for (const p of places)
+      this.chars = this.chars.map((x) => (x.id === p.id ? { ...x, whereabouts: p.place } : x));
+  }
   async saveSheet(c: CharRow) {
     this.chars = this.chars.map((x) =>
       x.id === c.id ? { ...x, sheet: c.sheet, maxHp: c.maxHp, hp: Math.min(x.hp, c.maxHp) } : x,
@@ -121,6 +125,23 @@ export class FakeStore implements GameStore {
   async flags() {
     return this.flagMap;
   }
+  /** The DM's narrations, newest last, for correct_narration. */
+  narrations: string[] = [];
+  async deleteEntity(_campaignId: string, kind: EntityRow['kind'], name: string) {
+    const before = this.ents.length;
+    this.ents = this.ents.filter((x) => !(x.kind === kind && x.name.toLowerCase() === name.toLowerCase()));
+    return this.ents.length < before;
+  }
+  async clearFlag(_campaignId: string, key: string) {
+    if (!(key in this.flagMap)) return false;
+    delete this.flagMap[key];
+    return true;
+  }
+  async amendLastNarration(_campaignId: string, text: string) {
+    if (!this.narrations.length) return null;
+    this.narrations[this.narrations.length - 1] = text;
+    return { id: this.narrations.length, redacted: false };
+  }
   async setFlag(_campaignId: string, key: string, value: unknown) {
     this.flagMap[key] = value;
   }
@@ -174,6 +195,7 @@ export function character(over: Partial<CharRow> & Pick<CharRow, 'id' | 'name'>)
     inventory: [],
     sheet: {},
     persona: '',
+    whereabouts: '',
     ...over,
   };
 }

@@ -7,6 +7,7 @@ import type {
   SheetTemplate,
   UserRef,
 } from '@tavern/protocol';
+import { api } from '../api';
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   IconBackpack,
@@ -90,6 +91,23 @@ export function CharacterCard({
         </div>
         {ch.kind === 'npc' && <span className="pill arcane">Companion</span>}
       </div>
+
+      {ch.whereabouts && (
+        <div className="row">
+          <p className="small muted grow">Away from the group: {ch.whereabouts}</p>
+          {campaign.role === 'owner' && (
+            <button
+              type="button"
+              className="btn sm ghost"
+              onClick={() =>
+                void api(`/campaigns/${campaign.id}/characters/${ch.id}/whereabouts`, { method: 'DELETE' })
+              }
+            >
+              Back with the party
+            </button>
+          )}
+        </div>
+      )}
 
       <HpBar hp={ch.hp} max={ch.maxHp} temp={ch.tempHp} />
 

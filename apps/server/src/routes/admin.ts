@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { audit } from '../audit.js';
 import { createInvite } from '../auth/invites.js';
 import { revokeAllSessions } from '../auth/sessions.js';
-import { q } from '../db/pool.js';
-import { badRequest, notFound, parse } from '../errors.js';
+import { q, q1 } from '../db/pool.js';
+import { badRequest, conflict, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireAdmin } from '../http/security.js';
 import { toTotals, usageByCampaign, usageByUser } from '../llm/usage.js';
+import { encryptSecret } from '../security/crypto.js';
 
 const inviteSchema = z.object({
   role: z.enum(['user', 'admin']).default('user'),
@@ -21,6 +22,40 @@ const userPatchSchema = z.object({
   dailyTokenBudget: z.number().int().min(0).max(1e12).nullable().optional(),
 });
 const uuid = z.string().uuid();
+
+const aiName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .regex(/^[\w .-]+$/, 'letters, digits, spaces, dots and dashes only');
+const aiBaseUrl = z
+  .string()
+  .trim()
+  .max(300)
+  .refine((u) => u === '' || /^https?:\/\/[^\s]+$/.test(u), 'must be an http(s) URL')
+  // The key travels in the clear over http, so that is for a server on this machine only.
+  .refine(
+    (u) =>
+      u === '' || !/^http:/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u),
+    'plain http is only allowed for localhost; use https',
+  );
+const outsideAiFields = {
+  name: aiName,
+  provider: z.enum(['gemini', 'openai']),
+  model: z.string().trim().min(1).max(100),
+  baseUrl: aiBaseUrl,
+  apiKey: z.string().trim().min(8).max(500),
+  note: z.string().trim().max(300),
+};
+const outsideAiSchema = z.object({
+  ...outsideAiFields,
+  baseUrl: outsideAiFields.baseUrl.default(''),
+  note: outsideAiFields.note.default(''),
+});
+// No defaults here: a field left out of a change stays as it was.
+const outsideAiPatchSchema = z.object(outsideAiFields).partial();
+const keyHint = (key: string) => `…${key.slice(-4)}`;
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   // ---- invites ----
@@ -166,5 +201,129 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       })),
       byCampaign: campaigns.map((r) => ({ campaignId: r.id, name: r.name, ...toTotals(r) })),
     };
+  });
+
+  // ---- other AIs the GM can ask (ask_ai) ----
+  // Keys are encrypted at rest and never sent back; the list shows a hint only.
+  app.get('/api/admin/outside-ais', async (req) => {
+    requireAdmin(req);
+    const rows = await q(
+      `SELECT id, name, provider, model, base_url, key_hint, note, updated_at
+         FROM outside_ais ORDER BY lower(name)`,
+    );
+    return {
+      ais: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        provider: r.provider,
+        model: r.model,
+        baseUrl: r.base_url ?? '',
+        keyHint: r.key_hint,
+        note: r.note,
+        updatedAt: r.updated_at,
+      })),
+    };
+  });
+
+  app.post('/api/admin/outside-ais', async (req) => {
+    const auth = requireAdmin(req);
+    const body = parse(outsideAiSchema, req.body);
+    const row = await q1<{ id: string }>(
+      `INSERT INTO outside_ais (name, provider, model, base_url, api_key_enc, key_hint, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        body.name,
+        body.provider,
+        body.model,
+        body.provider === 'openai' && body.baseUrl ? body.baseUrl : null,
+        encryptSecret(body.apiKey),
+        keyHint(body.apiKey),
+        body.note,
+        auth.user.id,
+      ],
+    );
+    if (!row) throw conflict('An AI with that name already exists.');
+    await audit('outside_ai.created', {
+      actorId: auth.user.id,
+      targetType: 'outside_ai',
+      targetId: row.id,
+      ip: req.ip,
+      meta: { name: body.name, provider: body.provider, model: body.model },
+    });
+    return { id: row.id };
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/admin/outside-ais/:id', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const body = parse(outsideAiPatchSchema, req.body);
+    // The stored key goes wherever the address points, so moving it needs the key typed in again.
+    const before = await q1<{ provider: string; base_url: string | null }>(
+      'SELECT provider, base_url FROM outside_ais WHERE id = $1',
+      [id],
+    );
+    if (!before) throw notFound();
+    const provider = body.provider ?? before.provider;
+    const target = (p: string, base: string | null) => (p === 'openai' ? (base ?? '') : 'gemini');
+    const moved =
+      target(provider, body.baseUrl !== undefined ? body.baseUrl || null : before.base_url) !==
+      target(before.provider, before.base_url);
+    if (moved && !body.apiKey) {
+      throw badRequest(
+        'Enter the API key again when you change the provider or address, so the saved key is not sent somewhere new.',
+        'key_required',
+      );
+    }
+    let row: { id: string } | undefined;
+    try {
+      row = await q1<{ id: string }>(
+        `UPDATE outside_ais SET
+            name = coalesce($2, name),
+            provider = coalesce($3, provider),
+            model = coalesce($4, model),
+            base_url = CASE WHEN $5::text IS NULL THEN base_url ELSE nullif($5, '') END,
+            api_key_enc = coalesce($6, api_key_enc),
+            key_hint = coalesce($7, key_hint),
+            note = coalesce($8, note),
+            updated_at = now()
+          WHERE id = $1 RETURNING id`,
+        [
+          id,
+          body.name ?? null,
+          body.provider ?? null,
+          body.model ?? null,
+          body.baseUrl ?? null,
+          body.apiKey ? encryptSecret(body.apiKey) : null,
+          body.apiKey ? keyHint(body.apiKey) : null,
+          body.note ?? null,
+        ],
+      );
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') throw conflict('An AI with that name already exists.');
+      throw err;
+    }
+    if (!row) throw notFound();
+    await audit('outside_ai.updated', {
+      actorId: auth.user.id,
+      targetType: 'outside_ai',
+      targetId: id,
+      ip: req.ip,
+      meta: { fields: Object.keys(body).filter((k) => k !== 'apiKey'), keyReplaced: !!body.apiKey },
+    });
+    return { ok: true };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/admin/outside-ais/:id', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const rows = await q('DELETE FROM outside_ais WHERE id = $1 RETURNING id', [id]);
+    if (!rows.length) throw notFound();
+    await audit('outside_ai.deleted', {
+      actorId: auth.user.id,
+      targetType: 'outside_ai',
+      targetId: id,
+      ip: req.ip,
+    });
+    return { ok: true };
   });
 }

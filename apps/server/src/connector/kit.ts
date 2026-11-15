@@ -78,7 +78,7 @@ first half hour, then every 20 minutes. If a check finds players, carry on from 
 name: companion
 description: Plays one companion in the Tavern Master campaign for a single turn, knowing only what that character knows. Start it once for each companion a turn lists as having an AI of their own, passing only the character's name.
 tools: mcp__tavern-master__companion_view, mcp__tavern-master__companion_act
-model: haiku
+model: sonnet
 ---
 You play one character in a tabletop game for one turn. You are given the character's name.
 

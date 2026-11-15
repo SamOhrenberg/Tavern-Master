@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { companionAction, companionPrompt, publicStory } from '../agent/companion.js';
+import { companionAction, companionPrompt, knownEntries, publicStory } from '../agent/companion.js';
 import { pgStore, type CharRow } from '../agent/store.js';
 import { infoOf, loadCampaign } from '../realtime/room.js';
 import { own, openTable, ToolError, type ConnectorTool, type Table } from './toolkit.js';
@@ -53,16 +53,20 @@ export const COMPANION_TOOLS: ConnectorTool[] = [
     async run(input, call) {
       const t = await openTable(call);
       const { c, turn } = await ownAiCompanion(t, input.character);
-      const [campaign, story, scene] = await Promise.all([
+      const [campaign, story, scene, party, entities] = await Promise.all([
         loadCampaign(t.id),
         publicStory(t.id, turn.id),
         pgStore.scene(t.id),
+        pgStore.characters(t.id),
+        pgStore.entities(t.id),
       ]);
       const prompt = companionPrompt({
         campaign: infoOf(t.id, campaign),
         character: c,
         story,
         scene,
+        party,
+        known: knownEntries(entities),
         turn: turn.input,
       });
       return [

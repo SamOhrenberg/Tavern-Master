@@ -1,4 +1,7 @@
 import type { ChatMessage, Citation, DiceRoll, EntityRef, MessageKind } from '@tavern/protocol';
+import { resolveRefs } from '../agent/codex.js';
+import { usedCitations } from '../agent/loop.js';
+import type { EntityRow } from '../agent/store.js';
 import { q, q1 } from '../db/pool.js';
 
 interface Row {
@@ -17,11 +20,12 @@ interface Row {
     redacted?: boolean;
     ai?: boolean;
   };
+  edited_at: Date | null;
   created_at: Date;
 }
 
 const SELECT = `SELECT m.id, m.kind, m.turn_id, m.user_id, u.username, u.display_name, m.character_name,
-                       m.content, m.meta, m.created_at
+                       m.content, m.meta, m.edited_at, m.created_at
                   FROM messages m LEFT JOIN users u ON u.id = m.user_id`;
 
 function toChat(r: Row): ChatMessage {
@@ -39,6 +43,7 @@ function toChat(r: Row): ChatMessage {
     ...(r.meta.refs?.length ? { refs: r.meta.refs } : {}),
     ...(r.meta.redacted ? { redacted: true } : {}),
     ...(r.meta.ai ? { ai: true } : {}),
+    ...(r.edited_at ? { edited: true } : {}),
     createdAt: r.created_at.toISOString(),
   };
 }
@@ -88,4 +93,38 @@ export async function listMessages(
     [campaignId, before, limit],
   );
   return rows.reverse().map(toChat);
+}
+
+/**
+ * Change what a message says. For a narration the codex links and rule
+ * citations are worked out again from the new words. Returns the message as
+ * it now reads.
+ */
+export async function editMessage(
+  id: number,
+  content: string,
+  entities: EntityRow[],
+  /** `redacted`: part of the new text was blacked out, so the message is marked as such. */
+  opts: { redacted?: boolean } = {},
+): Promise<ChatMessage> {
+  const row = await q1<Row>(`${SELECT} WHERE m.id = $1`, [id]);
+  if (!row) throw new Error('message not found');
+  let text = content;
+  const meta: Row['meta'] = { ...row.meta };
+  if (opts.redacted !== undefined) {
+    if (opts.redacted) meta.redacted = true;
+    else delete meta.redacted;
+  }
+  if (row.kind === 'dm') {
+    const linked = resolveRefs(content, entities);
+    text = linked.content;
+    meta.refs = linked.refs;
+    if (meta.citations) meta.citations = usedCitations(text, meta.citations);
+  }
+  await q('UPDATE messages SET content = $2, meta = $3, edited_at = now() WHERE id = $1', [
+    id,
+    text,
+    JSON.stringify(meta),
+  ]);
+  return (await getMessage(id))!;
 }

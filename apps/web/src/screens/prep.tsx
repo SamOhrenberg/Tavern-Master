@@ -3,7 +3,16 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast } from '../app';
-import { IconBack, IconBook, IconDots, IconGavel, IconPlus, IconSparkle, IconUsers } from '../icons';
+import {
+  IconBack,
+  IconBook,
+  IconCheck,
+  IconDots,
+  IconGavel,
+  IconPlus,
+  IconSparkle,
+  IconUsers,
+} from '../icons';
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { ClaudeSetupSheet, DmChip, dmAbsent, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
@@ -11,7 +20,9 @@ import { ManageSheet } from '../play/manage';
 import { RulesSheet } from '../play/rules';
 import { CharacterCard } from '../play/party';
 import { useTable } from '../play/socket';
-import { Avatar, ConfirmButton, Empty, Field, Segmented } from '../ui';
+import { nameList, ReadyList } from '../play/ready';
+import { WishesEditor } from '../play/wishes';
+import { Avatar, ConfirmButton, Empty, Segmented } from '../ui';
 import type { TableProps } from './play';
 
 /**
@@ -45,7 +56,6 @@ export function Prep({ id, campaign, state, template }: TableProps) {
   const [managing, setManaging] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rulesSignal, setRulesSignal] = useState(0);
-  const [wishes, setWishes] = useState(c.myWishes);
   const [busy, run] = useAction();
 
   const reloadState = state.reload;
@@ -87,18 +97,26 @@ export function Prep({ id, campaign, state, template }: TableProps) {
   const claude = c.dm === 'claude';
   const dm = table.dm ?? c.dmStatus;
   const people = others === 0 ? 'just you here' : `${others + 1} here`;
-
-  const saveWishes = () =>
-    run(async () => {
-      await api(`/campaigns/${id}/wishes`, { method: 'PUT', body: { wishes } });
-      await reloadCampaign();
-    }, 'The DM will keep it in mind');
+  // The ready check: everyone but the host readies up before the host can begin.
+  const players = c.members.filter((m) => m.role !== 'owner');
+  const waitingOn = players.filter((m) => !m.ready);
+  const iAmReady = c.members.find((m) => m.id === me.id)?.ready ?? false;
+  const othersWaiting = waitingOn.filter((m) => m.id !== me.id);
 
   const setSheets = (sheets: 'players' | 'gm') =>
     run(async () => {
       await api(`/campaigns/${id}`, { method: 'PATCH', body: { sheets } });
       await reloadCampaign();
     });
+
+  const setReady = (ready: boolean) =>
+    run(
+      async () => {
+        await api(`/campaigns/${id}/ready`, { method: 'PUT', body: { ready } });
+        await reloadCampaign();
+      },
+      ready ? 'You are ready' : 'Not ready yet',
+    );
 
   const begin = () =>
     run(async () => {
@@ -298,30 +316,13 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             </div>
           </section>
 
+          <ReadyList members={c.members} meId={me.id} title="Ready to begin" />
+
           <section>
             <div className="section-title">
               <span>Your wishes for the story</span>
             </div>
-            <div className="stack">
-              <Field
-                label="Optional"
-                hint="Things you would love to see, and anything you would rather avoid. Only you and the DM read this. Leave it empty to be surprised."
-              >
-                <textarea
-                  className="textarea"
-                  rows={3}
-                  value={wishes}
-                  onChange={(e) => setWishes(e.target.value)}
-                  placeholder="A heist. A rival who keeps turning up. No spiders."
-                  maxLength={1200}
-                />
-              </Field>
-              {wishes.trim() !== c.myWishes && (
-                <button type="button" className="btn block" disabled={busy} onClick={() => void saveWishes()}>
-                  Save for the DM
-                </button>
-              )}
-            </div>
+            <WishesEditor campaignId={id} saved={c.myWishes} inPlay={false} onSaved={reloadCampaign} />
           </section>
 
           <section>
@@ -358,7 +359,16 @@ export function Prep({ id, campaign, state, template }: TableProps) {
       </div>
 
       <footer className="play-foot">
-        {owner ? (
+        {owner && waitingOn.length > 0 ? (
+          <div className="stack tight">
+            <button type="button" className="btn primary block" disabled>
+              Begin the adventure
+            </button>
+            <p className="small faint center">
+              Waiting for {nameList(waitingOn.map((m) => m.displayName))} to ready up.
+            </p>
+          </div>
+        ) : owner ? (
           <div className="stack tight">
             <ConfirmButton
               className="btn primary block"
@@ -383,10 +393,32 @@ export function Prep({ id, campaign, state, template }: TableProps) {
             </p>
           </div>
         ) : (
-          <p className="archived-note">
-            {mine.length > 0 ? 'You are ready. ' : ''}
-            Waiting for {host?.displayName ?? 'the host'} to begin.
-          </p>
+          <div className="stack tight">
+            <button
+              type="button"
+              className={`btn block${iAmReady ? '' : ' primary'}`}
+              disabled={busy || (!iAmReady && mine.length === 0)}
+              aria-pressed={iAmReady}
+              onClick={() => void setReady(!iAmReady)}
+            >
+              {iAmReady ? (
+                <>
+                  <IconCheck /> Ready · tap to undo
+                </>
+              ) : (
+                "I'm ready"
+              )}
+            </button>
+            <p className="small faint center">
+              {!iAmReady && mine.length === 0
+                ? 'Create your character first, then ready up.'
+                : !iAmReady
+                  ? `${host?.displayName ?? 'The host'} can begin once everyone is ready.`
+                  : othersWaiting.length > 0
+                    ? `Waiting for ${nameList(othersWaiting.map((m) => m.displayName))} to ready up.`
+                    : `Everyone is ready. Waiting for ${host?.displayName ?? 'the host'} to begin.`}
+            </p>
+          </div>
         )}
       </footer>
 

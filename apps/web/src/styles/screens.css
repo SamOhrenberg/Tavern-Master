@@ -310,6 +310,49 @@ button.banner {
 .upload {
   margin-top: 14px;
 }
+
+/* Collapsible groups on the game system screen. */
+.group-head {
+  width: 100%;
+  padding: 6px 2px;
+  margin-bottom: 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  cursor: pointer;
+  text-align: left;
+}
+.group-head:hover,
+.group-head:focus-visible {
+  color: var(--muted);
+}
+.group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.group-chev {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+.group:not(.open) .group-chev {
+  transform: rotate(-90deg);
+}
+.group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.group-body .upload,
+.group-body .lore-card {
+  margin-top: 0;
+}
 .lore-card {
   margin-top: 4px;
 }

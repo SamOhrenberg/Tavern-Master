@@ -45,6 +45,26 @@ export interface GameSystem {
    * talk rules over with the GM and the rulings they settle on are kept.
    */
   homebrew: boolean;
+  /**
+   * Standing instructions for the GM of every table on this system, such as
+   * which other AI to ask for what. Sent to admins only.
+   */
+  gmInstructions?: string;
+}
+
+/** Another AI the GM can ask for help with ask_ai, as admins see it. The key is never sent. */
+export interface OutsideAi {
+  id: string;
+  name: string;
+  provider: 'gemini' | 'openai';
+  model: string;
+  /** Only for 'openai': an OpenAI-compatible endpoint. Empty means api.openai.com. */
+  baseUrl: string;
+  /** The last characters of the key, to tell keys apart. */
+  keyHint: string;
+  /** What the GM is told this AI is good for. */
+  note: string;
+  updatedAt: string;
 }
 
 export type LoreStatus = 'none' | 'queued' | 'reading' | 'ready' | 'failed';
@@ -135,6 +155,8 @@ export interface CampaignMember extends UserRef {
   role: 'owner' | 'player';
   /** The first character this member runs, if any. */
   characterName: string | null;
+  /** Marked ready to begin, in the lobby. The host begins once every player is. */
+  ready: boolean;
 }
 
 export interface CampaignDetail extends CampaignSummary {
@@ -146,6 +168,30 @@ export interface CampaignDetail extends CampaignSummary {
   myWishes: string;
   /** Where the campaign's AI is right now. */
   dmStatus: DmStatus;
+  /**
+   * Set when the host ended a session: the table sees the recap, every player
+   * readies up, and the host starts the next session.
+   */
+  restingSince: string | null;
+}
+
+/** The adventure so far, for the recap between sessions. */
+export interface Recap {
+  /** Older sessions, merged by the chronicler. Oldest first. */
+  arcs: string[];
+  /**
+   * Each session with its chronicle, oldest first. `summary` is null until one is
+   * written; `pending` says whether one is actually on its way (the built-in
+   * chronicler is working on it, or Claude has been asked). Null with no summary
+   * means none is coming: too little was played, or the job failed.
+   */
+  sessions: {
+    number: number;
+    startedAt: string;
+    endedAt: string | null;
+    summary: string | null;
+    pending: 'chronicler' | 'claude' | null;
+  }[];
 }
 
 export interface CampaignSettings {
@@ -254,6 +300,8 @@ export interface Character {
   inventory: InventoryItem[];
   /** Personality, looks, history and goals. */
   persona: string;
+  /** Where they are when the party has split; empty when with the party. */
+  whereabouts?: string;
   /** Only present for the players who run the character. */
   privateNotes?: string;
 }
@@ -465,6 +513,8 @@ export interface ChatMessage {
   redacted?: boolean;
   /** An action taken by an AI-run party member. */
   ai?: boolean;
+  /** Changed after it was posted, by the host or its author. */
+  edited?: boolean;
   createdAt: string;
 }
 
@@ -511,6 +561,8 @@ export type ServerMessage =
   | { type: 'dm_tool'; turnId: string; tool: string; summary: string }
   | { type: 'dm_end'; turnId: string; ok: boolean }
   | { type: 'state_changed' }
+  /** Messages already posted changed (the story was rewound, or the DM corrected itself): load them again. */
+  | { type: 'history_changed' }
   /** Where the campaign's AI is changed. */
   | { type: 'dm_status'; dm: DmStatus }
   /** Your guide chat has a new reply. Sent only to the thread's owner. */

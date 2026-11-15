@@ -6,20 +6,28 @@ import type {
   Character,
   Entity,
   GameState,
+  Recap,
 } from '@tavern/protocol';
 import { rm } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { entityMatches, scopeEntity } from '../agent/codex.js';
+import { redactSecrets } from '../agent/loop.js';
 import { pgStore } from '../agent/store.js';
-import { endCurrentSession, insertCampaign, startCampaign, updateCampaign } from '../campaign.js';
+import {
+  endCurrentSession,
+  insertCampaign,
+  resumeSession,
+  startCampaign,
+  updateCampaign,
+} from '../campaign.js';
 import { queueChronicleIfDue } from '../agent/summarize.js';
 import { config } from '../config.js';
 import { projectInstructions } from '../connector/instructions.js';
 import { kitFiles, slugOf } from '../connector/kit.js';
 import { CONNECTOR_PATH, pinnedPath } from '../connector/mcp.js';
 import { zipStore } from '../connector/zip.js';
-import { dmModeOf } from '../connector/mode.js';
+import { dmMode, dmModeOf } from '../connector/mode.js';
 import { dropSheetFile } from '../connector/uploads.js';
 import { cancelWork } from '../connector/work.js';
 import { enqueue } from '../jobs/queue.js';
@@ -29,8 +37,9 @@ import { requireMember } from '../http/membership.js';
 import { requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
 import { usageTotals } from '../llm/usage.js';
-import { listMessages } from '../realtime/messages.js';
-import { dmStatusOf, getRoom } from '../realtime/room.js';
+import { editMessage, listMessages } from '../realtime/messages.js';
+import { dmStatusOf, getRoom, openRoom } from '../realtime/room.js';
+import { restartSession, rewindTo } from '../rewind.js';
 import { uploadPath } from '../storage.js';
 import { claudeConnected } from './account.js';
 import { areFriends } from './friends.js';
@@ -67,7 +76,7 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
 }
 
 const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, s.homebrew, c.owner_id, c.status,
-                            c.phase, c.settings, c.scene, m.role, m.wishes,
+                            c.phase, c.settings, c.scene, c.resting_since, m.role, m.wishes,
                             (SELECT count(*)::int FROM campaign_members x WHERE x.campaign_id = c.id) AS member_count
                        FROM campaigns c
                        JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1
@@ -114,7 +123,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const row = await q1(`${SUMMARY_SQL} WHERE c.id = $2`, [auth.user.id, campaignId]);
     if (!row) throw notFound();
     const members = await q(
-      `SELECT u.id, u.username, u.display_name, m.role,
+      `SELECT u.id, u.username, u.display_name, m.role, m.ready_at IS NOT NULL AS ready,
               (SELECT ch.name FROM characters ch JOIN character_players p ON p.character_id = ch.id
                 WHERE ch.campaign_id = m.campaign_id AND p.user_id = m.user_id AND ch.controller = 'player'
                 ORDER BY ch.created_at LIMIT 1) AS character
@@ -140,6 +149,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         displayName: m.display_name,
         role: m.role,
         characterName: m.character,
+        ready: m.ready,
       })),
       pendingInvites: pending.map((p) => ({
         id: p.id,
@@ -147,6 +157,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       })),
       myWishes: row.wishes,
       dmStatus: await dmStatusOf(campaignId, dmModeOf(row.settings)),
+      restingSince: row.resting_since ? (row.resting_since as Date).toISOString() : null,
     };
     return { campaign: detail };
   });
@@ -221,6 +232,181 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
+  /**
+   * A player says they are ready to begin, or takes it back. The host begins
+   * once every player is ready, so it only means something in the lobby.
+   */
+  app.put<{ Params: { id: string } }>('/api/campaigns/:id/ready', async (req) => {
+    const { auth, campaignId } = await requireMember(req);
+    const { ready } = parse(z.object({ ready: z.boolean() }), req.body);
+    // In the lobby, ready means the character is made: the campaign begins with whoever is ready.
+    if (ready) {
+      const lobby = await q1('SELECT 1 FROM campaigns WHERE id = $1 AND phase = $2', [campaignId, 'prep']);
+      const hasCharacter = await q1(
+        `SELECT 1 FROM character_players p JOIN characters c ON c.id = p.character_id
+          WHERE c.campaign_id = $1 AND p.user_id = $2 AND c.controller = 'player'`,
+        [campaignId, auth.user.id],
+      );
+      if (lobby && !hasCharacter)
+        throw conflict('Create your character first, then ready up.', 'no_character');
+    }
+    const rows = await q(
+      `UPDATE campaign_members m SET ready_at = CASE WHEN $3 THEN coalesce(m.ready_at, now()) END
+         FROM campaigns c
+        WHERE m.campaign_id = $1 AND m.user_id = $2 AND c.id = m.campaign_id
+          AND (c.phase = 'prep' OR c.resting_since IS NOT NULL)
+        RETURNING m.user_id`,
+      [campaignId, auth.user.id, ready],
+    );
+    if (!rows.length) throw conflict('There is nothing to ready up for: the session is in play.');
+    getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+    return { ok: true };
+  });
+
+  /** Start the next session from the recap, once every player is ready. */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/resume', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const { anyway } = parse(z.object({ anyway: z.boolean().optional() }), req.body ?? {});
+    return { number: await resumeSession(campaignId, { anyway }) };
+  });
+
+  /**
+   * The adventure so far, for the recap between sessions: the chronicle as the
+   * chronicler wrote it from what was said at the table.
+   */
+  app.get<{ Params: { id: string } }>('/api/campaigns/:id/recap', async (req): Promise<Recap> => {
+    const { campaignId } = await requireMember(req);
+    const [arcs, sessions, mode, entities, asked, queued] = await Promise.all([
+      q<{ content: string }>(
+        `SELECT content FROM summaries WHERE campaign_id = $1 AND kind = 'arc' AND superseded_at IS NULL
+          ORDER BY created_at`,
+        [campaignId],
+      ),
+      q<{ id: string; number: number; started_at: Date; ended_at: Date | null; summary: string | null }>(
+        `SELECT s.id, s.number, s.started_at, s.ended_at,
+                (SELECT x.content FROM summaries x WHERE x.session_id = s.id AND x.kind = 'session'
+                    AND x.superseded_at IS NULL ORDER BY x.created_at DESC LIMIT 1) AS summary
+           FROM play_sessions s WHERE s.campaign_id = $1 ORDER BY s.number`,
+        [campaignId],
+      ),
+      dmMode(campaignId),
+      pgStore.entities(campaignId),
+      // Claude has been asked to chronicle these sessions...
+      q<{ subject_id: string }>(
+        `SELECT subject_id FROM dm_work WHERE campaign_id = $1 AND kind = 'chronicle'
+            AND status IN ('waiting', 'claimed') AND subject_id LIKE 'session:%'`,
+        [campaignId],
+      ),
+      // ...or the built-in chronicler is on it.
+      q<{ session_id: string | null }>(
+        `SELECT payload->>'sessionId' AS session_id FROM jobs
+          WHERE kind = 'summarize_campaign' AND status IN ('queued', 'running') AND payload->>'campaignId' = $1`,
+        [campaignId],
+      ),
+    ]);
+    const askedClaude = new Set(asked.map((w) => w.subject_id.slice('session:'.length)));
+    const working = new Set(queued.flatMap((j) => (j.session_id ? [j.session_id] : [])));
+    // Stored summaries begin "Session N:", and the recap titles each with its number.
+    // They are written for the DM, so what the party has not discovered is blacked out as in narration.
+    const secrets = entities.flatMap((e) => (e.secret && !e.secretRevealed ? [e.secret] : []));
+    const readable = (text: string) => redactSecrets(text.replace(/^Session \d+:\s*/, ''), secrets).text;
+    return {
+      arcs: arcs.map((a) => readable(a.content)),
+      sessions: sessions
+        // Sessions folded into an arc have no summary of their own left; the arc tells them.
+        .filter((s, i) => s.summary || !arcs.length || i === sessions.length - 1)
+        .map((s) => ({
+          number: s.number,
+          startedAt: s.started_at.toISOString(),
+          endedAt: s.ended_at?.toISOString() ?? null,
+          summary: s.summary ? readable(s.summary) : null,
+          pending: s.summary
+            ? null
+            : mode === 'claude'
+              ? askedClaude.has(s.id)
+                ? ('claude' as const)
+                : null
+              : working.has(s.id)
+                ? ('chronicler' as const)
+                : null,
+        })),
+    };
+  });
+
+  /**
+   * Change what a message says. The host may edit any narration or action; a
+   * player may edit their own actions. Table talk and notices stay as said. An action
+   * the DM has not resolved yet reaches it as edited.
+   */
+  app.patch<{ Params: { id: string; messageId: string } }>(
+    '/api/campaigns/:id/messages/:messageId',
+    async (req) => {
+      const { auth, role, campaignId } = await requireMember(req);
+      const messageId = parse(z.coerce.number().int().positive(), req.params.messageId);
+      const { content } = parse(z.object({ content: z.string().trim().min(1).max(12000) }), req.body);
+      const m = await q1<{ kind: string; user_id: string | null }>(
+        'SELECT kind, user_id FROM messages WHERE id = $1 AND campaign_id = $2',
+        [messageId, campaignId],
+      );
+      if (!m) throw notFound('That message is not in this campaign.');
+      if (m.kind === 'system') throw badRequest('Notices from the table cannot be edited.');
+      if (m.kind === 'ooc') throw badRequest('Table talk cannot be edited.');
+      // An action is held to the length of one posted in the first place.
+      if (m.kind === 'action' && content.length > 2000)
+        throw badRequest('An action can be up to 2000 characters.');
+      const own = m.user_id === auth.user.id && m.kind === 'action';
+      if (role !== 'owner' && !own) throw forbidden('You can edit only your own actions.');
+      if (m.kind === 'action' && getRoom(campaignId)?.editPending(messageId, content) === 'resolving') {
+        throw conflict(
+          'The Dungeon Master is resolving this turn right now. Edit it once the scene is posted.',
+        );
+      }
+      const message = await editMessage(messageId, content, await pgStore.entities(campaignId));
+      getRoom(campaignId)?.broadcast({ type: 'message', message });
+      return { message };
+    },
+  );
+
+  /**
+   * The host takes the story back to just after one of the DM's narrations.
+   * Everything said since goes, and the game state goes back with it.
+   */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/rewind', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const { messageId } = parse(z.object({ messageId: z.number().int().positive() }), req.body);
+    const room = await openRoom(campaignId);
+    const out = await room.rewrite(() => rewindTo(campaignId, messageId));
+    if (out.reopen) void room.maybeOpen();
+    await room.workChanged();
+    return out;
+  });
+
+  /** The host starts the latest session over from its first line. */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/restart-session', async (req) => {
+    const { campaignId } = await requireMember(req, true);
+    const room = await openRoom(campaignId);
+    const out = await room.rewrite(() => restartSession(campaignId));
+    if (out.reopen) void room.maybeOpen();
+    await room.workChanged();
+    return out;
+  });
+
+  /** The host puts a character back with the party, when the DM left them cut off. */
+  app.delete<{ Params: { id: string; characterId: string } }>(
+    '/api/campaigns/:id/characters/:characterId/whereabouts',
+    async (req) => {
+      const { campaignId } = await requireMember(req, true);
+      const characterId = parse(uuid, req.params.characterId);
+      const rows = await q(
+        `UPDATE characters SET whereabouts = '' WHERE id = $1 AND campaign_id = $2 RETURNING id`,
+        [characterId, campaignId],
+      );
+      if (!rows.length) throw notFound('That character is not in this campaign.');
+      getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+      return { ok: true };
+    },
+  );
+
   /** The owner hands a turn that is waiting for Claude back to the table. */
   app.post<{ Params: { id: string } }>('/api/campaigns/:id/desk/release', async (req) => {
     const { campaignId } = await requireMember(req, true);
@@ -233,11 +419,13 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: { id: string } }>('/api/campaigns/:id/wishes', async (req) => {
     const { auth, campaignId } = await requireMember(req);
     const { wishes } = parse(z.object({ wishes: z.string().trim().max(1200) }), req.body);
-    await q('UPDATE campaign_members SET wishes = $3 WHERE campaign_id = $1 AND user_id = $2', [
-      campaignId,
-      auth.user.id,
-      wishes,
-    ]);
+    // Stamped only when the words change, so the GM hears about real changes once.
+    await q(
+      `UPDATE campaign_members SET wishes = $3,
+              wishes_at = CASE WHEN wishes IS DISTINCT FROM $3 THEN now() ELSE wishes_at END
+        WHERE campaign_id = $1 AND user_id = $2`,
+      [campaignId, auth.user.id, wishes],
+    );
     return { ok: true };
   });
 
@@ -382,6 +570,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         conditions: c.conditions,
         inventory: c.inventory,
         persona: c.persona,
+        whereabouts: c.whereabouts,
         // Private notes go only to the players who run the character.
         ...(c.playerIds.includes(auth.user.id) ? { privateNotes: myNotes.get(c.id) ?? '' } : {}),
       }));

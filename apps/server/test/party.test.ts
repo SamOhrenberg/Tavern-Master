@@ -7,9 +7,12 @@ import {
   companionPrompt,
   companionSystem,
   companionTurn,
+  knownEntries,
 } from '../src/agent/companion.js';
 import { COMPANION_LABEL, renderTurn, stateSnapshot, systemPrompt } from '../src/agent/context.js';
 import { runAgentTurn } from '../src/agent/loop.js';
+import { placeKey } from '../src/agent/places.js';
+import type { EntityRow } from '../src/agent/store.js';
 import { draftFromRecord, readSheet } from '../src/agent/sheets.js';
 import { parseNotes } from '../src/agent/summarize.js';
 import { dispatchTool, EDIT_SHEET, gmTools, toolDefs, TOOLS } from '../src/agent/tools.js';
@@ -113,11 +116,194 @@ describe('a companion with its own AI', () => {
     persona: 'A cheerful tinker who hums when nervous.',
     sheet: { class: 'Rogue', level: 2 },
   });
+  const thornPc = character({ id: 'c1', name: 'Thorn', playerIds: ['u-ann'] });
   const turn = {
     number: 3,
     actions: [{ userId: 'u-ann', displayName: 'Ann', characterName: 'Thorn', text: 'I open the door' }],
     passed: [],
   };
+
+  describe('when the party has split up', () => {
+    // Thorn and Pip are in the sewers; Mira and Bram stayed on the plaza with the main scene.
+    const sewers = 'the sewer outflow';
+    const party = [
+      character({
+        id: 'c1',
+        name: 'Thorn',
+        playerIds: ['u-ann'],
+        sheet: { class: 'Fighter' },
+        whereabouts: sewers,
+      }),
+      character({ id: 'c2', name: 'Mira', playerIds: ['u-bob'] }),
+      character({ id: 'c3', name: 'Bram', kind: 'npc', controller: 'agent' }),
+      { ...pip, whereabouts: sewers },
+    ];
+    const split = {
+      number: 5,
+      actions: [
+        { userId: 'u-ann', displayName: 'Ann', characterName: 'Thorn', text: 'I wade toward the grate' },
+        { userId: 'u-bob', displayName: 'Bob', characterName: 'Mira', text: 'I haggle with the fishmonger' },
+        { userId: '', displayName: COMPANION_LABEL, characterName: 'Bram', text: 'I watch the crowd' },
+      ],
+      passed: [],
+    };
+    const view = (who: (typeof party)[number]) =>
+      companionPrompt({
+        campaign: { ...campaign, premise: 'A heist in a drowned city.' },
+        character: who,
+        story: { summaries: '', recent: '' },
+        scene: 'The busy fish market on the plaza.',
+        party,
+        known: [],
+        turn: split,
+      });
+
+    it('shows a companion only the actions where it is, and says the rest happened elsewhere', () => {
+      const v = view(party[3]!);
+      expect(v.text).toContain('I wade toward the grate');
+      expect(v.text).not.toContain('fishmonger');
+      expect(v.text).not.toContain('I watch the crowd');
+      expect(v.text).toContain(
+        '2 party members acted somewhere else this turn; Pip cannot see or hear that.',
+      );
+      expect(v.text).toContain('where="the sewer outflow"');
+      // The plaza scene is not where Pip is.
+      expect(v.text).not.toContain('fish market');
+    });
+
+    it('tells it who the party is and where each one is', () => {
+      const v = view(party[3]!);
+      expect(v.text).toContain('- Thorn (player character, Fighter): here with you');
+      expect(v.text).toContain(
+        '- Mira (player character): elsewhere: with the main group, in the current scene',
+      );
+      expect(v.text).toContain('- Bram (companion): elsewhere');
+      expect(v.system).toContain('A heist in a drowned city.');
+      expect(v.system).not.toContain('acting in the shared scene');
+    });
+
+    it('gives a companion in the main group the scene and its own group', () => {
+      const v = view(party[2]!);
+      expect(v.text).toContain('fish market');
+      expect(v.text).toContain('fishmonger');
+      expect(v.text).not.toContain('grate');
+    });
+
+    it('shows everything when the party is together', () => {
+      const together = party.map((c) => ({ ...c, whereabouts: '' }));
+      const v = companionPrompt({
+        campaign,
+        character: together[3]!,
+        story: { summaries: '', recent: '' },
+        scene: 'The plaza.',
+        party: together,
+        known: [],
+        turn: split,
+      });
+      expect(v.text).toContain('fishmonger');
+      expect(v.text).toContain('grate');
+      expect(v.text).not.toContain('somewhere else');
+    });
+  });
+
+  it('knows what the party has come across, as the players’ codex shows it', () => {
+    const entity = (over: Partial<EntityRow> & Pick<EntityRow, 'id' | 'name'>): EntityRow => ({
+      kind: 'npc',
+      aliases: [],
+      summary: '',
+      article: '',
+      status: '',
+      secret: null,
+      articleSecret: null,
+      secretRevealed: false,
+      firstSeenAt: null,
+      inCodex: true,
+      ...over,
+    });
+    const known = knownEntries([
+      entity({
+        id: 'e1',
+        name: 'Captain Vane',
+        summary: 'Harbour master,\n gruff.',
+        status: 'wary',
+        secret: 'Vane sold the map to the cult.',
+        article: 'A long article.',
+        firstSeenAt: '2026-11-01T00:00:00Z',
+      }),
+      entity({ id: 'e2', kind: 'location', name: 'The Drowned Arcade', firstSeenAt: '2026-11-03T00:00:00Z' }),
+      // Bookkeeping the DM keeps for itself never reaches a companion.
+      entity({ id: 'e3', name: 'Cult ledger', inCodex: false }),
+    ]);
+    expect(known.map((k) => k.name)).toEqual(['The Drowned Arcade', 'Captain Vane']);
+
+    const view = companionPrompt({
+      campaign,
+      character: pip,
+      story: { summaries: '', recent: '' },
+      scene: '',
+      party: [thornPc, pip],
+      known,
+      turn,
+    });
+    expect(view.text).toContain('- Captain Vane (npc, wary): Harbour master, gruff.');
+    expect(view.text).toContain('- The Drowned Arcade (location)');
+    expect(view.text).not.toMatch(/sold the map|Cult ledger|long article/);
+  });
+
+  it('lets the DM record and clear who is where', async () => {
+    const store = new FakeStore();
+    store.chars = [
+      character({ id: 'c1', name: 'Thorn', playerIds: ['u-ann'] }),
+      character({ id: 'c2', name: 'Mira', playerIds: ['u-bob'] }),
+      { ...pip },
+    ];
+    const ctx = context({ campaignId: 'camp-1' });
+    const out = await dispatchTool(
+      'set_whereabouts',
+      { groups: [{ place: 'the sewers', characters: ['Thorn', 'Pip'] }] },
+      ctx,
+      store,
+    );
+    expect(out.isError).toBe(false);
+    expect(out.content).toContain('Thorn, Pip: the sewers');
+    expect(out.content).toContain('Mira: with the party');
+    expect((await store.characters()).map((c) => c.whereabouts)).toEqual(['the sewers', '', 'the sewers']);
+    expect(await stateSnapshot(ctx, store)).toContain('where="the sewers"');
+
+    await dispatchTool('set_whereabouts', { together: true }, ctx, store);
+    expect((await store.characters()).every((c) => c.whereabouts === '')).toBe(true);
+    expect((await dispatchTool('set_whereabouts', {}, ctx, store)).isError).toBe(true);
+  });
+
+  it('keeps one place one place however the DM spells it, and lists the places in use', async () => {
+    const store = new FakeStore();
+    store.chars = [
+      character({ id: 'c1', name: 'Thorn', playerIds: ['u-ann'] }),
+      character({ id: 'c2', name: 'Mira', playerIds: ['u-bob'] }),
+      { ...pip },
+    ];
+    const ctx = context({ campaignId: 'camp-1' });
+    await dispatchTool(
+      'set_whereabouts',
+      { groups: [{ place: 'The sewer outflow', characters: ['Thorn'] }] },
+      ctx,
+      store,
+    );
+    // Written differently in a later call: still the same place, so the two can see each other.
+    const out = await dispatchTool(
+      'set_whereabouts',
+      { groups: [{ place: 'the sewer outflow.', characters: ['Pip'] }] },
+      ctx,
+      store,
+    );
+    expect((await store.characters()).map((c) => c.whereabouts)).toEqual([
+      'The sewer outflow',
+      '',
+      'The sewer outflow',
+    ]);
+    expect(out.content).toContain('Places in use: The sewer outflow.');
+    expect(placeKey('  The Sewer  OUTFLOW! ')).toBe(placeKey('the sewer outflow'));
+  });
 
   it('is prompted only with what the character could know', async () => {
     const provider = fixed('I slip in behind Thorn and keep an eye on the corridor.');
@@ -125,6 +311,8 @@ describe('a companion with its own AI', () => {
       llm: { ...mock, provider },
       campaign,
       character: pip,
+      party: [thornPc, pip],
+      known: [],
       story: { summaries: 'The party reached the keep.', recent: 'Dungeon Master: The door is ajar.' },
       scene: 'A cold stone corridor.',
       turn,
@@ -146,6 +334,8 @@ describe('a companion with its own AI', () => {
     const view = companionPrompt({
       campaign,
       character: pip,
+      party: [thornPc, pip],
+      known: [],
       story: { summaries: 'The party reached the keep.', recent: 'Dungeon Master: The door is ajar.' },
       scene: 'A cold stone corridor.',
       turn,
@@ -209,6 +399,8 @@ describe('a companion with its own AI', () => {
       llm: { ...mock, provider },
       campaign,
       character: pip,
+      party: [thornPc, pip],
+      known: [],
       story: { summaries: '', recent: '' },
       scene: '',
       turn,
@@ -251,6 +443,8 @@ describe('a companion with its own AI', () => {
       llm: mock,
       campaign,
       character: pip,
+      party: [thornPc, pip],
+      known: [],
       story: { summaries: '', recent: '' },
       scene: '',
       turn,

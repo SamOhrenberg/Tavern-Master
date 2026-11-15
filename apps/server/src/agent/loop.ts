@@ -57,6 +57,18 @@ export function publicSummary(tool: string, input: unknown, result: string): str
       return 'Consulted the campaign documents';
     case 'search_setting':
       return 'Drew on the setting';
+    case 'set_whereabouts':
+      return 'Noted who is where';
+    case 'correct_narration':
+      return 'Corrected the last scene';
+    case 'delete_entity':
+      // A bookkeeping entry's name may be a secret, so the name is not shown.
+      return 'Tidied the codex';
+    case 'clear_flag':
+      return 'Updated the story record';
+    case 'ask_ai':
+      // The answer is the GM's to use in its narration, so it is not shown here.
+      return `Asked ${String((input as { ai?: unknown })?.ai ?? 'another AI').slice(0, 40)} for help`;
     default:
       return result.slice(0, 160);
   }

@@ -1,6 +1,6 @@
 import type { ChatMessage, Citation, DiceRoll, EntityRef } from '@tavern/protocol';
 import { Fragment, memo, type ReactNode } from 'react';
-import { IconAlert, IconD20 } from '../icons';
+import { IconAlert, IconD20, IconDots } from '../icons';
 import { Avatar, ruleSource } from '../ui';
 import type { DmStream } from './socket';
 
@@ -168,14 +168,39 @@ export function RollChip({ roll }: { roll: DiceRoll }) {
   );
 }
 
-function DmHead({ live, time }: { live?: boolean; time?: string }) {
+/** The button that opens what can be done with a message: edit it, or rewind the story to it. */
+function MoreButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="msg-more" onClick={onClick} aria-label="Edit or rewind">
+      <IconDots />
+    </button>
+  );
+}
+
+function DmHead({
+  live,
+  time,
+  edited,
+  onMore,
+}: {
+  live?: boolean;
+  time?: string;
+  edited?: boolean;
+  onMore?: () => void;
+}) {
   return (
     <header className="dm-head">
       <span className={`dm-mark${live ? ' live' : ''}`}>
         <IconD20 />
       </span>
       <span className="dm-name">Dungeon Master</span>
-      {time && <time className="msg-time">{time}</time>}
+      {time && (
+        <time className="msg-time">
+          {edited ? 'edited · ' : ''}
+          {time}
+        </time>
+      )}
+      {onMore && <MoreButton onClick={onMore} />}
     </header>
   );
 }
@@ -239,6 +264,17 @@ export function LiveDm({
   );
 }
 
+/**
+ * Whether two messages come from the same speaker, so the second can drop its
+ * name row. Both the author and the character must match: AI companions have
+ * no author at all, and one player may run more than one character.
+ */
+export function sameSpeaker(a: ChatMessage, b: ChatMessage): boolean {
+  return (
+    (a.user?.id ?? null) === (b.user?.id ?? null) && (a.characterName ?? null) === (b.characterName ?? null)
+  );
+}
+
 interface ItemProps {
   message: ChatMessage;
   mine: boolean;
@@ -247,9 +283,22 @@ interface ItemProps {
   onCite: (citation: Citation) => void;
   /** Open the codex entry a narration link points to. */
   onRef?: (entityId: string) => void;
+  /** This viewer may edit the message, or rewind to it: show its menu button. */
+  canEdit?: boolean;
+  /** Open the menu for a message. Stable, so the list does not re-render for it. */
+  onMenu?: (message: ChatMessage) => void;
 }
 
-export const MessageItem = memo(function MessageItem({ message: m, mine, joined, onCite, onRef }: ItemProps) {
+export const MessageItem = memo(function MessageItem({
+  message: m,
+  mine,
+  joined,
+  onCite,
+  onRef,
+  canEdit,
+  onMenu,
+}: ItemProps) {
+  const more = canEdit && onMenu ? () => onMenu(m) : undefined;
   if (m.kind === 'dm') {
     const cite = (ref: string) => {
       const hit = m.citations?.find((c) => c.ref === ref);
@@ -257,7 +306,7 @@ export const MessageItem = memo(function MessageItem({ message: m, mine, joined,
     };
     return (
       <article className="msg dm">
-        <DmHead time={clock(m.createdAt)} />
+        <DmHead time={clock(m.createdAt)} edited={m.edited} onMore={more} />
         {m.rolls && m.rolls.length > 0 && (
           <div className="rolls">
             {m.rolls.map((r) => (
@@ -317,7 +366,11 @@ export const MessageItem = memo(function MessageItem({ message: m, mine, joined,
             <time className="msg-time">{clock(m.createdAt)}</time>
           </div>
         )}
-        <div className="bubble">{m.content}</div>
+        <div className="bubble-row">
+          <div className="bubble">{m.content}</div>
+          {more && <MoreButton onClick={more} />}
+        </div>
+        {m.edited && <span className="edited-note">edited</span>}
       </div>
     </div>
   );

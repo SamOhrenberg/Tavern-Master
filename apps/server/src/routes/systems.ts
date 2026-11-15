@@ -83,9 +83,11 @@ const DOC_COLS =
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/systems', async (req) => {
-    requireUser(req);
+    const auth = requireUser(req);
+    const admin = auth.user.role === 'admin';
     const rows = await q(
       `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status, s.homebrew,
+              s.gm_instructions,
               (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id AND d.campaign_id IS NULL) AS docs,
               (SELECT count(*)::int FROM documents d
                  WHERE d.system_id = s.id AND d.campaign_id IS NULL AND d.kind = 'setting') AS setting_docs,
@@ -104,6 +106,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       loreStatus: r.lore_status,
       lore: r.lore ?? null,
       homebrew: r.homebrew,
+      // Written for the GM, so only the admins who write them see them.
+      ...(admin ? { gmInstructions: r.gm_instructions } : {}),
     }));
     return { systems };
   });
@@ -140,27 +144,43 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Mark a system homebrew, or not. Tables on a homebrew system get the rules
-   * desk, and their GMs follow the rulings made there. Every campaign on the
-   * system has its brief compiled again on its next turn, so the rulings come
-   * in or go out with the switch.
+   * Change a system's settings.
+   * - homebrew: tables on a homebrew system get the rules desk, and their GMs
+   *   follow the rulings made there. Every campaign on the system has its
+   *   brief compiled again on its next turn, so the rulings come in or go out
+   *   with the switch.
+   * - gmInstructions: standing instructions for the GM of every table on the
+   *   system, e.g. which other AI to ask for what. They are part of the GM's
+   *   instructions from the next turn on.
    */
   app.patch<{ Params: { id: string } }>('/api/systems/:id', async (req) => {
     const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
-    const { homebrew } = parse(z.object({ homebrew: z.boolean() }), req.body);
-    const row = await q1<{ id: string }>('UPDATE game_systems SET homebrew = $2 WHERE id = $1 RETURNING id', [
-      id,
-      homebrew,
-    ]);
+    const { homebrew, gmInstructions } = parse(
+      z
+        .object({
+          homebrew: z.boolean().optional(),
+          gmInstructions: z.string().trim().max(4000).optional(),
+        })
+        .refine((b) => b.homebrew !== undefined || b.gmInstructions !== undefined, 'Nothing to change.'),
+      req.body,
+    );
+    const row = await q1<{ id: string }>(
+      `UPDATE game_systems SET homebrew = coalesce($2, homebrew), gm_instructions = coalesce($3, gm_instructions)
+        WHERE id = $1 RETURNING id`,
+      [id, homebrew ?? null, gmInstructions ?? null],
+    );
     if (!row) throw notFound();
-    await q('UPDATE campaigns SET brief_at = NULL WHERE system_id = $1', [id]);
+    if (homebrew !== undefined) await q('UPDATE campaigns SET brief_at = NULL WHERE system_id = $1', [id]);
     await audit('system.updated', {
       actorId: auth.user.id,
       targetType: 'system',
       targetId: id,
       ip: req.ip,
-      meta: { homebrew },
+      meta: {
+        ...(homebrew !== undefined ? { homebrew } : {}),
+        ...(gmInstructions !== undefined ? { gmInstructions: true } : {}),
+      },
     });
     return { ok: true };
   });

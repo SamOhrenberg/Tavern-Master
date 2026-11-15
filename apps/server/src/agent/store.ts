@@ -8,6 +8,8 @@ import type {
   RuleHit,
 } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
+import { editMessage } from '../realtime/messages.js';
+import { redactSecrets } from './loop.js';
 import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
 
 /** A player taking part in the turn being resolved. Built by the server, never by the model. */
@@ -31,6 +33,8 @@ export interface TurnContext {
   citations: Citation[];
   rolls: DiceRoll[];
   stateChanged: boolean;
+  /** Requests sent to other AIs with ask_ai during this turn. */
+  outsideAsks?: number;
 }
 
 export interface CharRow {
@@ -47,6 +51,8 @@ export interface CharRow {
   inventory: InventoryItem[];
   sheet: Record<string, unknown>;
   persona: string;
+  /** Where they are while the party is split up. Empty: with the party, in the current scene. */
+  whereabouts: string;
 }
 
 export interface EntityRow {
@@ -108,9 +114,21 @@ export interface GameStore {
   saveCharacter(c: CharRow): Promise<void>;
   /** Writes the sheet fields and maximum hit points. Only reachable when the GM keeps the sheets. */
   saveSheet(c: CharRow): Promise<void>;
+  /** Set where party members are. An empty place puts them back with the party. */
+  setWhereabouts(campaignId: string, places: { id: string; place: string }[]): Promise<void>;
   entities(campaignId: string): Promise<EntityRow[]>;
   upsertEntity(campaignId: string, e: EntityInput): Promise<{ id: string; created: boolean }>;
   revealSecret(campaignId: string, kind: EntityKind, name: string): Promise<string | undefined>;
+  /** Remove an entry. False when there is none by that name. */
+  deleteEntity(campaignId: string, kind: EntityKind, name: string): Promise<boolean>;
+  /** Remove a story flag. False when it was not set. */
+  clearFlag(campaignId: string, key: string): Promise<boolean>;
+  /**
+   * Replace the text of the DM's newest narration (codex links worked out
+   * again, and unrevealed secrets blacked out as in any narration). Returns its
+   * message id, or null when nothing has been narrated.
+   */
+  amendLastNarration(campaignId: string, text: string): Promise<{ id: number; redacted: boolean } | null>;
   /** Stamp when players first met these entries, the first time each is referenced. */
   markFirstSeen(campaignId: string, entityIds: string[], messageId: number): Promise<void>;
   flags(campaignId: string): Promise<Record<string, unknown>>;
@@ -143,6 +161,7 @@ interface CharDb {
   inventory: InventoryItem[];
   sheet: Record<string, unknown>;
   persona: string;
+  whereabouts: string;
 }
 
 export const MAX_NOTES = 24;
@@ -155,7 +174,7 @@ export const pgStore: GameStore = {
   async characters(campaignId) {
     const rows = await q<CharDb>(
       `SELECT c.id, c.name, c.kind, c.controller, c.hp, c.max_hp, c.temp_hp, c.conditions, c.inventory,
-              c.sheet, c.persona,
+              c.sheet, c.persona, c.whereabouts,
               coalesce((SELECT array_agg(p.user_id::text ORDER BY p.user_id)
                           FROM character_players p WHERE p.character_id = c.id), '{}') AS player_ids
          FROM characters c WHERE c.campaign_id = $1 ORDER BY c.created_at, c.id`,
@@ -174,7 +193,18 @@ export const pgStore: GameStore = {
       inventory: r.inventory,
       sheet: r.sheet,
       persona: r.persona,
+      whereabouts: r.whereabouts,
     }));
+  },
+
+  async setWhereabouts(campaignId, places) {
+    for (const p of places) {
+      await q('UPDATE characters SET whereabouts = $3 WHERE id = $1 AND campaign_id = $2', [
+        p.id,
+        campaignId,
+        p.place,
+      ]);
+    }
   },
 
   async saveCharacter(c) {
@@ -265,6 +295,39 @@ export const pgStore: GameStore = {
       [campaignId],
     );
     return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  },
+
+  async deleteEntity(campaignId, kind, name) {
+    const rows = await q(
+      'DELETE FROM entities WHERE campaign_id = $1 AND kind = $2 AND lower(name) = lower($3) RETURNING id',
+      [campaignId, kind, name],
+    );
+    return rows.length > 0;
+  },
+
+  async clearFlag(campaignId, key) {
+    const rows = await q('DELETE FROM flags WHERE campaign_id = $1 AND key = $2 RETURNING key', [
+      campaignId,
+      key,
+    ]);
+    return rows.length > 0;
+  },
+
+  async amendLastNarration(campaignId, text) {
+    const last = await q1<{ id: number }>(
+      `SELECT id FROM messages WHERE campaign_id = $1 AND kind = 'dm' ORDER BY id DESC LIMIT 1`,
+      [campaignId],
+    );
+    if (!last) return null;
+    // The same check every narration goes through: an unrevealed secret is blacked out, and a
+    // codex entry the rewrite names counts as met from here.
+    const entities = await this.entities(campaignId);
+    const secrets = entities.flatMap((e) => (e.secret && !e.secretRevealed ? [e.secret] : []));
+    const safe = redactSecrets(text, secrets);
+    const message = await editMessage(last.id, safe.text || '…', entities, { redacted: safe.redacted });
+    const refs = [...new Set((message.refs ?? []).map((r) => r.entityId))];
+    if (refs.length) await this.markFirstSeen(campaignId, refs, last.id);
+    return { id: last.id, redacted: safe.redacted };
   },
 
   async setFlag(campaignId, key, value) {

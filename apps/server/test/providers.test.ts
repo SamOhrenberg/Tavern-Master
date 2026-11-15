@@ -290,6 +290,11 @@ describe('provider selection and pricing', () => {
     const utility = await resolveLlm('utility');
     expect(narration).toMatchObject({ model: 'claude-opus-5-5', effort: 'medium', keySource: 'instance' });
     expect(utility).toMatchObject({ model: 'claude-haiku-5-5', effort: 'low' });
+    // Companions play on the narration model unless one is set for them.
+    expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' });
+    setConfigForTests(testConfig({ LLM_MODEL_COMPANION: 'claude-sonnet-5-5' }));
+    expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-sonnet-5-5' });
+    setConfigForTests(testConfig());
     setProviderForTests();
   });
 

@@ -1,14 +1,24 @@
 import { z } from 'zod';
 import { briefAndChanges, buildOpening, recentPlay, renderTurn, stateSnapshot } from '../agent/context.js';
+import { wishesSince } from '../agent/brief.js';
 import { rulingsBlock } from '../agent/rulings.js';
 import { systemRng } from '../agent/dice.js';
 import { publicSummary } from '../agent/loop.js';
 import { pgStore, type TurnContext } from '../agent/store.js';
-import { dispatchTool, EDIT_SHEET, gmTools, TOOLS } from '../agent/tools.js';
+import { ASK_AI, dispatchTool, EDIT_SHEET, gmTools, TOOLS } from '../agent/tools.js';
+import { notReady } from '../campaign.js';
 import { config } from '../config.js';
 import { q, q1 } from '../db/pool.js';
 import { log } from '../log.js';
-import { getRoom, infoOf, loadCampaign, STATE_TOOLS, type Room } from '../realtime/room.js';
+import {
+  getRoom,
+  HISTORY_TOOLS,
+  infoOf,
+  isResting,
+  loadCampaign,
+  STATE_TOOLS,
+  type Room,
+} from '../realtime/room.js';
 import type { DeskTurn } from './desk.js';
 import { handlerFor, type WorkView } from './handlers.js';
 import { connectorGuide } from './instructions.js';
@@ -62,6 +72,43 @@ const turnNotes: TurnNote[] = [];
 export function addTurnNote(note: TurnNote): void {
   turnNotes.push(note);
 }
+
+/**
+ * The story was rewound since Claude was last told: what happened, once. Claude's own
+ * conversation still holds the scenes that were deleted, so it must be told to drop them.
+ */
+export async function rewoundNotice(campaignId: string): Promise<string> {
+  const row = await q1<{ note: string }>(
+    `UPDATE campaigns SET rewind_told_at = now()
+      WHERE id = $1 AND rewound_at IS NOT NULL AND (rewind_told_at IS NULL OR rewind_told_at < rewound_at)
+      RETURNING rewound_note AS note`,
+    [campaignId],
+  );
+  return row?.note ? `<rewound>\n${row.note}\n</rewound>` : '';
+}
+addTurnNote((t) => rewoundNotice(t.id));
+
+// Wishes a player changed since Claude last looked. Claude sees the brief's later
+// changes only at open_campaign, so a turn carries these itself. "Last looked" is
+// when the previous turn was handed over, not when it was narrated: a wish saved
+// while Claude was writing that scene is newer than the turn but older than the
+// narration, and would otherwise never be shown. Showing one twice does no harm
+// (each replaces what the player asked for before); missing one does.
+export async function wishesNoteForTurn(campaignId: string, turnNumber: number): Promise<string> {
+  const since = await q1<{ at: Date | null }>(
+    `SELECT coalesce(
+              (SELECT closed_at FROM turns WHERE campaign_id = $1 AND number < $2 AND closed_at IS NOT NULL
+                ORDER BY number DESC LIMIT 1),
+              (SELECT started_at FROM campaigns WHERE id = $1)) AS at`,
+    [campaignId, turnNumber],
+  );
+  return wishesSince(
+    campaignId,
+    since?.at ?? null,
+    'Since you last looked, players updated their wishes for the story.',
+  );
+}
+addTurnNote((t, turn) => wishesNoteForTurn(t.id, turn.number));
 
 async function renderClaimed(t: Table, turn: DeskTurn, note = ''): Promise<string> {
   const [snapshot, applied, extra] = await Promise.all([
@@ -164,7 +211,12 @@ async function nextThing(t: Table): Promise<ToolOutput | null> {
       'SELECT opened_at IS NOT NULL AS opened FROM campaigns WHERE id = $1',
       [t.id],
     );
-    if (!still?.opened) return { text: await openingText(t), isError: false };
+    if (!still?.opened) {
+      return {
+        text: [await rewoundNotice(t.id), await openingText(t)].filter(Boolean).join('\n\n'),
+        isError: false,
+      };
+    }
   }
   if (t.phase === 'active' && t.room.desk.turn) {
     const turn = t.room.claimForOutsideDm();
@@ -192,20 +244,30 @@ export async function campaignBrief(t: Table): Promise<string> {
     rolls: [],
     stateChanged: false,
   };
-  const [{ brief, changes }, snapshot, recent, waiting, rulings] = await Promise.all([
+  const [{ brief, changes }, snapshot, recent, waiting, rulings, rewound] = await Promise.all([
     briefAndChanges(t.id),
     stateSnapshot(ctx, pgStore),
     recentPlay(t.id),
     waitingBlock(t),
     rulingsBlock(t.id),
+    rewoundNotice(t.id),
   ]);
 
   let next: string;
   if (t.phase === 'prep') {
+    const waitingFor = await notReady(t.id);
     next =
       'The campaign is still in the lobby: the players are making characters. You can prepare now with ' +
       'write_note, upsert_entity and set_scene, and help build the party with save_character. Turns start ' +
-      'once it begins (begin_adventure, or Begin the adventure in the app).';
+      'once it begins (begin_adventure, or Begin the adventure in the app). ' +
+      (waitingFor.length
+        ? `It cannot begin until every player is ready; not ready yet: ${waitingFor.join(', ')}.`
+        : 'Every player is ready.');
+  } else if (await isResting(t.id)) {
+    next =
+      'The host ended the last session. The table is on the recap screen, and play resumes when every ' +
+      'player is ready and the host starts the next session in the app. No turns come until then; ' +
+      'finish any chronicle request that is waiting.';
   } else if (!t.opened) {
     next = `${await openingText(t)}`;
   } else if (t.room.desk.turn) {
@@ -216,6 +278,7 @@ export async function campaignBrief(t: Table): Promise<string> {
 
   return [
     `# ${info.name}`,
+    rewound,
     `<dm_instructions>\n${connectorGuide(info)}\n</dm_instructions>`,
     brief ? `<brief>\n${brief}\n</brief>` : '',
     changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
@@ -507,7 +570,16 @@ async function afterNarration(campaignId: string): Promise<void> {
 
 // ---------------------------------------------------------------- the GM's own tools
 
-const READ_ONLY = new Set(['get_state', 'lookup_rules', 'recall', 'search_documents', 'search_setting']);
+const READ_ONLY = new Set([
+  'get_state',
+  'lookup_rules',
+  'recall',
+  'search_documents',
+  'search_setting',
+  'ask_ai',
+]);
+/** GM tools that reach a service outside this server. */
+const OPEN_WORLD = new Set(['ask_ai']);
 /** GM tools that also help a guide request: rolling and reading the rules. */
 const GUIDE_TOO = new Set(['roll_dice', 'lookup_rules', 'search_documents']);
 /** GM tools that also serve the rules desk: the rules, the record, and putting a mistake right. */
@@ -562,7 +634,7 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
     annotations: {
       readOnlyHint: READ_ONLY.has(spec.name),
       destructiveHint: false,
-      openWorldHint: false,
+      openWorldHint: OPEN_WORLD.has(spec.name),
     },
     during: gmGate(spec.name),
     async call(input, call) {
@@ -599,7 +671,8 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
         ctx,
         pgStore,
         systemRng,
-        gmTools({ sheets: t.gmSheets }),
+        // ask_ai is always listed here; with no other AI set up it says so.
+        gmTools({ sheets: t.gmSheets, askAi: true }),
       );
       if (!out.isError) {
         if (streamId) {
@@ -611,6 +684,7 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
           });
         }
         if (STATE_TOOLS.has(spec.name)) t.room.broadcast({ type: 'state_changed' });
+        if (HISTORY_TOOLS.has(spec.name)) await t.room.announceCorrection();
       }
       return { text: out.content, isError: out.isError };
     },
@@ -624,7 +698,7 @@ export function addTools(...tools: ConnectorTool[]): void {
 }
 
 export function connectorTools(): ConnectorTool[] {
-  return [...SESSION_TOOLS, ...extraTools, ...[...TOOLS, EDIT_SHEET].map(gmTool)];
+  return [...SESSION_TOOLS, ...extraTools, ...[...TOOLS, EDIT_SHEET, ASK_AI].map(gmTool)];
 }
 
 const refusal = (held: WorkItem) =>

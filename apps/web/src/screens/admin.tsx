@@ -1,4 +1,4 @@
-import type { Role, UsageReport, UsageTotals } from '@tavern/protocol';
+import type { OutsideAi, Role, UsageReport, UsageTotals } from '@tavern/protocol';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
@@ -19,7 +19,7 @@ import {
   timeAgo,
 } from '../ui';
 
-type Tab = 'invites' | 'players' | 'usage' | 'audit';
+type Tab = 'invites' | 'players' | 'ais' | 'usage' | 'audit';
 
 interface Invite {
   id: string;
@@ -331,6 +331,196 @@ function Players() {
   );
 }
 
+const PROVIDERS: { value: OutsideAi['provider']; label: string }[] = [
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'openai', label: 'OpenAI-compatible' },
+];
+
+/** Add another AI the GM can ask, or change one. A blank key keeps the current one. */
+function OutsideAiSheet({
+  ai,
+  onClose,
+  onChanged,
+}: {
+  ai: OutsideAi | null;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState(ai?.name ?? 'Gemini');
+  const [provider, setProvider] = useState<OutsideAi['provider']>(ai?.provider ?? 'gemini');
+  const [model, setModel] = useState(ai?.model ?? 'gemini-2.5-pro');
+  const [baseUrl, setBaseUrl] = useState(ai?.baseUrl ?? '');
+  const [apiKey, setApiKey] = useState('');
+  const [note, setNote] = useState(ai?.note ?? '');
+  const [busy, run] = useAction();
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void run(
+      async () => {
+        const body = {
+          name,
+          provider,
+          model,
+          baseUrl: provider === 'openai' ? baseUrl : '',
+          note,
+          ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+        };
+        if (ai) await api(`/admin/outside-ais/${ai.id}`, { method: 'PATCH', body });
+        else await api('/admin/outside-ais', { body });
+        onChanged();
+        onClose();
+      },
+      ai ? 'Saved' : `${name} added`,
+    );
+  };
+
+  return (
+    <Sheet title={ai ? ai.name : 'Add an AI'} onClose={onClose}>
+      <form className="stack" onSubmit={submit}>
+        <p className="small muted">
+          The GM can ask this AI to write something for it, such as achievement announcements. Say when in a
+          game system&apos;s GM instructions. It sees only what the GM sends it.
+        </p>
+        <Field label="Name" hint="What the GM calls it, e.g. Gemini.">
+          <input
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={40}
+            required
+          />
+        </Field>
+        <Field label="Service">
+          <select
+            className="select"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as OutsideAi['provider'])}
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="Model"
+          hint={provider === 'gemini' ? 'e.g. gemini-2.5-pro or gemini-2.5-flash' : undefined}
+        >
+          <input
+            className="input mono"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            maxLength={100}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+          />
+        </Field>
+        {provider === 'openai' && (
+          <Field label="Endpoint" hint="Blank for api.openai.com. Any OpenAI-compatible /v1 URL works.">
+            <input
+              className="input mono"
+              type="url"
+              inputMode="url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              maxLength={300}
+            />
+          </Field>
+        )}
+        <Field
+          label="API key"
+          hint={
+            ai
+              ? `Saved key ends ${ai.keyHint.replace('…', '')}. Leave blank to keep it.`
+              : 'Stored encrypted.'
+          }
+        >
+          <input
+            className="input mono"
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            autoComplete="off"
+            maxLength={500}
+            required={!ai}
+          />
+        </Field>
+        <Field label="Good for" hint="Told to the GM, e.g. “sarcastic game-announcer voice”. Optional.">
+          <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
+        </Field>
+        <button type="submit" className="btn primary block" disabled={busy}>
+          {ai ? 'Save' : 'Add AI'}
+        </button>
+        {ai && (
+          <ConfirmButton
+            className="btn danger block"
+            confirmLabel="Tap again to remove"
+            disabled={busy}
+            onConfirm={() =>
+              void run(async () => {
+                await api(`/admin/outside-ais/${ai.id}`, { method: 'DELETE' });
+                onChanged();
+                onClose();
+              }, `${ai.name} removed`)
+            }
+          >
+            Remove
+          </ConfirmButton>
+        )}
+      </form>
+    </Sheet>
+  );
+}
+
+function OutsideAis() {
+  const ais = useQuery(() => api<{ ais: OutsideAi[] }>('/admin/outside-ais'), []);
+  const [open, setOpen] = useState<OutsideAi | 'new' | null>(null);
+  const list = ais.data?.ais ?? [];
+  return (
+    <>
+      <p className="small muted">
+        Other AIs the GM can ask for help in play. Tell the GM when to ask one in a game system&apos;s GM
+        instructions.
+      </p>
+      <button type="button" className="btn primary block" onClick={() => setOpen('new')}>
+        <IconPlus /> Add an AI
+      </button>
+      {ais.loading ? (
+        <Skeletons count={1} />
+      ) : (
+        list.length > 0 && (
+          <div className="list spaced">
+            {list.map((a) => (
+              <button key={a.id} type="button" onClick={() => setOpen(a)}>
+                <span className="grow">
+                  <span className="truncate row-title">{a.name}</span>
+                  <span className="small muted truncate row-detail">
+                    <span className="mono">{a.model}</span> · key {a.keyHint}
+                    {a.note ? ` · ${a.note}` : ''}
+                  </span>
+                </span>
+                <IconChevron className="chev" />
+              </button>
+            ))}
+          </div>
+        )
+      )}
+      {open && (
+        <OutsideAiSheet
+          ai={open === 'new' ? null : open}
+          onClose={() => setOpen(null)}
+          onChanged={() => void ais.reload()}
+        />
+      )}
+    </>
+  );
+}
+
 function Usage() {
   const [span, setSpan] = useState<'24h' | '30d'>('24h');
   const report = useQuery(() => api<UsageReport>(`/admin/usage?window=${span}`), [span]);
@@ -427,6 +617,7 @@ export function AdminScreen() {
             options={[
               { value: 'invites', label: 'Invites' },
               { value: 'players', label: 'Players' },
+              { value: 'ais', label: 'AIs' },
               { value: 'usage', label: 'Usage' },
               { value: 'audit', label: 'Audit' },
             ]}
@@ -434,6 +625,7 @@ export function AdminScreen() {
           <div className="admin-body">
             {tab === 'invites' && <Invites />}
             {tab === 'players' && <Players />}
+            {tab === 'ais' && <OutsideAis />}
             {tab === 'usage' && <Usage />}
             {tab === 'audit' && <Audit />}
           </div>

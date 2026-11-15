@@ -194,7 +194,8 @@ export const SETUP_TOOLS: ConnectorTool[] = [
     name: 'begin_adventure',
     description:
       'Take the campaign out of the lobby and begin play, as the host tapping Begin the adventure does. ' +
-      'Returns the instructions for the opening scene.',
+      'Every player has to have marked themselves ready in the app first; if someone has not, this says ' +
+      'who. Returns the instructions for the opening scene.',
     schema: z.object({}),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     during: ['free'],
@@ -209,7 +210,8 @@ export const SETUP_TOOLS: ConnectorTool[] = [
     name: 'end_session',
     description:
       'Close the session in progress, as the host does at the end of a night’s play. You are then asked to ' +
-      'write that session’s chronicle.',
+      'write that session’s chronicle. The table goes to the recap screen, and play resumes when every ' +
+      'player is ready and the host starts the next session in the app.',
     schema: z.object({}),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     during: ['free'],

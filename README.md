@@ -1,5 +1,13 @@
 # Tavern Master
 
+> [!IMPORTANT]
+> **A note on how this was built.** This repository is more "vibe-coded" than
+> my others. It started as a test of Fable 5.2, and I let it generate large
+> swaths of the code freely. I still direct and approve every change, but I'm
+> more hands-off here than elsewhere. I use this project as a test bed for
+> experimenting with Claude Code features, functions and best practices, so
+> expect the code to reflect that.
+
 A self-hosted AI Dungeon Master for you and a few friends. Upload the rules of
 the game you play, start a campaign, and play together in real time with a DM
 that looks rules up instead of guessing, rolls real dice, and keeps track of
@@ -26,11 +34,20 @@ the party in structured state rather than in its memory.
 - **Long campaigns.** The DM keeps a notebook, durable facts and rolling
   summaries, and can search everything ever said at the table, so the prompt
   stays small and the story stays consistent.
+- **Sessions, and a way back.** Ending a session takes the table to a recap
+  of the story so far, and the next one starts once everyone has readied up.
+  The host can edit what was said, rewind the story to any of the DM's
+  scenes, or restart a session, and the whole game state goes back with it.
 - **An app on your phone.** The client is built phone-first and installs to
   the Home Screen on iOS and Android, where it runs full screen.
 - **Bring any model.** Anthropic API, AWS Bedrock, Azure AI Foundry or any
   OpenAI-compatible endpoint, with per-task model routing, prompt caching,
   token budgets and cost tracking.
+- **Ask another AI for what it does best.** Admins add other AIs (Gemini or
+  any OpenAI-compatible endpoint) with their own keys, and write standing GM
+  instructions per game system, such as "ask Gemini to write every
+  achievement". In play the DM, built-in or Claude, sends the request with
+  the `ask_ai` tool and works the answer into its narration.
 - **Or let Claude run the whole table.** Choose Claude when you make a
   campaign and the host's Claude is every AI at it, on their own Claude plan:
   the Dungeon Master, the character guide, the sheet reader and the

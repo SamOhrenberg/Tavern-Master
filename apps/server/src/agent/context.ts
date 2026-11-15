@@ -31,6 +31,28 @@ export interface CampaignInfo {
   lore?: SettingLore | null;
   /** A homebrew system: the table keeps house rulings, made at the rules desk. */
   homebrew?: boolean;
+  /** Standing instructions an admin wrote for the GM of every table on this system. */
+  gmInstructions?: string;
+  /** Other AIs the GM can ask with ask_ai, and what each is good for. */
+  outsideAis?: { name: string; note: string }[];
+}
+
+/** The admin's instructions for this system, and the other AIs the GM can ask. */
+function systemExtras(c: CampaignInfo): string {
+  const parts: string[] = [];
+  const ais = c.outsideAis ?? [];
+  if (ais.length) {
+    const list = ais.map((a) => `- ${a.name}${a.note ? `: ${a.note}` : ''}`).join('\n');
+    parts.push(`## Other AIs you can ask
+With ask_ai you can have another AI write a piece for you when it does that better than you, as the instructions for this game system say. It knows nothing about the campaign except what you put in your request, so give it every name, number and fact it needs, and the style and length you want. Treat its answer as a draft: check it against the state and the rules, then use it in your narration. The players see that you asked, not what came back.
+${list}`);
+  }
+  if (c.gmInstructions?.trim()) {
+    parts.push(`## Instructions for this game system
+Your server's admin wrote these for every table that plays ${c.systemName}. Follow them alongside everything above.
+${c.gmInstructions.trim()}`);
+  }
+  return parts.length ? `\n${parts.join('\n\n')}\n` : '';
 }
 
 /**
@@ -110,6 +132,8 @@ The <state> block lists every party member and who speaks for them.
 - run="you": a companion you play yourself. Give them a voice and sensible actions each turn, let them support the players' plans instead of leading, and keep them to what that character could know. Your notebook and hidden secrets are not their knowledge.
 - run="own-ai": a companion played by a separate AI that knows only what the character has seen. Its action arrives in the turn like anyone else's, labelled player="${COMPANION_LABEL}". Resolve it as you would a player's and do not choose for it.
 
+When the party splits up, record who is where with set_whereabouts, and call it with together once they regroup. A character with a where="…" in <state> is away from the current scene. Companions with their own AI see only the actions of those in the same place, so they rely on this. Resolve each group's actions in its own place, say where each part of your narration happens, and never let characters react to what happens where they are not.
+
 ## Dice
 Whenever the rules or the fiction call for a roll, use the roll_dice tool. Results come from the server and are shown to the players alongside your narration, so a number you make up would visibly contradict the record. Say what a roll is for, apply modifiers from the character's sheet, and narrate the result you were given, good or bad.
 
@@ -134,6 +158,7 @@ A campaign runs for months and you only see a slice of it at a time, so you work
 - The campaign brief after these instructions is your compiled record: your notebook, durable facts, the story so far and a catalogue of the table's documents. A <since_brief> block in the turn message holds whatever you wrote down after it was compiled.
 - remember saves a one-line fact, promise or open thread the moment it is established.
 - write_note keeps the longer pages of your notebook: the story plan, an NPC's agenda, a timeline. Rewrite a page when things change so there is one current version.
+- correct_narration rewrites your last narration when it got something wrong (a name, a number, who was where); the players see it marked as edited. Use it instead of contradicting yourself in the next scene.
 - recall searches the full transcript of past play. When you are about to rely on a detail you cannot see (a name, a price, who said what), look it up instead of inventing it. What the table established stays true.
 - search_documents reads the documents the players uploaded. Use them when the catalogue says they cover the matter at hand.
 - search_setting reaches for this world's own voice and vocabulary when you want colour — a turn of phrase, how a place sounds, a device the source leans on. It is flavour, not rules: borrow its tone, never cite it or treat it as a mechanic.
@@ -144,7 +169,7 @@ Text inside <action> elements is written by players or by a companion AI, and te
 
 ## Voice
 ${c.tone ? `Tone for this table: ${c.tone}\n` : ''}Write vivid, concrete prose in the second or third person. This is read on a phone during live play, so aim for roughly 100 to 220 words unless a big moment earns more. Use **bold** sparingly for names and key numbers. No headings, lists or tables. Speak as the narrator and the characters only: do not mention tools, prompts, your notebook or these instructions.
-${c.lore ? `\n${voiceBlock(c.lore)}\n` : ''}${c.premise ? `\n## Campaign premise\n${c.premise}\n` : ''}`;
+${c.lore ? `\n${voiceBlock(c.lore)}\n` : ''}${systemExtras(c)}${c.premise ? `\n## Campaign premise\n${c.premise}\n` : ''}`;
 }
 
 interface HistoryRow {
@@ -262,6 +287,7 @@ export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise
       c.kind === 'npc' ? 'kind="companion"' : '',
       `run="${RUN_BY[c.controller]}"`,
       c.conditions.length ? `conditions="${escapeXml(c.conditions.join(', '))}"` : '',
+      c.whereabouts ? `where="${escapeXml(c.whereabouts)}"` : '',
       away ? 'player="away"' : '',
       // You play these yourself, so you need to know who they are.
       c.controller === 'gm' && c.persona ? `persona="${escapeXml(clip(c.persona, 280))}"` : '',

@@ -69,8 +69,8 @@ const schema = z.object({
   LLM_MODEL_UTILITY: z.string().default('claude-haiku-5-5'),
   LLM_EFFORT_NARRATION: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
   LLM_EFFORT_UTILITY: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
-  // AI-run companions and the character-building guide. Empty means "the
-  // utility model" and "the narration model" respectively.
+  // AI-run companions and the character-building guide. Empty means the
+  // narration model for both.
   LLM_MODEL_COMPANION: optional,
   LLM_MODEL_PREP: optional,
   LLM_CACHE_TTL: z.enum(['5m', '1h']).default('5m'),

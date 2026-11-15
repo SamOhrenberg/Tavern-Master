@@ -128,6 +128,34 @@ export class TurnCollector {
     return held;
   }
 
+  /** Drop a turn that is still being gathered, as when the story is rewound past it. */
+  reset(): void {
+    this.timer?.cancel();
+    this.timer = undefined;
+    this.queued = [];
+    this.actions = [];
+    this.passed = new Set();
+    this.phase = 'idle';
+    this.deadline = null;
+  }
+
+  /**
+   * Change the text of an action not yet sent to the DM. 'resolving' when it
+   * is in the turn the DM is resolving right now, 'none' when it is not held.
+   */
+  editAction(messageId: number, text: string): 'ok' | 'resolving' | 'none' {
+    const held = this.queued.find((a) => a.messageId === messageId);
+    if (held) {
+      held.text = text;
+      return 'ok';
+    }
+    const gathered = this.actions.find((a) => a.messageId === messageId);
+    if (!gathered) return 'none';
+    if (this.phase === 'resolving') return 'resolving';
+    gathered.text = text;
+    return 'ok';
+  }
+
   hasActed(seat: string): boolean {
     return this.actions.some((a) => a.seat === seat);
   }

@@ -7,6 +7,7 @@ import { IconCrown } from '../icons';
 import { Avatar, ConfirmButton, Field, Sheet, formatTokens, formatUsd } from '../ui';
 import { DmChip } from './claude';
 import { Documents } from './documents';
+import { WishesEditor } from './wishes';
 
 const WINDOWS = [
   { seconds: 10, label: '10 seconds' },
@@ -301,6 +302,15 @@ export function ManageSheet({
       {!prep && (
         <>
           <div className="section-title">
+            <span>Your wishes for the story</span>
+          </div>
+          <WishesEditor campaignId={c.id} saved={c.myWishes} inPlay onSaved={onChanged} />
+        </>
+      )}
+
+      {!prep && (
+        <>
+          <div className="section-title">
             <span>Campaign documents</span>
           </div>
           <Documents campaignId={c.id} />
@@ -341,22 +351,50 @@ export function ManageSheet({
       <div className="stack">
         {owner ? (
           <>
+            {c.status === 'active' && !prep && !c.restingSince && (
+              <>
+                <ConfirmButton
+                  className="btn block"
+                  confirmLabel="Tap again to end the session"
+                  disabled={busy || turnBusy}
+                  onConfirm={() =>
+                    void act(
+                      () => api(`/campaigns/${c.id}/end-session`, { method: 'POST' }),
+                      claude
+                        ? 'Session ended. Claude will write the recap.'
+                        : 'Session ended. The recap is being written.',
+                    )
+                  }
+                >
+                  End tonight&rsquo;s session
+                </ConfirmButton>
+                <p className="small faint">
+                  Everyone goes to a recap of the story so far. The next session starts when every player has
+                  readied up and you start it.
+                </p>
+              </>
+            )}
             {c.status === 'active' && !prep && (
-              <button
-                type="button"
-                className="btn block"
-                disabled={busy || turnBusy}
-                onClick={() =>
-                  void act(
-                    () => api(`/campaigns/${c.id}/end-session`, { method: 'POST' }),
-                    claude
-                      ? 'Session closed. Claude will write the chronicle.'
-                      : 'Session closed. The chronicle is being written.',
-                  )
-                }
-              >
-                End tonight&rsquo;s session
-              </button>
+              <>
+                <ConfirmButton
+                  className="btn block"
+                  confirmLabel="Tap again: everything in this session is deleted"
+                  disabled={busy || turnBusy}
+                  onConfirm={() =>
+                    void act(
+                      () => api(`/campaigns/${c.id}/restart-session`, { method: 'POST' }),
+                      'The session starts over',
+                    )
+                  }
+                >
+                  Restart this session
+                </ConfirmButton>
+                <p className="small faint">
+                  Deletes everything said in the latest session and puts the game back as it stood when it
+                  began. To go back only part of the way, tap ⋯ on one of the DM&apos;s scenes and rewind to
+                  it.
+                </p>
+              </>
             )}
             <button
               type="button"

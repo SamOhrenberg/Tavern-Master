@@ -97,7 +97,7 @@ export const CHRONICLE_TOOLS: ConnectorTool[] = [
         const n = await saveChunk(t.id, p.throughId ?? 0, input.summary, input.memories);
         await finishWork(item.id, { messages: n });
       } else if (item.subjectId.startsWith('session:') && p.sessionId) {
-        await saveSession(
+        const stored = await saveSession(
           t.id,
           p.sessionId,
           p.throughId ?? 0,
@@ -107,6 +107,9 @@ export const CHRONICLE_TOOLS: ConnectorTool[] = [
         );
         await finishWork(item.id, {});
         await queueChronicleIfDue(t.id);
+        if (!stored) {
+          return 'Not stored: the host rewound the story while you were writing, so that summary no longer describes what happened. Call wait_for_work.';
+        }
       } else if (item.subjectId === 'arc') {
         if (!(await saveArc(t.id, p.summaryIds ?? [], input.summary))) {
           throw new ToolError(

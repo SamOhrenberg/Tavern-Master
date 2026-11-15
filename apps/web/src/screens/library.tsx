@@ -1,9 +1,18 @@
 import type { GameSystem, LoreStatus, RuleDocument, RuleHit, SettingLore } from '@tavern/protocol';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
 import { useAction, useMe, useQuery, useToast } from '../app';
-import { IconAlert, IconBook, IconChevron, IconPlus, IconSearch, IconTrash, IconUpload } from '../icons';
+import {
+  IconAlert,
+  IconBook,
+  IconChevron,
+  IconChevronDown,
+  IconPlus,
+  IconSearch,
+  IconTrash,
+  IconUpload,
+} from '../icons';
 import { ConfirmButton, Empty, Field, PageHead, Segmented, Sheet, Skeletons, ruleSource } from '../ui';
 
 const DEFAULT_ABILITIES = 'Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma';
@@ -225,6 +234,191 @@ const joinLines = (xs: string[]) => xs.join('\n');
  * Hand-correct the distilled voice the DM reads as flavour. Seeded from what
  * the reader produced; saving replaces it. Lists are one entry per line.
  */
+/**
+ * A section that folds away. Which groups are open is remembered per system
+ * in this browser only; without storage every group simply starts open.
+ */
+function Group({
+  systemId,
+  name,
+  title,
+  count,
+  children,
+}: {
+  systemId: string;
+  name: string;
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const key = `tm.system-group.${systemId}.${name}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try {
+      localStorage.setItem(key, next ? 'open' : 'closed');
+    } catch {
+      // No storage: the choice lasts until the page is left.
+    }
+  };
+  const bodyId = `group-${name}`;
+  return (
+    <section className={`group${open ? ' open' : ''}`}>
+      <button
+        type="button"
+        className="section-title group-head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={toggle}
+      >
+        <span className="group-label">
+          <IconChevronDown className="group-chev" />
+          {title}
+        </span>
+        {count > 0 && <span>{count}</span>}
+      </button>
+      {open && (
+        <div id={bodyId} className="group-body">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One library document, with its status and, for admins, what can be done with it. */
+function DocCard({
+  doc: d,
+  manage,
+  busy,
+  act,
+}: {
+  doc: RuleDocument;
+  manage: boolean;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>, done: string) => unknown;
+}) {
+  const st = STATUS[d.status];
+  return (
+    <div className="card doc">
+      <div className="row">
+        <div className="grow">
+          <h3 className="truncate">{d.title}</h3>
+          <p className="small muted truncate">
+            {size(d.sizeBytes)}
+            {d.pageCount ? ` · ${d.pageCount} pages` : ''}
+            {d.status === 'ready' ? ` · ${d.chunkCount} passages` : ''}
+          </p>
+        </div>
+        <span className={`pill ${st.tone}`}>
+          {st.live && <i className="live" />}
+          {st.label}
+        </span>
+      </div>
+      {d.status === 'failed' && <p className="small danger doc-error">{d.error ?? 'Could not be read.'}</p>}
+      {manage && (
+        <div className="row doc-actions">
+          {d.status === 'failed' && (
+            <button
+              type="button"
+              className="btn sm"
+              disabled={busy}
+              onClick={() =>
+                void act(() => api(`/documents/${d.id}/retry`, { method: 'POST' }), 'Trying again')
+              }
+            >
+              Retry
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn sm ghost"
+            disabled={busy}
+            onClick={() =>
+              void act(
+                () =>
+                  api(`/documents/${d.id}`, {
+                    method: 'PATCH',
+                    body: { kind: d.kind === 'setting' ? 'rules' : 'setting' },
+                  }),
+                d.kind === 'setting' ? 'Moved to rulebooks' : 'Moved to setting',
+              )
+            }
+          >
+            {d.kind === 'setting' ? 'Use as rules' : 'Use as setting'}
+          </button>
+          <ConfirmButton
+            className="btn sm ghost"
+            confirmLabel="Delete?"
+            disabled={busy}
+            onConfirm={() =>
+              void act(() => api(`/documents/${d.id}`, { method: 'DELETE' }), 'Document removed')
+            }
+          >
+            <IconTrash /> Remove
+          </ConfirmButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Standing instructions for the GM of every table on this system, e.g. which
+ * other AI to ask for what. Admins only; players never see them.
+ */
+function GmInstructions({
+  systemId,
+  value,
+  onSaved,
+}: {
+  systemId: string;
+  value: string;
+  onSaved: () => Promise<unknown>;
+}) {
+  const [text, setText] = useState(value);
+  const [busy, run] = useAction();
+  useEffect(() => setText(value), [value]);
+  const dirty = text.trim() !== value.trim();
+  return (
+    <div className="card stack">
+      <textarea
+        className="textarea"
+        rows={5}
+        value={text}
+        maxLength={4000}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="e.g. Whenever a character earns an achievement, ask Gemini to write the announcement in the system AI's voice, then use it in your narration."
+        aria-label="GM instructions"
+      />
+      <p className="small muted">
+        The GM of every table on this system follows these, from the next turn on. Players never see them. Set
+        up other AIs it can ask in Admin → AIs.
+      </p>
+      <button
+        type="button"
+        className="btn block"
+        disabled={busy || !dirty}
+        onClick={() =>
+          void run(async () => {
+            await api(`/systems/${systemId}`, { method: 'PATCH', body: { gmInstructions: text } });
+            await onSaved();
+          }, 'Instructions saved')
+        }
+      >
+        Save instructions
+      </button>
+    </div>
+  );
+}
+
 function EditLore({
   systemId,
   lore,
@@ -393,7 +587,7 @@ export function SystemScreen() {
   const systems = useQuery(() => api<{ systems: GameSystem[] }>('/systems'), []);
   const docs = useQuery(() => api<{ documents: RuleDocument[] }>(`/systems/${id}/documents`), [id]);
   const [busy, run] = useAction();
-  const [uploading, setUploading] = useState(false);
+  const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<RuleHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -419,26 +613,56 @@ export function SystemScreen() {
     return () => window.clearInterval(timer);
   }, [working, reloadDocs, reloadSystems]);
 
-  const upload = async (file: File | undefined, kind: 'rules' | 'setting' = 'rules') => {
-    if (!file) return;
+  /** Upload the picked files one at a time, so one bad file does not stop the rest. */
+  const upload = async (files: FileList | null, kind: 'rules' | 'setting' = 'rules') => {
+    const picked = files ? [...files] : [];
+    if (picked.length === 0) return;
     setUploadKind(kind);
-    setUploading(true);
+    const failed: string[] = [];
     try {
-      const form = new FormData();
-      form.append('title', file.name.replace(/\.[^.]+$/, ''));
-      form.append('file', file);
-      if (kind === 'setting') form.append('kind', 'setting');
-      await api(`/systems/${id}/documents`, { form });
-      notify(kind === 'setting' ? 'Uploaded. Reading it for the voice.' : 'Uploaded. Indexing has started.');
+      for (const [i, file] of picked.entries()) {
+        setUploading({ done: i, total: picked.length });
+        try {
+          const form = new FormData();
+          form.append('title', file.name.replace(/\.[^.]+$/, ''));
+          form.append('file', file);
+          if (kind === 'setting') form.append('kind', 'setting');
+          await api(`/systems/${id}/documents`, { form });
+          void reloadDocs();
+        } catch (err) {
+          failed.push(`${file.name}: ${errorMessage(err)}`);
+        }
+      }
       await Promise.all([reloadDocs(), reloadSystems()]);
-    } catch (err) {
-      notify(errorMessage(err), 'error');
     } finally {
-      setUploading(false);
+      setUploading(null);
       if (picker.current) picker.current.value = '';
       if (settingPicker.current) settingPicker.current.value = '';
     }
+    const ok = picked.length - failed.length;
+    if (failed.length) {
+      notify(
+        ok === 0 && failed.length === 1
+          ? failed[0]!
+          : `${ok} uploaded, ${failed.length} failed. ${failed.join(' · ')}`,
+        'error',
+      );
+    } else if (kind === 'setting') {
+      notify(
+        ok === 1 ? 'Uploaded. Reading it for the voice.' : `${ok} uploaded. Reading them for the voice.`,
+      );
+    } else {
+      notify(ok === 1 ? 'Uploaded. Indexing has started.' : `${ok} uploaded. Indexing has started.`);
+    }
   };
+  const uploadLabel = (kind: 'rules' | 'setting', idle: string) =>
+    uploading && uploadKind === kind
+      ? uploading.total > 1
+        ? `Uploading ${uploading.done + 1} of ${uploading.total}…`
+        : 'Uploading…'
+      : idle;
+  const rulebooks = list.filter((d) => d.kind !== 'setting');
+  const settingDocs = list.filter((d) => d.kind === 'setting');
 
   const search = async (e: FormEvent) => {
     e.preventDefault();
@@ -468,117 +692,46 @@ export function SystemScreen() {
       {system?.description && <p className="muted system-lede">{system.description}</p>}
       {admin && locked && <TwoFactorNotice />}
 
-      <div className="section-title">
-        <span>Rulebooks</span>
-        {list.length > 0 && <span>{list.length}</span>}
-      </div>
-      {docs.loading ? (
-        <Skeletons count={2} />
-      ) : list.length === 0 ? (
-        <Empty icon={<IconBook />} title="No rulebooks yet">
-          Upload a PDF, Markdown or text file. The DM can cite it within a minute or two.
-        </Empty>
-      ) : (
-        <div className="stack">
-          {list.map((d) => {
-            const st = STATUS[d.status];
-            return (
-              <div key={d.id} className="card doc">
-                <div className="row">
-                  <div className="grow">
-                    <h3 className="truncate">{d.title}</h3>
-                    <p className="small muted truncate">
-                      {d.kind === 'setting' ? 'Setting · ' : ''}
-                      {size(d.sizeBytes)}
-                      {d.pageCount ? ` · ${d.pageCount} pages` : ''}
-                      {d.status === 'ready' ? ` · ${d.chunkCount} passages` : ''}
-                    </p>
-                  </div>
-                  <span className={`pill ${st.tone}`}>
-                    {st.live && <i className="live" />}
-                    {st.label}
-                  </span>
-                </div>
-                {d.status === 'failed' && (
-                  <p className="small danger doc-error">{d.error ?? 'Could not be read.'}</p>
-                )}
-                {admin && !locked && (
-                  <div className="row doc-actions">
-                    {d.status === 'failed' && (
-                      <button
-                        type="button"
-                        className="btn sm"
-                        disabled={busy}
-                        onClick={() =>
-                          void act(() => api(`/documents/${d.id}/retry`, { method: 'POST' }), 'Trying again')
-                        }
-                      >
-                        Retry
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn sm ghost"
-                      disabled={busy}
-                      onClick={() =>
-                        void act(
-                          () =>
-                            api(`/documents/${d.id}`, {
-                              method: 'PATCH',
-                              body: { kind: d.kind === 'setting' ? 'rules' : 'setting' },
-                            }),
-                          d.kind === 'setting' ? 'Now used as rules' : 'Now used as setting',
-                        )
-                      }
-                    >
-                      {d.kind === 'setting' ? 'Use as rules' : 'Use as setting'}
-                    </button>
-                    <ConfirmButton
-                      className="btn sm ghost"
-                      confirmLabel="Delete?"
-                      disabled={busy}
-                      onConfirm={() =>
-                        void act(() => api(`/documents/${d.id}`, { method: 'DELETE' }), 'Rulebook removed')
-                      }
-                    >
-                      <IconTrash /> Remove
-                    </ConfirmButton>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {admin && !locked && (
-        <>
-          <input
-            ref={picker}
-            type="file"
-            className="sr-only"
-            accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
-            onChange={(e) => void upload(e.target.files?.[0])}
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          <button
-            type="button"
-            className="btn primary block upload"
-            disabled={uploading}
-            onClick={() => picker.current?.click()}
-          >
-            <IconUpload /> {uploading && uploadKind === 'rules' ? 'Uploading…' : 'Upload a rulebook'}
-          </button>
-        </>
-      )}
+      <Group systemId={id} name="rules" title="Rulebooks" count={rulebooks.length}>
+        {docs.loading ? (
+          <Skeletons count={2} />
+        ) : rulebooks.length === 0 ? (
+          <Empty icon={<IconBook />} title="No rulebooks yet">
+            Upload PDF, Markdown or text files. The DM can cite them within a minute or two.
+          </Empty>
+        ) : (
+          <div className="stack">
+            {rulebooks.map((d) => (
+              <DocCard key={d.id} doc={d} manage={admin && !locked} busy={busy} act={act} />
+            ))}
+          </div>
+        )}
+        {admin && !locked && (
+          <>
+            <input
+              ref={picker}
+              type="file"
+              multiple
+              className="sr-only"
+              accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
+              onChange={(e) => void upload(e.target.files)}
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+            <button
+              type="button"
+              className="btn primary block upload"
+              disabled={!!uploading}
+              onClick={() => picker.current?.click()}
+            >
+              <IconUpload /> {uploadLabel('rules', 'Upload rulebooks')}
+            </button>
+          </>
+        )}
+      </Group>
 
       {system && (
-        <>
-          <div className="section-title">
-            <span>Setting &amp; flavour</span>
-            {system.settingDocumentCount > 0 && <span>{system.settingDocumentCount}</span>}
-          </div>
+        <Group systemId={id} name="setting" title="Setting & flavour" count={settingDocs.length}>
           <div className="card lore-card">
             <div className="row">
               <div className="grow">
@@ -599,9 +752,16 @@ export function SystemScreen() {
               </p>
             )}
           </div>
+          {settingDocs.length > 0 && (
+            <div className="stack">
+              {settingDocs.map((d) => (
+                <DocCard key={d.id} doc={d} manage={admin && !locked} busy={busy} act={act} />
+              ))}
+            </div>
+          )}
           {admin && !locked && (
             <>
-              {!loreBusy && (system.lore || system.settingDocumentCount > 0) && (
+              {!loreBusy && (system.lore || settingDocs.length > 0) && (
                 <button type="button" className="btn block" onClick={() => setEditingLore(true)}>
                   {system.lore ? 'Edit the voice' : 'Write the voice by hand'}
                 </button>
@@ -609,20 +769,20 @@ export function SystemScreen() {
               <input
                 ref={settingPicker}
                 type="file"
+                multiple
                 className="sr-only"
                 accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
-                onChange={(e) => void upload(e.target.files?.[0], 'setting')}
+                onChange={(e) => void upload(e.target.files, 'setting')}
                 tabIndex={-1}
                 aria-hidden="true"
               />
               <button
                 type="button"
                 className="btn block upload"
-                disabled={uploading}
+                disabled={!!uploading}
                 onClick={() => settingPicker.current?.click()}
               >
-                <IconUpload />{' '}
-                {uploading && uploadKind === 'setting' ? 'Uploading…' : 'Upload setting material'}
+                <IconUpload /> {uploadLabel('setting', 'Upload setting material')}
               </button>
             </>
           )}
@@ -634,7 +794,7 @@ export function SystemScreen() {
               onSaved={() => void reloadSystems()}
             />
           )}
-        </>
+        </Group>
       )}
 
       {system && (admin || system.homebrew) && (
@@ -666,6 +826,15 @@ export function SystemScreen() {
                 : 'The GM plays these rules as written. Mark the system homebrew to give its tables a rules desk where the players can change them.'}
             </p>
           </div>
+        </>
+      )}
+
+      {system && admin && !locked && (
+        <>
+          <div className="section-title">
+            <span>GM instructions</span>
+          </div>
+          <GmInstructions systemId={id} value={system.gmInstructions ?? ''} onSaved={reloadSystems} />
         </>
       )}
 

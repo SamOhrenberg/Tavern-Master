@@ -116,10 +116,11 @@ export async function resolveLlm(task: LlmTask, ownerId?: string | null): Promis
   const effort: Effort =
     task === 'narration' ? cfg.LLM_EFFORT_NARRATION : task === 'utility' ? cfg.LLM_EFFORT_UTILITY : 'low';
   // Tasks that fall back to the narration model when nothing more specific is set.
-  const heavy = task === 'narration' || task === 'prep';
+  // Companions are among them: playing a character well, blind, needs a capable model.
+  const heavy = task === 'narration' || task === 'prep' || task === 'companion';
   const defaultModel =
     task === 'companion'
-      ? (cfg.LLM_MODEL_COMPANION ?? cfg.LLM_MODEL_UTILITY)
+      ? (cfg.LLM_MODEL_COMPANION ?? cfg.LLM_MODEL_NARRATION)
       : task === 'prep'
         ? (cfg.LLM_MODEL_PREP ?? cfg.LLM_MODEL_NARRATION)
         : heavy
