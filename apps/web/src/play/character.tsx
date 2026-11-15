@@ -4,12 +4,13 @@ import type {
   CharacterDraft,
   CharacterKind,
   InventoryItem,
+  SheetSuggestion,
   SheetTemplate,
 } from '@tavern/protocol';
 import { useState, type FormEvent } from 'react';
 import { api } from '../api';
 import { useAction } from '../app';
-import { IconPlus, IconTrash } from '../icons';
+import { IconCheck, IconPlus, IconSparkle, IconTrash } from '../icons';
 import { ConfirmButton, Field, Sheet } from '../ui';
 
 const LONG = /feature|spell|proficien|skill|trait|background|equipment|note|talent|power/i;
@@ -105,6 +106,8 @@ export function CharacterSheet({
   );
   const [persona, setPersona] = useState(character?.persona ?? draft?.persona ?? '');
   const [notes, setNotes] = useState(character?.privateNotes ?? '');
+  // Changes the rules check proposed on an uploaded draft, until applied or waved off.
+  const [suggestions, setSuggestions] = useState<SheetSuggestion[]>(draft?.suggestions ?? []);
   const [busy, run] = useAction();
 
   const companion = (character?.kind ?? control?.kind) === 'npc';
@@ -115,6 +118,28 @@ export function CharacterSheet({
     setItems((list) => list.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   const setExtra = (id: number, patch: Partial<Extra>) =>
     setExtras((list) => list.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+
+  const dismiss = (s: SheetSuggestion) => setSuggestions((list) => list.filter((x) => x !== s));
+
+  /** Write a suggested value into the matching field, then clear the suggestion. */
+  const apply = (s: SheetSuggestion) => {
+    const value = String(s.suggested);
+    if (s.field === 'maxHp') setMaxHp(value);
+    else {
+      const lower = s.field.toLowerCase();
+      const stateKey = [...abilities.map(keyOf), ...fields.map((f) => f.key)].find(
+        (k) => k.toLowerCase() === lower,
+      );
+      if (stateKey) set(stateKey, value);
+      else
+        setExtras((list) => {
+          const idx = list.findIndex((x) => keyOf(x.key).toLowerCase() === lower);
+          if (idx >= 0) return list.map((x, i) => (i === idx ? { ...x, value } : x));
+          return [...list, { id: Math.max(-1, ...list.map((e) => e.id)) + 1, key: s.field, value }];
+        });
+    }
+    dismiss(s);
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -177,6 +202,37 @@ export function CharacterSheet({
           <p className="small muted note">
             This is what was read from your upload. Fix anything that came out wrong, then save.
           </p>
+        )}
+        {suggestions.length > 0 && (
+          <div className="sheet-checks">
+            <div className="sheet-checks-head">
+              <IconSparkle />
+              <b>The rules suggest a few changes</b>
+            </div>
+            {suggestions.map((s, i) => (
+              <div key={i} className="sheet-check">
+                <div className="grow">
+                  <div className="sheet-check-what">
+                    <span className="sheet-check-field">
+                      {s.field === 'maxHp' ? 'Max hit points' : s.field}
+                    </span>
+                    <span className="sheet-check-change">
+                      <s>{s.current}</s> → <b>{String(s.suggested)}</b>
+                    </span>
+                  </div>
+                  <p className="small muted">{s.reason}</p>
+                </div>
+                <div className="sheet-check-acts">
+                  <button type="button" className="btn sm" onClick={() => apply(s)}>
+                    <IconCheck /> Apply
+                  </button>
+                  <button type="button" className="btn sm ghost" onClick={() => dismiss(s)}>
+                    Ignore
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
         <Field label="Name">
           <input

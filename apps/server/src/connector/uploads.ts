@@ -1,7 +1,14 @@
 import type { CampaignDocKind, CharacterDraft, PendingSheet, SheetTemplate } from '@tavern/protocol';
 import { readFile, rm } from 'node:fs/promises';
 import { z } from 'zod';
-import { draftFromRecord, recordSchema, sheetReaderPrompt } from '../agent/sheets.js';
+import {
+  changesSchema,
+  draftFromRecord,
+  recordSchema,
+  sheetCheckNote,
+  sheetReaderPrompt,
+  suggestionsFromChanges,
+} from '../agent/sheets.js';
 import { q, q1 } from '../db/pool.js';
 import { CATALOGUE_INSTRUCTIONS, CATALOGUE_KINDS, catalogueInput } from '../rules/catalogue.js';
 import { uploadPath } from '../storage.js';
@@ -66,11 +73,9 @@ registerWork('sheet', {
   async render(item, t) {
     const p = item.payload as Partial<SheetPayload>;
     const sys = await template(t.id);
-    const prompt = sheetReaderPrompt(
-      sys?.system_name ?? 'the campaign’s',
-      sys?.sheet_template,
-      'submit_sheet',
-    );
+    const systemName = sys?.system_name ?? 'the campaign’s';
+    const prompt = sheetReaderPrompt(systemName, sys?.sheet_template, 'submit_sheet');
+    const check = sheetCheckNote(systemName);
     const ending = `Record it with submit_sheet (work_id ${item.id}). If you cannot read it, skip_work with the reason.`;
     if (p.image) {
       let data: string;
@@ -80,12 +85,12 @@ registerWork('sheet', {
         throw new ToolError(`The photo for request ${item.id} is gone. Drop it with skip_work.`);
       }
       return {
-        text: `Sheet request ${item.id}: ${p.fileName}.\n\n${prompt}\n\nThe sheet is the attached image.\n\n${ending}`,
+        text: `Sheet request ${item.id}: ${p.fileName}.\n\n${prompt}\n\n${check}\n\nThe sheet is the attached image.\n\n${ending}`,
         images: [{ data, mimeType: p.image.mediaType }],
       };
     }
     return {
-      text: `Sheet request ${item.id}: ${p.fileName}.\n\n${prompt}\n\n<sheet>\n${p.text ?? ''}\n</sheet>\n\n${ending}`,
+      text: `Sheet request ${item.id}: ${p.fileName}.\n\n${prompt}\n\n${check}\n\n<sheet>\n${p.text ?? ''}\n</sheet>\n\n${ending}`,
     };
   },
 
@@ -131,17 +136,24 @@ export const UPLOAD_TOOLS: ConnectorTool[] = [
     name: 'submit_sheet',
     description:
       'Record the character on an uploaded sheet, exactly as the sheet says. The player checks it before ' +
-      'anything is saved.',
-    schema: recordSchema.extend({ work_id: workIdSchema }),
+      'anything is saved. Use corrections for values the rules work out differently from the sheet (a max ' +
+      'HP the sheet left blank or at a placeholder); leave it out when the sheet already matches the rules.',
+    schema: recordSchema.extend({
+      work_id: workIdSchema,
+      corrections: changesSchema.optional(),
+    }),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     during: ['sheet'],
     async run(input, call) {
       const t = await openTable(call);
       const item = await heldRequest(t, input.work_id, 'sheet');
-      const { work_id: _id, ...record } = input;
+      const { work_id: _id, corrections, ...record } = input;
       const sys = await template(t.id);
       const draft = draftFromRecord(record, sys?.sheet_template);
       if (!draft) throw new ToolError('Nothing was recorded. Fill in what the sheet says, or skip_work.');
+      // Corrections the rules call for ride back with the draft for the player to apply or ignore.
+      const suggestions = suggestionsFromChanges(corrections ?? [], draft);
+      if (suggestions.length) draft.suggestions = suggestions;
       await finishWork(item.id, { draft });
       await dropSheetFile(item.payload);
       tellUploader(t, item, 'done');

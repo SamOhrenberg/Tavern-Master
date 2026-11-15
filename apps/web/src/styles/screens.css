@@ -812,6 +812,68 @@ button.code-box {
   min-height: 46px;
 }
 
+/* ---------- rules check on an uploaded draft ---------- */
+.sheet-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--r-sm);
+  background: var(--gold-wash);
+  border: 1px solid var(--line);
+}
+.sheet-checks-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--gold-bright);
+}
+.sheet-checks-head svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.sheet-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.sheet-check-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.sheet-check-field {
+  font-weight: 600;
+}
+.sheet-check-change s {
+  color: var(--muted);
+}
+.sheet-check-acts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+.sheet-check-acts .btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.view-toggle {
+  cursor: pointer;
+}
+.view-toggle input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+
 /* ---------- campaign documents ---------- */
 .doc-summary {
   margin-top: 8px;

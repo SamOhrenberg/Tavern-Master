@@ -438,6 +438,9 @@ export function Prep({ id, campaign, state, template }: TableProps) {
           present={table.present}
           busy={false}
           dm={dm}
+          hideAi={false}
+          canHideAi={false}
+          onHideAi={() => {}}
           onClaudeSetup={() => {
             setManaging(false);
             setSettingUp(true);

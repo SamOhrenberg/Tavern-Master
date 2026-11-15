@@ -113,6 +113,14 @@ function Play({ id, campaign, state, template }: TableProps) {
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
   // Between sessions, reading the full story instead of the recap.
   const [reading, setReading] = useState(false);
+  // This player's own choice to keep AI companion messages off their screen.
+  const [hideAi, setHideAi] = useState(() => {
+    try {
+      return localStorage.getItem(`hideAi:${id}`) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [busy, run] = useAction();
 
   const feed = useRef<HTMLDivElement>(null);
@@ -185,6 +193,15 @@ function Play({ id, campaign, state, template }: TableProps) {
     pinned.current = true;
     setUnseen(false);
   }, []);
+
+  const toggleHideAi = (next: boolean) => {
+    setHideAi(next);
+    try {
+      localStorage.setItem(`hideAi:${id}`, next ? '1' : '0');
+    } catch {
+      // A private window with storage blocked: the choice lasts the session only.
+    }
+  };
 
   const onScroll = () => {
     const el = feed.current;
@@ -303,6 +320,10 @@ function Play({ id, campaign, state, template }: TableProps) {
 
   const archived = c.status === 'archived';
   const resting = !!c.restingSince && !archived;
+  // What this player has chosen to see: companion messages drop out when hidden.
+  const shown = hideAi ? messages.filter((m) => !m.ai) : messages;
+  // Whether any companion message exists, so the toggle only shows when it can do something.
+  const hasAi = messages.some((m) => m.ai);
   // Table talk since the break began, for the recap.
   const talk = messages.filter((m) => m.kind === 'ooc' && m.createdAt >= (c.restingSince ?? ''));
   const owner = c.role === 'owner';
@@ -444,8 +465,8 @@ function Play({ id, campaign, state, template }: TableProps) {
                   {(rollsAfter.get(0) ?? []).map((r) => (
                     <AnimatedRoll key={r.id} roll={r} />
                   ))}
-                  {messages.map((m, i) => {
-                    const prev = messages[i - 1];
+                  {shown.map((m, i) => {
+                    const prev = shown[i - 1];
                     const joined = m.kind === 'action' && prev?.kind === 'action' && sameSpeaker(prev, m);
                     return (
                       <Fragment key={m.id}>
@@ -578,6 +599,9 @@ function Play({ id, campaign, state, template }: TableProps) {
           present={table.present}
           busy={table.turn.status !== 'idle'}
           dm={dm}
+          hideAi={hideAi}
+          canHideAi={hasAi || hideAi}
+          onHideAi={toggleHideAi}
           onClaudeSetup={() => {
             setPanel(null);
             setSettingUp(true);

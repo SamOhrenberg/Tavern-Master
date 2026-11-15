@@ -13,7 +13,7 @@ import { COMPANION_LABEL, renderTurn, stateSnapshot, systemPrompt } from '../src
 import { runAgentTurn } from '../src/agent/loop.js';
 import { placeKey } from '../src/agent/places.js';
 import type { EntityRow } from '../src/agent/store.js';
-import { draftFromRecord, readSheet } from '../src/agent/sheets.js';
+import { draftFromRecord, readSheet, suggestionsFromChanges, validateSheet } from '../src/agent/sheets.js';
 import { parseNotes } from '../src/agent/summarize.js';
 import { dispatchTool, EDIT_SHEET, gmTools, toolDefs, TOOLS } from '../src/agent/tools.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
@@ -686,6 +686,112 @@ describe('the scripted model on the new paths', () => {
         source: { text: 'gibberish' },
       }),
     ).rejects.toMatchObject({ status: 400, code: 'unreadable_sheet' });
+  });
+});
+
+describe('checking a draft against the rules', () => {
+  const rules = [
+    {
+      chunkId: 1,
+      document: 'Core Rules',
+      heading: 'Hit Points',
+      page: 10,
+      text: 'A character begins with hit points equal to their class hit die plus their Constitution modifier.',
+      score: 1,
+    },
+  ];
+  const draft = {
+    name: 'Kara',
+    maxHp: 10,
+    sheet: { Class: 'Wizard', Constitution: 14 } as Record<string, string | number>,
+    inventory: [],
+    persona: '',
+  };
+
+  /** A model that returns one suggest_changes call with the given input. */
+  function suggests(input: unknown): ChatProvider {
+    return {
+      name: 'scripted',
+      async *stream(req): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'done',
+          stop: 'tool_use',
+          content: [{ type: 'tool_use', id: 't', name: 'suggest_changes', input }],
+          usage: ZERO_USAGE,
+          model: req.model,
+        };
+      },
+    };
+  }
+
+  it('proposes a corrected max HP, landing it on the HP box', async () => {
+    const out = await validateSheet({
+      llm: {
+        ...mock,
+        provider: suggests({ changes: [{ field: 'hit points', suggested: 8, reason: 'd6 (6) + Con +2' }] }),
+      },
+      systemName: 'Test Rules',
+      draft,
+      rules,
+    });
+    expect(out).toEqual([{ field: 'maxHp', current: '10', suggested: 8, reason: 'd6 (6) + Con +2' }]);
+  });
+
+  it('drops a change that matches the draft and one whose HP is not a number', async () => {
+    const out = await validateSheet({
+      llm: {
+        ...mock,
+        provider: suggests({
+          changes: [
+            { field: 'maxHp', suggested: 10, reason: 'already right' },
+            { field: 'maxHp', suggested: 'lots', reason: 'not a number' },
+          ],
+        }),
+      },
+      systemName: 'Test Rules',
+      draft,
+      rules,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('lands a non-HP change on the sheet field it names, as the draft spells it', async () => {
+    const out = await validateSheet({
+      llm: {
+        ...mock,
+        provider: suggests({ changes: [{ field: 'constitution', suggested: 16, reason: 'array says 16' }] }),
+      },
+      systemName: 'Test Rules',
+      draft,
+      rules,
+    });
+    expect(out).toEqual([{ field: 'Constitution', current: '14', suggested: 16, reason: 'array says 16' }]);
+  });
+
+  it('checks nothing and calls no model when there are no rules', async () => {
+    const provider = fixed('unused');
+    const out = await validateSheet({
+      llm: { ...mock, provider },
+      systemName: 'Test Rules',
+      draft,
+      rules: [],
+    });
+    expect(out).toEqual([]);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  // The Claude-connector path has Claude report corrections through submit_sheet;
+  // they are normalised by the same helper the API-key checker uses.
+  it('turns submit_sheet corrections into suggestions on the draft', () => {
+    const out = suggestionsFromChanges(
+      [
+        { field: 'health', suggested: 8, reason: 'd6 + Con +2' },
+        { field: 'maxHp', suggested: 'lots', reason: 'not a number' },
+        { field: 'constitution', suggested: 14, reason: 'already right' },
+      ],
+      draft,
+    );
+    expect(out).toEqual([{ field: 'maxHp', current: '10', suggested: 8, reason: 'd6 + Con +2' }]);
   });
 });
 

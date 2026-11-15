@@ -11,7 +11,7 @@ import type {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { builderTurn, controlOf, threadMessages } from '../agent/builder.js';
-import { readSheet, type SheetSource } from '../agent/sheets.js';
+import { readSheet, validateSheet, type SheetSource } from '../agent/sheets.js';
 import { config } from '../config.js';
 import { dmMode } from '../connector/mode.js';
 import { dropSheetFile, toPendingSheet, type SheetPayload } from '../connector/uploads.js';
@@ -39,6 +39,7 @@ import {
 } from '../party.js';
 import { getRoom } from '../realtime/room.js';
 import { parseDocument, sniff, sniffImage } from '../rules/parse.js';
+import { searchRules } from '../rules/retrieve.js';
 import { uploadPath } from '../storage.js';
 
 const uuid = z.string().uuid();
@@ -217,8 +218,13 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
         return { pending: toPendingSheet(item) };
       }
 
-      const campaign = await q1<{ owner_id: string; system_name: string; sheet_template: SheetTemplate }>(
-        `SELECT c.owner_id, s.name AS system_name, s.sheet_template
+      const campaign = await q1<{
+        owner_id: string;
+        system_id: string;
+        system_name: string;
+        sheet_template: SheetTemplate;
+      }>(
+        `SELECT c.owner_id, c.system_id, s.name AS system_name, s.sheet_template
            FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
         [campaignId],
       );
@@ -253,6 +259,38 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
             ? 'The AI could not read that photo. The configured model may not accept images; try a PDF or text file.'
             : 'The AI could not read the sheet just now. Try again in a moment.',
         );
+      }
+      // Check the draft against the rules and suggest corrections (notably a max HP
+      // the reader left at its placeholder). Best-effort: never block the upload.
+      try {
+        const klass = draft.sheet['Class'] ?? draft.sheet['class'] ?? '';
+        const rules = await searchRules(
+          campaign.system_id,
+          `maximum hit points health calculation character creation starting ${klass} level`,
+          6,
+          undefined,
+          campaignId,
+        );
+        const suggestions = await validateSheet({
+          llm,
+          systemName: campaign.system_name,
+          draft,
+          rules,
+          signal: AbortSignal.timeout(60_000),
+          onUsage: (usage, model) =>
+            recordUsage({
+              task: 'sheet-check',
+              provider: llm.provider.name,
+              model,
+              keySource: llm.keySource,
+              campaignId,
+              userIds: [auth.user.id],
+              usage,
+            }),
+        });
+        if (suggestions.length) draft.suggestions = suggestions;
+      } catch (err) {
+        log().warn({ err, campaignId }, 'sheet rules check failed');
       }
       return { draft };
     } finally {

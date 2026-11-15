@@ -83,8 +83,8 @@ export const COMPANION_TOOLS: ConnectorTool[] = [
   own({
     name: 'companion_act',
     description:
-      'Record what a companion with an AI of its own does this turn, in the first person, in one to three ' +
-      'sentences, or PASS. Once per companion per turn.',
+      'Record what a companion with an AI of its own does this turn, written in the third person like a ' +
+      'player describing their character, in one to three sentences, or PASS. Once per companion per turn.',
     schema: z.object({
       character: z.string().trim().min(1).max(80).describe('The companion’s name'),
       action: z.string().trim().min(1).max(600).describe('What they attempt or say, or PASS'),

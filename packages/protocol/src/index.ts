@@ -306,6 +306,23 @@ export interface Character {
   privateNotes?: string;
 }
 
+/**
+ * A change the rules check suggests on an uploaded sheet: a value that does not
+ * match what the game system's rules work out (most often max hit points, which
+ * the sheet reader copies as written but the rules may compute from class and an
+ * ability score). The player applies or ignores each one in the draft editor.
+ */
+export interface SheetSuggestion {
+  /** 'maxHp', or the sheet field key the change is for ("Armour Class"). */
+  field: string;
+  /** How it reads on the draft now, for the player to compare. */
+  current: string;
+  /** What the rules work out. A number for maxHp; text or a number for a field. */
+  suggested: string | number;
+  /** One line on why, citing the rule where it can. */
+  reason: string;
+}
+
 /** A sheet read from an upload, for the player to check before saving. */
 export interface CharacterDraft {
   name: string;
@@ -313,6 +330,8 @@ export interface CharacterDraft {
   sheet: Record<string, string | number>;
   inventory: InventoryItem[];
   persona: string;
+  /** Changes the rules check proposes, for the player to apply or ignore. */
+  suggestions?: SheetSuggestion[];
 }
 
 /** An uploaded sheet waiting for, or read by, Claude. */

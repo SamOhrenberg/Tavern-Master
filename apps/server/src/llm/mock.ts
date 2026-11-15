@@ -106,8 +106,10 @@ export function mockProvider(): ChatProvider {
 
       switch (req.task) {
         case 'companion': {
-          const self = /You play one character[^:]*: ([^,]+),/.exec(req.system[0]?.text ?? '')?.[1] ?? 'I';
-          yield* say(`I stay close to the others and keep watch, ready to back them up. (${self})`);
+          const self =
+            /the character you play is ([^,]+),/.exec(req.system[0]?.text ?? '')?.[1]?.trim() ??
+            'The companion';
+          yield* say(`${self} stays close to the others to keep watch, ready to back them up.`);
           return;
         }
         case 'catalogue': {
@@ -138,6 +140,14 @@ export function mockProvider(): ChatProvider {
                 },
               },
             ],
+            'tool_use',
+          );
+          return;
+        }
+        case 'sheet-check': {
+          // The scripted model does no arithmetic; it signs off the draft untouched.
+          yield finish(
+            [{ type: 'tool_use', id: 'mock_check', name: 'suggest_changes', input: { changes: [] } }],
             'tool_use',
           );
           return;

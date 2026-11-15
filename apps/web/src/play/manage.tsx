@@ -26,6 +26,9 @@ export function ManageSheet({
   present,
   busy: turnBusy,
   dm: dmStatus,
+  hideAi,
+  canHideAi,
+  onHideAi,
   onClaudeSetup,
   onChanged,
   onClose,
@@ -35,6 +38,11 @@ export function ManageSheet({
   busy: boolean;
   /** Where the campaign's AI is, live from the table. */
   dm?: DmStatus;
+  /** This player's choice to hide AI companion messages on their own screen. */
+  hideAi: boolean;
+  /** Whether the choice can do anything: there are companions, or it is already on. */
+  canHideAi: boolean;
+  onHideAi: (next: boolean) => void;
   /** Open the Claude setup sheet. */
   onClaudeSetup?: () => void;
   onChanged: () => void;
@@ -296,6 +304,24 @@ export function ManageSheet({
               Save changes
             </button>
           </form>
+        </>
+      )}
+
+      {canHideAi && (
+        <>
+          <div className="section-title">
+            <span>Your view</span>
+          </div>
+          <label className="card row view-toggle">
+            <div className="grow">
+              <b>Hide companion messages</b>
+              <div className="small muted">
+                Keeps AI companions off your screen. You still see player and DM messages. This is just for
+                you.
+              </div>
+            </div>
+            <input type="checkbox" checked={hideAi} onChange={(e) => onHideAi(e.target.checked)} />
+          </label>
         </>
       )}
 
