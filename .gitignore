@@ -7,6 +7,7 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.dm-launcher.example
 
 # runtime data (uploads, model cache, db dumps), and what the tests write
 /data/

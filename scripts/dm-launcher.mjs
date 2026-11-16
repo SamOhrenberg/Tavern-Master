@@ -13,7 +13,8 @@
  *   node scripts/dm-launcher.mjs status       what the server says about each table
  *
  * Make the token in the app under You → Claude → Use a token instead. Settings
- * live in ~/.tavern-dm/config.json; TAVERN_URL and TAVERN_TOKEN override them.
+ * live in ~/.tavern-dm/config.json; TAVERN_URL, TAVERN_TOKEN, TAVERN_IDLE_MINUTES and
+ * TAVERN_ECHO (also print what Claude does to the console) override them.
  * No dependencies: Node 20 or later.
  */
 /* eslint-disable no-console -- a command-line tool: the console is its interface. */
@@ -51,6 +52,8 @@ const DEFAULTS = {
   pollSeconds: 15,
   /** The claude executable; found on PATH when empty. */
   claude: '',
+  /** Also print what Claude is doing to the console, not only to the log (for `docker compose logs`). */
+  echo: false,
 };
 
 // ------------------------------------------------------------ settings
@@ -79,10 +82,17 @@ function settings(f) {
   const s = { ...DEFAULTS, ...readConfig() };
   if (process.env.TAVERN_URL) s.server = process.env.TAVERN_URL;
   if (process.env.TAVERN_TOKEN) s.token = process.env.TAVERN_TOKEN;
+  if (process.env.TAVERN_ECHO) s.echo = process.env.TAVERN_ECHO;
+  if (process.env.TAVERN_IDLE_MINUTES) s.idleMinutes = process.env.TAVERN_IDLE_MINUTES;
   for (const k of Object.keys(DEFAULTS)) if (f[k] !== undefined) s[k] = f[k];
   s.idleMinutes = Number(s.idleMinutes) || DEFAULTS.idleMinutes;
+  s.echo = ['1', 'true', 'yes', true].includes(s.echo);
   s.pollSeconds = Math.max(5, Number(s.pollSeconds) || DEFAULTS.pollSeconds);
   s.server = String(s.server).replace(/\/+$/, '');
+  // The app shows it as a header value; take it with or without "Bearer ".
+  s.token = String(s.token)
+    .trim()
+    .replace(/^Bearer\s+/i, '');
   s.dir = resolve(s.dir);
   return s;
 }
@@ -172,6 +182,10 @@ function spawnClaude(s, cwd, mcpPath) {
     '--mcp-config',
     mcpPath,
     '--strict-mcp-config',
+    // The folder's .claude/settings.json allows these too, but Claude Code ignores a
+    // folder's permissions until someone trusts it interactively. A flag needs no trust.
+    '--allowedTools',
+    `mcp__${SERVER_NAME}`,
   ];
   const { file, shell } = findClaude(s);
   const opts = { cwd, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
@@ -225,7 +239,12 @@ function log(c, line) {
 /** A line in the campaign's log only: what Claude is doing, for `watch`. */
 function trace(c, line) {
   logStream(c.folder).write(`${stamp()}  ${line}\n`);
+  if (echo) console.log(`[${c.name}]   ${line}`);
 }
+let echo = false;
+
+/** Claude Code's answer when it has no sign-in, or one that no longer works. */
+const SIGNED_OUT = /not logged in|\/login|invalid api key|oauth token|authenticat/i;
 
 const short = (v, n = 160) => {
   const s = (typeof v === 'string' ? v : JSON.stringify(v ?? '')).replace(/\s+/g, ' ').trim();
@@ -263,6 +282,7 @@ function readEvent(c, raw) {
   } else if (e.type === 'result') {
     const cost = typeof e.total_cost_usd === 'number' ? `, $${e.total_cost_usd.toFixed(2)}` : '';
     trace(c, `Run ended: ${e.subtype}, ${e.num_turns ?? '?'} turns${cost}. ${short(e.result ?? '', 300)}`);
+    if (e.is_error && SIGNED_OUT.test(String(e.result ?? ''))) return { signedOut: String(e.result) };
   }
 }
 
@@ -288,8 +308,16 @@ function startRun(s, c, t) {
       log(c, `Claude is coming to the table (${c.players} player${c.players === 1 ? '' : 's'} there).`);
       createInterface({ input: proc.stdout }).on('line', (line) => {
         const r = readEvent(c, line);
+        if (r?.signedOut) {
+          t.mcpProblem = 'signed-out';
+          log(
+            c,
+            `Claude Code is not signed in ("${r.signedOut}"). Set CLAUDE_CODE_OAUTH_TOKEN (from \`claude setup-token\`), ` +
+              'or run `claude` once and type /login. Trying again in 5 min.',
+          );
+        }
         // 'pending' means still connecting; only a definite failure is worth stopping for.
-        if (r && ['failed', 'needs-auth', 'missing'].includes(r.mcp)) {
+        if (r?.mcp && ['failed', 'needs-auth', 'missing'].includes(r.mcp)) {
           t.mcpProblem = r.mcp;
           stopRun(
             c,
@@ -391,6 +419,7 @@ async function tick(s) {
 
 async function run(s) {
   requireServer(s);
+  echo = s.echo;
   findClaude(s);
   mkdirSync(s.dir, { recursive: true });
   console.log(`Watching ${s.server} for tables that need Claude. Campaign folders: ${s.dir}`);

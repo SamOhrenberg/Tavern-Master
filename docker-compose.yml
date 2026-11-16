@@ -72,6 +72,38 @@ services:
         condition: service_healthy
     mem_limit: ${WORKER_MEM_LIMIT:-1g}
 
+  # Claude on call: starts Claude Code for a campaign run by Claude when players
+  # sit down, and stops it when they leave. Opt-in: put COMPOSE_PROFILES=claude
+  # in .env, and the two tokens in .env.dm-launcher (copy .env.dm-launcher.example).
+  # Its secrets stay in that file so the web and worker never see them.
+  dm-launcher:
+    <<: *hardening
+    profiles: ['claude']
+    image: ${DM_LAUNCHER_IMAGE:-ghcr.io/samohrenberg/tavern-master-dm-launcher:latest}
+    build:
+      context: .
+      dockerfile: docker/dm-launcher.Dockerfile
+    # Reaps the Claude Code processes it starts and stops.
+    init: true
+    env_file:
+      - path: .env.dm-launcher
+        required: false
+    environment:
+      # Straight to the web container; no proxy or HTTPS in between.
+      TAVERN_URL: http://web:8080
+      TAVERN_ECHO: '1'
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      # Claude Code's sign-in and state, the launcher's logs, the campaign folders.
+      - ${DM_HOME_PATH:-dm-home}:/home/node
+    # edge: out to Anthropic, and in to web. Never on the internal network.
+    networks:
+      - edge
+    depends_on:
+      - web
+    mem_limit: ${DM_LAUNCHER_MEM_LIMIT:-1g}
+
   db:
     <<: *hardening
     image: pgvector/pgvector:pg17
@@ -124,3 +156,4 @@ volumes:
   pgdata: {}
   uploads: {}
   models: {}
+  dm-home: {}

@@ -173,6 +173,24 @@ folders, `idleMinutes`, `pollSeconds`, `claude` for the executable's path);
 Claude Code as usual, but do not start `/dm` there while the launcher runs
 it too.
 
+The launcher can also run as a container in this stack, with Claude Code
+inside it. It reaches the web container directly, so it needs no HTTPS:
+
+1. In `.env`, uncomment `COMPOSE_PROFILES=claude`.
+2. Copy `.env.dm-launcher.example` to `.env.dm-launcher` and set
+   `TAVERN_TOKEN`. For Claude Code's sign-in, run `claude setup-token` on any
+   computer with Claude Code and set `CLAUDE_CODE_OAUTH_TOKEN` to what it
+   prints (it lasts about a year and uses your Claude plan). Only this
+   container reads that file.
+3. `docker compose pull && docker compose up -d`, then
+   `docker compose logs -f dm-launcher` to see tables filling and what Claude
+   does at them.
+
+Without `CLAUDE_CODE_OAUTH_TOKEN`, sign in inside the container once instead:
+`docker compose run --rm dm-launcher claude`, type `/login`, and follow the
+link. The sign-in is kept in the `dm-home` volume with the campaign folders
+and logs. Updating Claude Code means pulling or rebuilding the image.
+
 The server must be reachable over public HTTPS, since Anthropic's cloud makes
 the connection for claude.ai, and Claude Code signs in only over HTTPS or to
 localhost. Clients that cannot sign in, or servers on plain HTTP, can use a
