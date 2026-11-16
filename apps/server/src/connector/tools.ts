@@ -592,12 +592,15 @@ const RULES_TOO = new Set([
   'modify_inventory',
   'edit_sheet',
 ]);
+/** GM tools that also serve a sheet request: reading the rules, to check a value beyond the passages pre-fetched into the request. */
+const SHEET_TOO = new Set(['lookup_rules', 'search_documents']);
 
 /** When a GM tool may run: always when Claude holds nothing, and during the requests it also serves. */
 const gmGate = (name: string): Gate[] => [
   'free',
   ...(GUIDE_TOO.has(name) ? (['guide'] as const) : []),
   ...(RULES_TOO.has(name) ? (['rules'] as const) : []),
+  ...(SHEET_TOO.has(name) ? (['sheet'] as const) : []),
 ];
 
 /** Replaces a GM tool while a request of some kind is held, e.g. a table-only document search for the guide. */
