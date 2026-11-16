@@ -11,6 +11,8 @@ export interface TurnAction {
   displayName: string;
   characterName: string | null;
   text: string;
+  /** A player speaking for a companion they do not run. */
+  voiced?: boolean;
 }
 
 export interface TurnInput {
@@ -106,7 +108,8 @@ export function renderTurn(t: TurnInput): string {
   const lines = [`<turn n="${t.number}">`];
   for (const a of t.actions) {
     const who = a.characterName ? ` character="${escapeXml(a.characterName)}"` : '';
-    lines.push(`  <action player="${escapeXml(a.displayName)}"${who}>${escapeXml(a.text)}</action>`);
+    const voiced = a.voiced ? ' speaking_for="companion"' : '';
+    lines.push(`  <action player="${escapeXml(a.displayName)}"${who}${voiced}>${escapeXml(a.text)}</action>`);
   }
   for (const p of t.passed) {
     const who = p.characterName ? ` character="${escapeXml(p.characterName)}"` : '';
@@ -131,6 +134,7 @@ The <state> block lists every party member and who speaks for them.
 - run="player": a person at the table. You decide what happens to the character, never what they choose, say or feel beyond what their action says.
 - run="you": a companion you play yourself. Give them a voice and sensible actions each turn, let them support the players' plans instead of leading, and keep them to what that character could know. Your notebook and hidden secrets are not their knowledge.
 - run="own-ai": a companion played by a separate AI that knows only what the character has seen. Its action arrives in the turn like anyone else's, labelled player="${COMPANION_LABEL}". Resolve it as you would a player's and do not choose for it.
+- An <action> marked speaking_for="companion" is a player choosing what a companion says or does this turn. Treat it as that companion's action, played as written, and do not have the companion act again on top of it.
 
 When the party splits up, record who is where with set_whereabouts, and call it with together once they regroup. A character with a where="…" in <state> is away from the current scene. Companions with their own AI see only the actions of those in the same place, so they rely on this. Resolve each group's actions in its own place, say where each part of your narration happens, and never let characters react to what happens where they are not.
 

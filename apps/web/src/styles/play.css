@@ -835,6 +835,10 @@
 .turn-person.passed {
   opacity: 0.25;
 }
+/* Has written something, not done yet. */
+.turn-person.acting {
+  opacity: 0.8;
+}
 .turn-person i {
   position: absolute;
   right: -3px;
@@ -919,6 +923,9 @@
 .composer-field::placeholder {
   color: var(--faint);
 }
+.composer-field:disabled {
+  opacity: 0.6;
+}
 .composer-field:focus {
   border-color: var(--gold);
 }
@@ -960,40 +967,53 @@
 /* ---------- acting as one of several characters ---------- */
 .act-as {
   display: flex;
-  gap: 6px;
-  padding: 0 2px 8px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.act-as::-webkit-scrollbar {
-  display: none;
-}
-.act-as button {
-  display: flex;
   align-items: center;
-  gap: 7px;
-  min-height: 44px;
-  max-width: 190px;
-  flex: none;
-  padding: 0 12px 0 8px;
+  gap: 8px;
+  min-height: 40px;
+  margin: 0 2px 8px;
+  padding: 0 4px 0 8px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: var(--surface);
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 600;
 }
-.act-as button.on {
-  border-color: rgba(230, 185, 101, 0.55);
-  background: var(--gold-wash);
-  color: var(--text);
+/* Speaking for a companion: make it plain whose voice the next line is in. */
+.act-as.voicing {
+  border-color: rgba(165, 151, 255, 0.55);
+  background: rgba(165, 151, 255, 0.1);
 }
-.act-as button > svg {
-  width: 14px;
-  height: 14px;
+.act-as-label {
   flex: none;
-  color: var(--jade);
-  stroke-width: 3;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+.act-as.voicing .act-as-label {
+  color: var(--arcane);
+}
+/* 16px keeps iOS from zooming on focus. */
+.act-as-select {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 30px 0 2px;
+  border: 0;
+  background-color: transparent;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 17px,
+    calc(100% - 10px) 17px;
+  background-size:
+    6px 6px,
+    6px 6px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 /* An action taken by a party member that an AI plays. */
@@ -1114,7 +1134,10 @@
   font-size: 15.5px;
 }
 .give-back {
-  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   margin-top: 10px;
 }
 

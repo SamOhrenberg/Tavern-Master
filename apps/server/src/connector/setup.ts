@@ -170,13 +170,14 @@ export const SETUP_TOOLS: ConnectorTool[] = [
   own({
     name: 'update_campaign',
     description:
-      'Change the open campaign: its name, premise, tone, who keeps the sheets, or how long a turn gathers.',
+      'Change the open campaign: its name, premise, tone, who keeps the sheets, or how long a turn gathers ' +
+      '(0 waits until everyone present is done or has passed).',
     schema: z.object({
       name: z.string().trim().min(2).max(80).optional(),
       premise: z.string().trim().max(2000).optional(),
       tone: z.string().trim().max(300).optional(),
       sheets: sheetsSchema.optional(),
-      gather_window_seconds: z.number().int().min(5).max(600).optional(),
+      gather_window_seconds: z.union([z.literal(0), z.number().int().min(5).max(600)]).optional(),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     during: ['free'],

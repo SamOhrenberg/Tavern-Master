@@ -39,6 +39,9 @@ import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll, type RollRequest } from './rolls.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
 
+/** Seat ids for a line a player spoke for a companion start with this. */
+const VOICED = 'v:';
+
 const SESSION_GAP_HOURS = 6;
 /**
  * DM tools that change a message already posted. The one message is sent again,
@@ -673,6 +676,26 @@ export class Room {
     return [...this.seats.values()].filter((s) => s.userIds.includes(userId));
   }
 
+  /**
+   * Any player may speak for a companion (a party member the GM or its own AI
+   * runs) without taking it over. That line gets a seat of its own, keyed by
+   * who wrote it, which the table never waits on.
+   */
+  private async voicedSeat(user: UserRef, characterId: string): Promise<TurnSeat | undefined> {
+    const companion = (await pgStore.characters(this.campaignId)).find(
+      (c) => c.id === characterId && c.controller !== 'player',
+    );
+    if (!companion) return undefined;
+    const seat: TurnSeat = {
+      id: `${VOICED}${user.id}:${companion.id}`,
+      name: companion.name,
+      userIds: [user.id],
+      characterId: companion.id,
+    };
+    this.known.set(seat.id, seat);
+    return seat;
+  }
+
   action(user: UserRef, text: string, characterId?: string): Promise<void> {
     return this.run(async () => {
       if (await endIfStale(this.campaignId)) {
@@ -691,8 +714,8 @@ export class Room {
       const mine = this.seatsOf(user.id);
       let seat: TurnSeat | undefined;
       if (characterId) {
-        seat = mine.find((s) => s.characterId === characterId);
-        if (!seat) return this.tell(user.id, 'You do not run that character.');
+        seat = mine.find((s) => s.characterId === characterId) ?? (await this.voicedSeat(user, characterId));
+        if (!seat) return this.tell(user.id, 'You cannot speak for that character.');
       } else {
         // No character named: the first of theirs that has not acted yet.
         seat = mine.find((s) => !this.collector.hasActed(s.id)) ?? mine[0];
@@ -742,6 +765,8 @@ export class Room {
             ? 'opened'
             : 'added';
       await this.submit({ seat: seat.id, userId: user.id, text });
+      // The host's seat is never waited on; it is finished as soon as it is sent.
+      if (this.collector.finish(seat.id)) this.broadcast({ type: 'turn', turn: this.turnState() });
       return { where, as: seat.name };
     });
   }
@@ -779,6 +804,8 @@ export class Room {
       action.messageId = message.id;
       this.broadcast({ type: 'message', message });
     }
+    // A line spoken for a companion is finished as soon as it is sent.
+    if (where !== 'queued' && action.seat.startsWith(VOICED)) this.collector.finish(action.seat);
     this.broadcast({ type: 'turn', turn: this.turnState() });
   }
 
@@ -797,10 +824,10 @@ export class Room {
     });
   }
 
-  /** Sit out with every character this player has not acted with yet. */
-  pass(user: UserRef): void {
+  /** This player is finished with the turn: every character of theirs is done, or sits it out. */
+  done(user: UserRef): void {
     let any = false;
-    for (const seat of this.seatsOf(user.id)) any = this.collector.pass(seat.id) || any;
+    for (const seat of this.seatsOf(user.id)) any = this.collector.finish(seat.id) || any;
     if (any) this.broadcast({ type: 'turn', turn: this.turnState() });
   }
 
@@ -824,7 +851,13 @@ export class Room {
   private async release(): Promise<void> {
     this.turn = null;
     const held = this.collector.resolved();
+    const before = this.known;
     this.known = new Map(this.seats);
+    // Seats made for one line (a voiced companion, the host's own action) carry over with it.
+    for (const a of held) {
+      const seat = before.get(a.seat);
+      if (seat && !this.known.has(a.seat)) this.known.set(a.seat, seat);
+    }
     this.broadcast({ type: 'turn', turn: this.turnState() });
     for (const action of held) await this.submit(action);
   }
@@ -964,6 +997,11 @@ export class Room {
     // Checked against the party as it is now, in case a character changed hands mid-turn.
     const runs = (userId: string, characterId: string | null | undefined) =>
       chars.find((c) => c.id === characterId && c.controller === 'player' && c.playerIds.includes(userId));
+    // A companion a player spoke for this turn.
+    const companionOf = (seatId: string) =>
+      seatId.startsWith(VOICED)
+        ? chars.find((c) => c.id === seatOf(seatId)?.characterId && c.controller !== 'player')
+        : undefined;
 
     const actors: Actor[] = people.map((p) => ({
       userId: p.id,
@@ -973,11 +1011,25 @@ export class Room {
     const actions: TurnAction[] = closed.actions.flatMap((a) => {
       const p = byId.get(a.userId);
       if (!p) return [];
+      const voiced = companionOf(a.seat);
+      if (voiced) {
+        return [
+          {
+            userId: p.id,
+            displayName: p.display_name,
+            characterName: voiced.name,
+            text: a.text,
+            voiced: true,
+          },
+        ];
+      }
       const character = runs(a.userId, seatOf(a.seat)?.characterId);
       return [
         { userId: p.id, displayName: p.display_name, characterName: character?.name ?? null, text: a.text },
       ];
     });
+    // Companions a player already spoke for do not also act on their own this turn.
+    const spokenFor = actions.flatMap((a) => (a.voiced && a.characterName ? [a.characterName] : []));
     const actingIds = [...new Set(actions.map((a) => a.userId))];
     if (!actions.length) return false;
 
@@ -1004,7 +1056,7 @@ export class Room {
     if (external) return this.awaitOutsideDm(turn, input, actors, campaign.system_id);
 
     this.broadcast({ type: 'dm_start', turnId: turn.id });
-    const own = chars.filter((c) => c.controller === 'agent');
+    const own = chars.filter((c) => c.controller === 'agent' && !spokenFor.includes(c.name));
     if (own.length) {
       // They react to what the players are doing, so they see the turn as gathered so far.
       const more = await this.companions(turn, info, campaign.owner_id, own, input, actingIds).catch(
@@ -1083,7 +1135,16 @@ export class Room {
     };
     const minutes = config().CONNECTOR_TURN_TIMEOUT_MINUTES;
     const handed = this.desk.handOff(
-      { id: turn.id, number: turn.number, sessionId: turn.sessionId, input, ctx, claimed: false },
+      {
+        id: turn.id,
+        number: turn.number,
+        sessionId: turn.sessionId,
+        input,
+        ctx,
+        claimed: false,
+        // A player already spoke for these this turn.
+        companionsActed: input.actions.flatMap((a) => (a.voiced && a.characterName ? [a.characterName] : [])),
+      },
       minutes * 60_000,
     );
     this.statusMaybeChanged();

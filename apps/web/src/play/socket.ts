@@ -55,6 +55,7 @@ const IDLE: TurnState = {
   deadline: null,
   expected: [],
   acted: [],
+  done: [],
   passed: [],
   seats: [],
 };

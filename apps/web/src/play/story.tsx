@@ -91,7 +91,9 @@ export function Story({
   refs?: EntityRef[];
 }) {
   const m: Marks = { onCite, onRef, refs };
+  // A DM writing through a tool call sometimes escapes its quotes twice ("Priss" arrives as \"Priss\").
   const blocks = text
+    .replace(/\\(["'])/g, '$1')
     .replace(/\r/g, '')
     .split(/\n{2,}/)
     .map((b) => b.trim())

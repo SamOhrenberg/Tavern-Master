@@ -275,19 +275,21 @@ function Play({ id, campaign, state, template }: TableProps) {
       (x, y) =>
         Number(x.kind === 'npc') - Number(y.kind === 'npc') || x.playerIds.length - y.playerIds.length,
     );
+  // Party members the GM or their own AI play: anyone may speak for one without taking it over.
+  const companions = (game?.characters ?? []).filter((ch) => ch.controller !== 'player');
   const acted = mine.filter((ch) => table.turn.acted.includes(ch.id)).map((ch) => ch.id);
-  const actingAs = mine.find((ch) => ch.id === actAs) ?? mine.find((ch) => !acted.includes(ch.id)) ?? mine[0];
+  // The choice stays until the player changes it back.
+  const actingAs =
+    [...mine, ...companions].find((ch) => ch.id === actAs) ??
+    mine.find((ch) => !acted.includes(ch.id)) ??
+    mine[0];
 
   const send = (mode: Mode, text: string): boolean => {
     const ok = table.send(
       mode === 'act' ? { type: 'action', text, characterId: actingAs?.id } : { type: 'ooc', text },
     );
     if (!ok) notify('Not connected to the table. Reconnecting…', 'error');
-    else {
-      toBottom();
-      // Having acted with one character, move on to the next that has not.
-      if (mode === 'act') setActAs(null);
-    }
+    else toBottom();
     return ok;
   };
 
@@ -354,7 +356,7 @@ function Play({ id, campaign, state, template }: TableProps) {
   const giveBack = () =>
     run(async () => {
       await api(`/campaigns/${id}/desk/release`, { method: 'POST' });
-    }, 'The turn was handed back. Act again when Claude is here.');
+    }, 'Stopped waiting. Act again when Claude is here.');
 
   return (
     <div className="play">
@@ -498,14 +500,20 @@ function Play({ id, campaign, state, template }: TableProps) {
                   }
                 >
                   {stalled && c.role === 'owner' && (
-                    <button
-                      type="button"
-                      className="btn sm ghost give-back"
-                      disabled={busy}
-                      onClick={() => void giveBack()}
-                    >
-                      Give the turn back
-                    </button>
+                    <div className="give-back">
+                      <p className="small muted">
+                        Claude isn't connected, so this turn is stuck. Stop waiting to unlock the table.
+                        Everyone's actions stay in the story; send one again once Claude is back.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn sm ghost"
+                        disabled={busy}
+                        onClick={() => void giveBack()}
+                      >
+                        Stop waiting for Claude
+                      </button>
+                    </div>
                   )}
                 </LiveDm>
               )}
@@ -543,12 +551,13 @@ function Play({ id, campaign, state, template }: TableProps) {
                   turn={table.turn}
                   meId={me.id}
                   isOwner={c.role === 'owner'}
-                  onPass={() => table.send({ type: 'pass' })}
+                  onDone={() => table.send({ type: 'done' })}
                   onForce={() => table.send({ type: 'force' })}
                 />
                 <DiceTray character={actingAs} onRoll={roll} />
                 <Composer
                   characters={mine}
+                  companions={companions}
                   actingAs={actingAs}
                   onActAs={setActAs}
                   acted={acted}

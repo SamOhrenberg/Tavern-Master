@@ -19,10 +19,12 @@ function setup(windowMs = 60_000) {
 }
 
 describe('turn aggregation', () => {
-  it('resolves a solo player immediately', () => {
+  it('resolves a solo player once they say they are done', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann']);
     expect(collector.submit({ seat: 'ann', userId: 'ann', text: 'I open the door' })).toBe('opened');
+    expect(closed).toHaveLength(0);
+    expect(collector.finish('ann')).toBe(true);
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({
       reason: 'all_ready',
@@ -43,7 +45,11 @@ describe('turn aggregation', () => {
       expected: ['ann', 'bob'],
     });
 
+    collector.finish('ann');
     expect(collector.submit({ seat: 'bob', userId: 'bob', text: 'I cast light' })).toBe('added');
+    expect(closed).toHaveLength(0); // bob wrote, but has not said he is done
+    expect(collector.snapshot(1)).toMatchObject({ acted: ['ann', 'bob'], done: ['ann'] });
+    collector.finish('bob');
     expect(closed).toHaveLength(1);
     expect(closed[0]!.actions.map((a) => a.userId)).toEqual(['ann', 'bob']);
     expect(cancelled()).toBe(1);
@@ -58,20 +64,50 @@ describe('turn aggregation', () => {
     expect(closed[0]!.actions).toHaveLength(1);
   });
 
+  it('with no window, waits for everyone present without a timer', () => {
+    const { collector, closed, timeout } = setup(0);
+    collector.setPresent(['ann', 'bob']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I wait' });
+    collector.finish('ann');
+    timeout();
+    expect(closed).toHaveLength(0);
+    expect(collector.snapshot(1)).toMatchObject({ status: 'collecting', deadline: null });
+    collector.setPresent(['ann']); // bob leaves: nobody waits on an empty seat
+    expect(closed[0]).toMatchObject({ reason: 'all_ready' });
+  });
+
   it('lets a player pass', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
-    expect(collector.pass('bob')).toBe(false); // nothing to pass on yet
+    expect(collector.finish('bob')).toBe(false); // nothing to pass on yet
     collector.submit({ seat: 'ann', userId: 'ann', text: 'I sneak ahead' });
-    expect(collector.pass('ann')).toBe(false); // already acted
-    expect(collector.pass('bob')).toBe(true);
+    expect(collector.finish('bob')).toBe(true); // bob has not written: he passes
+    expect(closed).toHaveLength(0);
+    expect(collector.finish('ann')).toBe(true); // ann has: she is done
+    expect(collector.finish('ann')).toBe(false);
     expect(closed[0]).toMatchObject({ reason: 'all_ready', passed: ['bob'] });
+  });
+
+  it('reopens a seat that writes again after saying it was done', () => {
+    const { collector, closed } = setup();
+    collector.setPresent(['ann', 'bob']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I open the chest' });
+    collector.finish('ann');
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'carefully' });
+    expect(collector.snapshot(1)).toMatchObject({ done: [] });
+    collector.submit({ seat: 'bob', userId: 'bob', text: 'I watch' });
+    collector.finish('bob');
+    expect(closed).toHaveLength(0);
+    collector.finish('ann');
+    expect(closed[0]!.actions).toHaveLength(3);
   });
 
   it('does not wait for a player who leaves', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
     collector.submit({ seat: 'ann', userId: 'ann', text: 'I run' });
+    collector.finish('ann');
+    expect(closed).toHaveLength(0);
     collector.setPresent(['ann']);
     expect(closed).toHaveLength(1);
   });
@@ -90,6 +126,8 @@ describe('turn aggregation', () => {
     collector.setPresent(['ann', 'bob']);
     collector.submit({ seat: 'ann', userId: 'ann', text: 'one' });
     collector.submit({ seat: 'bob', userId: 'bob', text: 'two' });
+    collector.finish('ann');
+    collector.finish('bob');
     expect(collector.submit({ seat: 'bob', userId: 'bob', text: 'three' })).toBe('queued');
     expect(closed).toHaveLength(1);
 
@@ -108,6 +146,9 @@ describe('turn aggregation', () => {
     expect(closed).toHaveLength(0);
     expect(collector.snapshot(1)).toMatchObject({ acted: ['thorn'], expected: ['thorn', 'mira'] });
     collector.submit({ seat: 'mira', userId: 'ann', text: 'Mira readies a spell' });
+    collector.finish('thorn');
+    expect(closed).toHaveLength(0);
+    collector.finish('mira');
     expect(closed).toHaveLength(1);
     expect(closed[0]!.actions.map((a) => a.seat)).toEqual(['thorn', 'mira']);
   });
@@ -130,6 +171,8 @@ describe('turn aggregation', () => {
     collector.submit({ seat: 'ann', userId: 'ann', text: 'I shout a warning' });
     collector.submit({ seat: 'ann', userId: 'ann', text: 'and dive behind the cart' });
     collector.submit({ seat: 'bob', userId: 'bob', text: 'I loose an arrow' });
+    collector.finish('ann');
+    collector.finish('bob');
     expect(closed[0]!.actions.map((a) => a.text)).toEqual([
       'I shout a warning',
       'and dive behind the cart',
@@ -152,6 +195,15 @@ describe('turn rendering', () => {
     expect(xml).toContain('<action player="Ann" character="Thorn">I attack the goblin</action>');
     expect(xml).toContain('<action player="Bob">I hide</action>');
     expect(xml).toContain('<pass player="Cy" character="Mira"/>');
+  });
+
+  it('marks a player speaking for a companion', () => {
+    const xml = renderTurn({
+      number: 2,
+      actions: [{ userId: '1', displayName: 'Ann', characterName: 'Desmond', text: 'Aye.', voiced: true }],
+      passed: [],
+    });
+    expect(xml).toContain('<action player="Ann" character="Desmond" speaking_for="companion">Aye.</action>');
   });
 
   it('escapes player text so it cannot forge structure', () => {

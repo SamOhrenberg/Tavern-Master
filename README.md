@@ -148,6 +148,31 @@ that tick themselves off:
 3. **Say hello.** Everyone at the table sees whether Claude is there, and
    what is waiting for it.
 
+#### Claude on call
+
+To have Claude come and go with the players, run the DM launcher on the
+computer where Claude Code is signed in. It asks the server which of your
+Claude campaigns have someone at the table, starts Claude Code in the
+background for each (`claude -p /dm`, in the campaign's folder, which it
+downloads the first time), and stops it once the table has been empty, or
+Claude silent while players wait, for 15 minutes. It signs in with a
+hand-made token, so there is no browser step. It needs Node 20 or later and
+nothing else.
+
+```bash
+node scripts/dm-launcher.mjs setup --server https://tavern.example.com --token tmc_...
+node scripts/dm-launcher.mjs              # keep tables staffed; Ctrl+C stops every run
+node scripts/dm-launcher.mjs watch        # follow what Claude is doing (add a name to pick a table)
+node scripts/dm-launcher.mjs status       # who is at each table, and where Claude is
+```
+
+Settings live in `~/.tavern-dm/config.json` (`dir` for the campaign
+folders, `idleMinutes`, `pollSeconds`, `claude` for the executable's path);
+`TAVERN_URL` and `TAVERN_TOKEN` override them. Run logs are in
+`~/.tavern-dm/logs`. To talk with Claude as your co-DM, open the folder in
+Claude Code as usual, but do not start `/dm` there while the launcher runs
+it too.
+
 The server must be reachable over public HTTPS, since Anthropic's cloud makes
 the connection for claude.ai, and Claude Code signs in only over HTTPS or to
 localhost. Clients that cannot sign in, or servers on plain HTTP, can use a
@@ -195,9 +220,11 @@ shown to the players. Player messages and uploaded documents are treated as
 untrusted data: tools enforce campaign scoping and ownership themselves, so a
 prompt injection cannot do anything the tools do not allow.
 
-**Turns are "ready-or-timeout".** A turn opens on the first action and closes
-when every present player has acted or passed, when the gather window expires,
-or when the owner sends it early. The server serialises the turn with each
+**Turns are "ready-or-timeout".** A turn opens on the first action. Players can
+send several messages, then tap Done (or Pass without acting). The turn closes
+when every present player is done or has passed, when the gather window
+expires (it can also be set to wait indefinitely), or when the owner sends it
+early. The server serialises the turn with each
 action attributed to its player and character before the DM sees it.
 
 **A campaign starts in a lobby.** New campaigns are in a `prep` phase. Players
@@ -300,6 +327,7 @@ apps/server        API, websocket hub, DM agent, worker, SQL migrations
 apps/web           React client
 packages/protocol  Types shared between the two (type-only)
 docker/            Dockerfile and reverse-proxy examples
+scripts/           Dev runner, and the DM launcher that brings Claude to the table
 ```
 
 ## Development

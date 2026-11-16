@@ -153,6 +153,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     const room = await openRoom(camp);
     await room.join(annSocket, annRef());
     await room.action(annRef(), 'I climb the bell tower');
+    room.done(annRef());
 
     const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
     expect(turn.text).toContain('Turn 1 is yours to resolve');
@@ -202,6 +203,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
   it('gives an abandoned turn out again with what was already applied', async () => {
     const room = await openRoom(camp);
     await room.action(annRef(), 'I dive for the bell');
+    room.done(annRef());
     const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
     expect(turn.text).toContain('Turn 3 is yours');
     await claude.call('update_character', { character: 'Wren', hp_delta: -2 });
@@ -234,6 +236,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
 
     const room = await openRoom(camp);
     await room.action(annRef(), 'I signal the boat');
+    room.done(annRef());
     const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
     expect(turn.text).toContain('Turn 4 is yours');
     expect(turn.text).toContain('Companions with an AI of their own, not yet acted: Gull, Kestrel.');
@@ -275,6 +278,40 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     );
     await settle();
     expect((await claude.call('companion_act', { character: 'Gull', action: 'Late.' })).isError).toBe(true);
+  });
+
+  it('lets a player speak for a companion without taking it over', async () => {
+    const gull = (await q1<{ id: string; controller: string }>(
+      `SELECT id, controller FROM characters WHERE campaign_id = $1 AND name = 'Gull'`,
+      [camp],
+    ))!;
+    const room = await openRoom(camp);
+    await room.action(annRef(), 'Gull: "Sails to the north!"', gull.id);
+    // Speaking for Gull does not finish Ann's own turn.
+    expect(room.turnState().status).toBe('collecting');
+    await room.action(annRef(), 'I follow the gull’s cry');
+    room.done(annRef());
+
+    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(turn.text).toContain('Turn 5 is yours');
+    expect(turn.text).toContain('character="Gull" speaking_for="companion"');
+    expect(turn.text).toContain('character="Wren"');
+    // Gull has already spoken this turn; only Kestrel is left to act on its own.
+    expect(turn.text).toContain('not yet acted: Kestrel.');
+    const posted = await q1<{ user_id: string | null }>(
+      `SELECT user_id FROM messages WHERE campaign_id = $1 AND character_name = 'Gull' ORDER BY id DESC LIMIT 1`,
+      [camp],
+    );
+    expect(posted?.user_id).toBe(ann);
+    // Still the companion's own AI that runs it.
+    expect(
+      (await q1<{ controller: string }>(`SELECT controller FROM characters WHERE id = $1`, [gull.id]))
+        ?.controller,
+    ).toBe('agent');
+    expect((await claude.call('narrate', { text: 'The boat swings north.' })).text).toContain(
+      'Posted turn 5',
+    );
+    await settle();
   });
 
   it('does one thing at a time: tools outside the request Claude holds are refused', async () => {

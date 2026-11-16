@@ -21,7 +21,7 @@ export interface ClosedTurn {
 }
 
 export interface CollectorOptions {
-  /** How long to wait for the rest of the table after the first action. */
+  /** How long to wait for the rest of the table after the first action. 0 waits until everyone is ready. */
   windowMs: number;
   onClose: (turn: ClosedTurn) => void;
   now?: () => number;
@@ -36,12 +36,12 @@ const realTimer = (fn: () => void, ms: number) => {
 /**
  * Gathers one round of simultaneous actions ("ready or timeout").
  *
- * A turn opens with the first action. It closes, and goes to the DM as one
- * batch, as soon as every seat that is present has acted or passed, or when
- * the gather window runs out, or when the owner forces it. Nobody waits on a
- * seat whose player has left, and a solo player with one character never
- * waits at all. Actions that arrive while the DM is still resolving are held
- * for the next turn.
+ * A turn opens with the first action. A seat may send several messages; it
+ * is finished once its player says they are done (or passes without acting).
+ * The turn closes, and goes to the DM as one batch, as soon as every seat that
+ * is present is done or passed, or when the gather window runs out, or when
+ * the owner forces it. Nobody waits on a seat whose player has left. Actions
+ * that arrive while the DM is still resolving are held for the next turn.
  *
  * This class has no I/O; the room wires it to the database and sockets.
  */
@@ -53,6 +53,8 @@ export class TurnCollector {
   private present = new Set<string>();
   private actions: CollectedAction[] = [];
   private passed = new Set<string>();
+  /** Seats that acted and said they are done. */
+  private done = new Set<string>();
   private queued: CollectedAction[] = [];
   private timer: { cancel(): void } | undefined;
   private readonly now: () => number;
@@ -83,19 +85,32 @@ export class TurnCollector {
       this.phase = 'collecting';
       this.actions = [];
       this.passed = new Set();
-      this.deadline = this.now() + this.windowMs;
-      this.timer = this.setTimer(() => this.close('timeout'), this.windowMs);
+      this.done = new Set();
+      // With no window the turn waits for every present seat, or the owner's Go now.
+      if (this.windowMs > 0) {
+        this.deadline = this.now() + this.windowMs;
+        this.timer = this.setTimer(() => this.close('timeout'), this.windowMs);
+      } else {
+        this.deadline = null;
+      }
     }
     this.actions.push(action);
+    // Writing again reopens a seat that had said it was done.
     this.passed.delete(action.seat);
+    this.done.delete(action.seat);
     this.closeIfReady();
     return opened ? 'opened' : 'added';
   }
 
-  /** A present seat sits this turn out. Only meaningful while collecting. */
-  pass(seat: string): boolean {
-    if (this.phase !== 'collecting' || this.hasActed(seat)) return false;
-    this.passed.add(seat);
+  /**
+   * A seat is finished with this turn: done if it acted, passed if it did not.
+   * Only meaningful while collecting.
+   */
+  finish(seat: string): boolean {
+    if (this.phase !== 'collecting') return false;
+    const into = this.hasActed(seat) ? this.done : this.passed;
+    if (into.has(seat)) return false;
+    into.add(seat);
     this.closeIfReady();
     return true;
   }
@@ -123,6 +138,7 @@ export class TurnCollector {
     this.queued = [];
     this.actions = [];
     this.passed = new Set();
+    this.done = new Set();
     this.phase = 'idle';
     this.deadline = null;
     return held;
@@ -135,6 +151,7 @@ export class TurnCollector {
     this.queued = [];
     this.actions = [];
     this.passed = new Set();
+    this.done = new Set();
     this.phase = 'idle';
     this.deadline = null;
   }
@@ -169,6 +186,7 @@ export class TurnCollector {
       deadline: this.phase === 'collecting' ? this.deadline : null,
       expected: this.phase === 'collecting' ? [...new Set([...this.present, ...acted])] : [],
       acted: this.phase === 'idle' ? [] : acted,
+      done: this.phase === 'idle' ? [] : [...this.done],
       passed: this.phase === 'idle' ? [] : [...this.passed],
     };
   }
@@ -176,7 +194,7 @@ export class TurnCollector {
   private closeIfReady(): void {
     if (this.phase !== 'collecting' || this.actions.length === 0) return;
     for (const seat of this.present) {
-      if (!this.hasActed(seat) && !this.passed.has(seat)) return;
+      if (!this.done.has(seat) && !this.passed.has(seat)) return;
     }
     this.close('all_ready');
   }

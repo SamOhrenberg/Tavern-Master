@@ -144,13 +144,15 @@ function describeWait(room: Room): string {
   const name = (id: string) => state.seats.find((s) => s.id === id)?.name ?? 'someone';
   if (state.status === 'idle') return 'No one has acted yet.';
   if (state.status === 'collecting') {
-    const waiting = state.expected.filter((id) => !state.acted.includes(id) && !state.passed.includes(id));
+    const waiting = state.expected.filter((id) => !state.done.includes(id) && !state.passed.includes(id));
     const secs = state.deadline ? Math.max(0, Math.round((state.deadline - Date.now()) / 1000)) : null;
     return [
       `Turn ${state.number ?? ''} is gathering.`,
       state.acted.length ? `Acted: ${state.acted.map(name).join(', ')}.` : '',
       waiting.length ? `Waiting on: ${waiting.map(name).join(', ')}.` : '',
-      secs !== null ? `It closes by itself in about ${secs}s, or now with close_turn.` : '',
+      secs !== null
+        ? `It closes by itself in about ${secs}s, or now with close_turn.`
+        : 'It waits until everyone present is done or has passed, or close it now with close_turn.',
     ]
       .filter(Boolean)
       .join(' ');

@@ -64,7 +64,8 @@ export async function updateCampaign(campaignId: string, patch: CampaignPatch): 
     [campaignId, patch.name ?? null, patch.premise ?? null, patch.status ?? null, JSON.stringify(settings)],
   );
   const room = getRoom(campaignId);
-  if (room && patch.gatherWindowSeconds) room.collector.windowMs = patch.gatherWindowSeconds * 1000;
+  if (room && patch.gatherWindowSeconds !== undefined)
+    room.collector.windowMs = patch.gatherWindowSeconds * 1000;
 }
 
 /**

@@ -61,7 +61,8 @@ const patchSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   premise: z.string().trim().max(2000).optional(),
   tone: z.string().trim().max(300).optional(),
-  gatherWindowSeconds: z.number().int().min(5).max(600).optional(),
+  // 0 waits until everyone present is done or has passed.
+  gatherWindowSeconds: z.union([z.literal(0), z.number().int().min(5).max(600)]).optional(),
   sheets: z.enum(['players', 'gm']).optional(),
   dm: z.enum(['server', 'claude']).optional(),
   status: z.enum(['active', 'archived']).optional(),

@@ -220,6 +220,8 @@ export function useVisualViewport(lockScroll = false): void {
     const apply = () => {
       const height = Math.round(vv?.height ?? window.innerHeight);
       root.style.setProperty('--vvh', `${height}px`);
+      // iOS may pan the visual viewport down instead of scrolling the page; sheets follow it.
+      root.style.setProperty('--vvt', `${Math.max(0, Math.round(vv?.offsetTop ?? 0))}px`);
       // With the keyboard up there is no home indicator to leave room for.
       root.classList.toggle('kb', window.innerHeight - height > 120);
       if (lockScroll && window.scrollY !== 0) window.scrollTo(0, 0);
@@ -233,6 +235,7 @@ export function useVisualViewport(lockScroll = false): void {
       vv?.removeEventListener('scroll', apply);
       window.removeEventListener('orientationchange', apply);
       root.style.removeProperty('--vvh');
+      root.style.removeProperty('--vvt');
       root.classList.remove('kb');
     };
   }, [lockScroll]);

@@ -537,6 +537,7 @@
 /* With the on-screen keyboard up, end the scrim at the keyboard's top edge so
    a sheet's last row (a chat composer, a save button) is not hidden under it. */
 .kb .scrim {
+  top: var(--vvt, 0px);
   bottom: auto;
   height: var(--vvh, 100dvh);
 }

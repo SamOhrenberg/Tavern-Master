@@ -75,6 +75,20 @@ export interface Spec<S extends z.ZodType> {
   run(input: z.infer<S>, call: ConnectorCall): Promise<string | { text: string; images?: ToolImage[] }>;
 }
 
+/**
+ * Claude sometimes escapes the quotes inside a tool argument twice, so a name
+ * like Priscilla "Priss" Vane arrives as Priscilla \"Priss\" Vane. Nothing a
+ * table writes needs a backslash before a quote, so drop it everywhere.
+ */
+export function unescapeQuotes(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(/\\(["'])/g, '$1');
+  if (Array.isArray(value)) return value.map(unescapeQuotes);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, unescapeQuotes(v)]));
+  }
+  return value;
+}
+
 /** A connector tool from a zod schema and a function. ToolErrors come back to Claude as tool errors. */
 export function own<S extends z.ZodType>(spec: Spec<S>): ConnectorTool {
   return {
@@ -84,7 +98,7 @@ export function own<S extends z.ZodType>(spec: Spec<S>): ConnectorTool {
     annotations: spec.annotations,
     during: spec.during,
     async call(input, call) {
-      const parsed = spec.schema.safeParse(input ?? {});
+      const parsed = spec.schema.safeParse(unescapeQuotes(input ?? {}));
       if (!parsed.success) {
         const issues = parsed.error.issues
           .map((i) => `${i.path.join('.') || 'input'}: ${i.message}`)

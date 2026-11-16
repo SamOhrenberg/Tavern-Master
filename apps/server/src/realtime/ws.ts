@@ -18,6 +18,7 @@ const clientMessage = z.discriminatedUnion('type', [
     characterId: z.string().uuid().optional(),
     kind: z.enum(['attack', 'damage', 'check', 'save', 'initiative', 'other']).optional(),
   }),
+  z.object({ type: z.literal('done') }),
   z.object({ type: z.literal('pass') }),
   z.object({ type: z.literal('force') }),
   z.object({ type: z.literal('ping') }),
@@ -128,8 +129,8 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
               characterId: msg.characterId,
               kind: msg.kind,
             });
-          } else if (msg.type === 'pass') {
-            room.pass(user);
+          } else if (msg.type === 'done' || msg.type === 'pass') {
+            room.done(user);
           } else if (msg.type === 'force') {
             if (role !== 'owner')
               return send({

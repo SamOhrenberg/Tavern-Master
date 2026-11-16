@@ -553,6 +553,8 @@ export interface TurnState {
   /** Seat ids. */
   expected: string[];
   acted: string[];
+  /** Seats that acted and said they are done. */
+  done: string[];
   passed: string[];
   seats: TurnSeat[];
 }
@@ -564,6 +566,9 @@ export type ClientMessage =
   | { type: 'ooc'; text: string }
   /** A player rolling their own dice. `kind` and `characterId` are optional. */
   | { type: 'roll'; expression: string; reason?: string; characterId?: string; kind?: RollKind }
+  /** This player is finished with the turn: done if they acted, passing if not. */
+  | { type: 'done' }
+  /** The same as done; kept for clients from before it. */
   | { type: 'pass' }
   | { type: 'force' }
   | { type: 'ping' };

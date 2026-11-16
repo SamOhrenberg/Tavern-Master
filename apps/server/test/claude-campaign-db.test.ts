@@ -6,7 +6,8 @@ import { setConfigForTests, testConfig } from '../src/config.js';
 import { createToken } from '../src/connector/tokens.js';
 import { migrate } from '../src/db/migrate.js';
 import { closeDb, q, q1 } from '../src/db/pool.js';
-import { getRoom } from '../src/realtime/room.js';
+import type { WebSocket } from 'ws';
+import { getRoom, openRoom } from '../src/realtime/room.js';
 import { mcpClient, signedIn, type SignedIn } from './http.js';
 
 // The app around a campaign run by Claude: the choice at creation, presence, the setup routes.
@@ -120,6 +121,52 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (dat
     expect(kit.headers['content-disposition']).toBe(`attachment; filename="folder-test-${tag}-tavern.zip"`);
     expect(kit.headers['cache-control']).toBe('no-store');
     expect(kit.raw.slice(0, 2)).toBe('PK');
+  });
+
+  it('tells the DM launcher which tables want Claude, and hands it the folder', async () => {
+    const claudeRun = (await create({ dm: 'claude', name: `Summon ${tag}` })).body.id!;
+    const builtIn = (await create({})).body.id!;
+    const call = (url: string, token?: string) =>
+      app.inject({ method: 'GET', url, headers: token ? { authorization: `Bearer ${token}` } : {} });
+
+    expect((await call('/api/summon')).statusCode).toBe(401);
+    // A session is not enough: the launcher runs outside the browser, on a token.
+    expect((await as.get('/api/summon')).status).toBe(401);
+
+    const { token } = (await createToken(host, 'launcher'))!;
+    type Listed = { id: string; folder: string; wanted: boolean; players: number; dm: { state: string } };
+    const list = async () => (await call('/api/summon', token)).json<{ campaigns: Listed[] }>().campaigns;
+    const mine = await list();
+    expect(mine.some((c) => c.id === builtIn)).toBe(false);
+    expect(mine.find((c) => c.id === claudeRun)).toMatchObject({
+      folder: `summon-${tag}`,
+      wanted: false,
+      players: 0,
+      dm: { state: 'never' },
+    });
+
+    // A player sits down: now Claude is wanted.
+    const room = await openRoom(claudeRun);
+    const seat = {} as WebSocket;
+    room.sockets.set(seat, { id: host, username: 'host', displayName: 'Host' });
+    expect((await list()).find((c) => c.id === claudeRun)).toMatchObject({ wanted: true, players: 1 });
+    room.sockets.delete(seat);
+
+    const kit = (await call(`/api/summon/${claudeRun}/kit`, token)).json<{
+      folder: string;
+      files: { path: string; text: string }[];
+    }>();
+    expect(kit.folder).toBe(`summon-${tag}`);
+    const paths = kit.files.map((f) => f.path);
+    expect(paths).toContain('CLAUDE.md');
+    expect(paths).toContain('.claude/skills/dm/SKILL.md');
+    expect(kit.files.find((f) => f.path === '.mcp.json')!.text).toContain(`/mcp/c/${claudeRun}`);
+    expect((await call(`/api/summon/${builtIn}/kit`, token)).statusCode).toBe(404);
+
+    // A token a Claude client got by signing in is bound to the connector and refused here.
+    const { token: bound, id } = (await createToken(host, 'bound'))!;
+    await q(`UPDATE connector_tokens SET resource = 'http://localhost:8080/mcp' WHERE id = $1`, [id]);
+    expect((await call('/api/summon', bound)).statusCode).toBe(401);
   });
 
   it('runs every campaign with Claude on a server with no built-in AI', async () => {

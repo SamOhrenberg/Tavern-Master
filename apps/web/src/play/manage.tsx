@@ -16,6 +16,7 @@ const WINDOWS = [
   { seconds: 60, label: '1 minute' },
   { seconds: 120, label: '2 minutes' },
   { seconds: 300, label: '5 minutes' },
+  { seconds: 0, label: 'Until everyone is ready' },
 ];
 
 const total = (u: UsageTotals) => u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
@@ -266,7 +267,11 @@ export function ManageSheet({
             </Field>
             <Field
               label="Wait for other players"
-              hint="After the first action, the DM answers once everyone present has acted or passed, or when this runs out."
+              hint={
+                windowSeconds === 0
+                  ? 'After the first action, the DM waits until everyone present has tapped Done or passed. The owner can still tap Go now.'
+                  : 'After the first action, the DM answers once everyone present has tapped Done or passed, or when this runs out.'
+              }
             >
               <select
                 className="select"
