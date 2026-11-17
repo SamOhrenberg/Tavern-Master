@@ -219,22 +219,41 @@ export function useVisualViewport(lockScroll = false): void {
     const vv = window.visualViewport;
     const root = document.documentElement;
     const apply = () => {
+      // Put the page back first and measure after, so the offset read below is the one that holds.
+      if (lockScroll && window.scrollY !== 0) window.scrollTo(0, 0);
       const height = Math.round(vv?.height ?? window.innerHeight);
       root.style.setProperty('--vvh', `${height}px`);
       // iOS may pan the visual viewport down instead of scrolling the page; sheets follow it.
       root.style.setProperty('--vvt', `${Math.max(0, Math.round(vv?.offsetTop ?? 0))}px`);
       // With the keyboard up there is no home indicator to leave room for.
       root.classList.toggle('kb', window.innerHeight - height > 120);
-      if (lockScroll && window.scrollY !== 0) window.scrollTo(0, 0);
     };
-    apply();
-    vv?.addEventListener('resize', apply);
-    vv?.addEventListener('scroll', apply);
-    window.addEventListener('orientationchange', apply);
+    // iOS reports the keyboard's size and pan in steps while it animates, and the pan undone by
+    // scrollTo above only shows up a frame later. Measure now and again once things have settled:
+    // a sheet sized from a stale pan sits that far too low, with its composer under the keyboard.
+    let frame = 0;
+    let late = 0;
+    const update = () => {
+      apply();
+      cancelAnimationFrame(frame);
+      window.clearTimeout(late);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(apply);
+      });
+      late = window.setTimeout(apply, 350);
+    };
+    update();
+    vv?.addEventListener('resize', update);
+    vv?.addEventListener('scroll', update);
+    window.addEventListener('scroll', update);
+    window.addEventListener('orientationchange', update);
     return () => {
-      vv?.removeEventListener('resize', apply);
-      vv?.removeEventListener('scroll', apply);
-      window.removeEventListener('orientationchange', apply);
+      cancelAnimationFrame(frame);
+      window.clearTimeout(late);
+      vv?.removeEventListener('resize', update);
+      vv?.removeEventListener('scroll', update);
+      window.removeEventListener('scroll', update);
+      window.removeEventListener('orientationchange', update);
       root.style.removeProperty('--vvh');
       root.style.removeProperty('--vvt');
       root.classList.remove('kb');

@@ -80,6 +80,23 @@ function Step({
  * Claude the campaign (a chat Project, or the folder that runs by itself),
  * and say hello. Each step ticks itself off as it happens.
  */
+const howKey = (id: string) => `tm-claude-setup:${id}`;
+function readHow(id: string): 'chat' | 'folder' | null {
+  try {
+    const v = localStorage.getItem(howKey(id));
+    return v === 'chat' || v === 'folder' ? v : null;
+  } catch {
+    return null;
+  }
+}
+function writeHow(id: string, how: 'chat' | 'folder'): void {
+  try {
+    localStorage.setItem(howKey(id), how);
+  } catch {
+    // Private mode: it guesses again next time.
+  }
+}
+
 export function ClaudeSetupSheet({
   campaign: c,
   dm,
@@ -100,7 +117,19 @@ export function ClaudeSetupSheet({
     [c.id],
   );
   const conns = useQuery(() => api<{ tokens: ConnectorToken[] }>('/account/connector'), []);
-  const [how, setHow] = useState<'chat' | 'folder'>('chat');
+  // The tab last chosen for this campaign, or else a guess from how Claude connects: the
+  // campaign folder signs in at the campaign's own address, the Claude app at the shared one.
+  const [chosen, setChosen] = useState<'chat' | 'folder' | null>(() => readHow(c.id));
+  const recent = (conns.data?.tokens ?? [])
+    .filter((t) => t.lastUsedAt && (t.scope === c.id || t.campaignName === c.name))
+    .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))[0];
+  const guessed =
+    recent && (recent.scope || /claude[\s_-]*code/i.test(recent.clientName ?? '')) ? 'folder' : 'chat';
+  const how = chosen ?? guessed;
+  const setHow = (next: 'chat' | 'folder') => {
+    setChosen(next);
+    writeHow(c.id, next);
+  };
   const [busy, run] = useAction();
 
   const used = (conns.data?.tokens ?? []).map((t) => t.lastUsedAt).filter((t): t is string => !!t);

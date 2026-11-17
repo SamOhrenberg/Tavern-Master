@@ -38,9 +38,10 @@ const realTimer = (fn: () => void, ms: number) => {
  *
  * A turn opens with the first action. A seat may send several messages; it
  * is finished once its player says they are done (or passes without acting).
- * The turn closes, and goes to the DM as one batch, as soon as every seat that
- * is present is done or passed, or when the gather window runs out, or when
- * the owner forces it. Nobody waits on a seat whose player has left. Actions
+ * The turn closes, and goes to the DM as one batch, as soon as every seat the
+ * room says to wait on is done or passed, or when the gather window runs out,
+ * or when the owner forces it. With a window, the room lists only seats whose
+ * player is here; with none, every player's (see Room.syncSeats). Actions
  * that arrive while the DM is still resolving are held for the next turn.
  *
  * This class has no I/O; the room wires it to the database and sockets.

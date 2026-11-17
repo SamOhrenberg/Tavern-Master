@@ -586,6 +586,7 @@ function Play({ id, campaign, state, template }: TableProps) {
                   turn={table.turn}
                   meId={me.id}
                   isOwner={c.role === 'owner'}
+                  dmWorking={!!table.stream || awaitingOpening}
                   onDone={() => table.send({ type: 'done' })}
                   onPass={() => {
                     if (table.send({ type: 'pass' })) toBottom();

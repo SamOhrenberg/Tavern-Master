@@ -170,11 +170,17 @@ function useCountdown(deadline: number | null): number | null {
  * Done; the DM gets the turn once everyone has. Pass is there the whole time,
  * even before anyone has acted: it puts "<name> does nothing this turn." in
  * the story and finishes the player's turn, opening one if need be.
+ *
+ * Between turns that offer only stands while the floor really is the
+ * players'. With no turn open the DM can still be writing (Claude's opening
+ * scene never holds a turn), and then the bar stays away rather than say
+ * "Your move".
  */
 export function TurnBar({
   turn,
   meId,
   isOwner,
+  dmWorking,
   onDone,
   onPass,
   onForce,
@@ -182,6 +188,8 @@ export function TurnBar({
   turn: TurnState;
   meId: string;
   isOwner: boolean;
+  /** The DM is writing, or the story is still waiting for its opening scene. */
+  dmWorking: boolean;
   onDone: () => void;
   onPass: () => void;
   onForce: () => void;
@@ -189,6 +197,7 @@ export function TurnBar({
   const seconds = useCountdown(turn.status === 'collecting' ? turn.deadline : null);
   if (turn.status === 'resolving') return null;
   if (turn.status === 'idle') {
+    if (dmWorking) return null;
     return (
       <div className="turnbar idle" role="status">
         <div className="grow turn-text">

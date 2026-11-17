@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useMe, useMeta, useQuery } from '../app';
 import { IconCrown } from '../icons';
-import { Avatar, ConfirmButton, Field, Sheet, formatTokens, formatUsd } from '../ui';
+import { Avatar, ConfirmButton, Field, Presence, Sheet, formatTokens, formatUsd } from '../ui';
 import { DmChip } from './claude';
 import { Documents } from './documents';
 import { WishesEditor } from './wishes';
@@ -112,20 +112,26 @@ export function ManageSheet({
   return (
     <Sheet title={c.name} onClose={onClose} tall>
       <div className="section-title first">
-        <span>At the table</span>
-        <span>{c.members.length}</span>
+        <span>In the campaign</span>
+        <span>
+          {c.members.length} · {c.members.filter((m) => present.some((u) => u.id === m.id)).length} online
+        </span>
       </div>
       <div className="list">
         {c.members.map((m) => (
           <div key={m.id}>
-            <Avatar name={m.characterName ?? m.displayName} seed={m.id} />
+            <Avatar
+              name={m.characterName ?? m.displayName}
+              seed={m.id}
+              online={present.some((u) => u.id === m.id)}
+            />
             <div className="grow">
               <div className="truncate">
                 {m.displayName}
                 {m.id === me.id && <span className="faint"> (you)</span>}
               </div>
               <div className="small muted truncate">
-                {present.some((u) => u.id === m.id) && <i className="here" />}
+                <Presence online={present.some((u) => u.id === m.id)} /> ·{' '}
                 {m.characterName ?? 'No character yet'}
               </div>
             </div>
@@ -280,7 +286,7 @@ export function ManageSheet({
               label="Wait for other players"
               hint={
                 windowSeconds === 0
-                  ? 'After the first action, the DM waits until everyone present has tapped Done or passed. The owner can still tap Go now.'
+                  ? 'After the first action, the DM waits until every player has tapped Done or passed, even players who are away. The owner can still tap Go now.'
                   : 'After the first action, the DM answers once everyone present has tapped Done or passed, or when this runs out.'
               }
             >

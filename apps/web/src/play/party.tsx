@@ -21,7 +21,7 @@ import {
   IconSparkle,
   IconUsers,
 } from '../icons';
-import { Avatar, Empty, HpBar, Segmented, Sheet, timeAgo } from '../ui';
+import { Avatar, Empty, HpBar, Presence, Segmented, Sheet, timeAgo } from '../ui';
 import { CastActions, playedBy, runsIt, type CastPanel } from './cast';
 
 type Tab = 'party' | 'world' | 'journal';
@@ -62,6 +62,8 @@ export function CharacterCard({
   onOpen: (panel: CastPanel) => void;
 }) {
   const mine = runsIt(ch, meId);
+  // A character a person plays: whether any of its players is in the app right now.
+  const played = ch.controller === 'player' && ch.playerIds.length > 0;
   const here = ch.playerIds.some((id) => present.some((u) => u.id === id));
   const abilities = (template?.abilities ?? []).filter((a) => show(ch.sheet[a]) !== '');
   const fields = (template?.fields ?? []).filter((f) => show(ch.sheet[f.key]) !== '');
@@ -74,11 +76,15 @@ export function CharacterCard({
   return (
     <div className={`card char${mine ? ' mine' : ''}`}>
       <div className="row">
-        <Avatar name={ch.name} seed={ch.id} />
+        <Avatar name={ch.name} seed={ch.id} online={played ? here : undefined} />
         <div className="grow">
           <h3 className="truncate">{ch.name}</h3>
           <p className="small muted truncate">
-            {here && <i className="here" />}
+            {played && (
+              <>
+                <Presence online={here} /> ·{' '}
+              </>
+            )}
             {playedBy(ch, campaign, meId)}
             {brief.length > 0 &&
               ` · ${brief

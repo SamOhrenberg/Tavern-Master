@@ -653,7 +653,11 @@ export class Room {
   /**
    * Work out who the table is waiting on. Every player-run character with a
    * player connected is a seat, and so is a connected player who runs none.
-   * AI-run party members have no seat: they act when the turn closes.
+   * When the table waits until everyone is ready (no gather window), every
+   * player-run character is a seat whether its player is here or not: away
+   * means not done yet, and leaving does not end anyone's turn. The owner can
+   * still send the turn early with Go now. AI-run party members have no seat:
+   * they act when the turn closes.
    */
   private async syncSeats(): Promise<void> {
     const here = this.present();
@@ -665,8 +669,9 @@ export class Room {
       [this.campaignId],
     );
     const seats = new Map<string, TurnSeat>();
+    const waitForEveryone = this.collector.windowMs === 0;
     for (const r of rows) {
-      if (r.users.some((id) => here.some((u) => u.id === id)))
+      if (waitForEveryone || r.users.some((id) => here.some((u) => u.id === id)))
         seats.set(r.id, { id: r.id, name: r.name, userIds: r.users, characterId: r.id });
     }
     for (const u of here) {
@@ -722,6 +727,15 @@ export class Room {
       [this.campaignId, here],
     );
     if (gone.length) this.broadcast({ type: 'state_changed' });
+  }
+
+  /** The gather window changed: with none, the table waits on players who are away too. */
+  setGatherWindow(ms: number): void {
+    this.collector.windowMs = ms;
+    void this.run(async () => {
+      await this.syncSeats();
+      this.broadcast({ type: 'turn', turn: this.turnState() });
+    });
   }
 
   /** Characters were added, removed or handed to someone else. */

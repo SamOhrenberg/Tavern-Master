@@ -255,8 +255,9 @@ send several messages, then tap Done. Pass is always there, even before anyone
 has acted: it puts "<character> does nothing this turn." in the story and
 finishes that player's turn, opening one if none is open. The turn closes
 when every present player is done or has passed, when the gather window
-expires (it can also be set to wait indefinitely), or when the owner sends it
-early. The server serialises the turn with each
+expires, or when the owner sends it early. Set to wait until everyone is
+ready, it waits for every player's character, including players who are
+away, until the owner sends it. The server serialises the turn with each
 action attributed to its player and character before the DM sees it.
 
 **A campaign starts in a lobby.** New campaigns are in a `prep` phase. Players

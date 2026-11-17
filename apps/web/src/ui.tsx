@@ -12,12 +12,29 @@ function hue(seed: string): number {
   return h % 6;
 }
 
-export function Avatar({ name, seed, small }: { name: string; seed?: string; small?: boolean }) {
+export function Avatar({
+  name,
+  seed,
+  small,
+  online,
+}: {
+  name: string;
+  seed?: string;
+  small?: boolean;
+  /** Whether the person is in the app right now. Left out for avatars that are not a person's. */
+  online?: boolean;
+}) {
   return (
     <span className={`avatar h${hue(seed ?? name)}${small ? ' sm' : ''}`} aria-hidden="true">
       {(name.trim()[0] ?? '?').toUpperCase()}
+      {online !== undefined && <i className={`avatar-dot${online ? ' on' : ''}`} />}
     </span>
   );
+}
+
+/** "Online" or "Away", spelled out beside a name. */
+export function Presence({ online }: { online: boolean }) {
+  return <span className={`presence${online ? ' on' : ''}`}>{online ? 'Online' : 'Away'}</span>;
 }
 
 export function Loading() {

@@ -773,3 +773,33 @@
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   background: var(--surface);
 }
+
+/* ---------- presence ---------- */
+.avatar {
+  position: relative;
+}
+.avatar-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #4a4756;
+  box-shadow: 0 0 0 2.5px var(--bg-sheet);
+}
+.avatar-dot.on {
+  background: var(--jade);
+}
+.avatar.sm .avatar-dot {
+  width: 9px;
+  height: 9px;
+  box-shadow: 0 0 0 2px var(--bg-sheet);
+}
+.presence {
+  font-weight: 600;
+  color: var(--faint);
+}
+.presence.on {
+  color: var(--jade);
+}
