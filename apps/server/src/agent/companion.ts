@@ -2,7 +2,7 @@ import { q } from '../db/pool.js';
 import type { ResolvedLlm } from '../llm/index.js';
 import type { Usage } from '../llm/pricing.js';
 import { complete, textOf } from '../llm/types.js';
-import { escapeXml, renderTurn, type CampaignInfo, type TurnInput } from './context.js';
+import { COMPANION_LABEL, escapeXml, renderTurn, type CampaignInfo, type TurnInput } from './context.js';
 import { placeKey } from './places.js';
 import type { CharRow, EntityRow } from './store.js';
 
@@ -79,7 +79,8 @@ The story so far covers the whole party, including scenes ${c.name} was not ther
 
 ## How to play
 - Write in the third person, the way a player at the table describes their own character's move: name ${c.name} and say what they attempt or say this turn, in one to three sentences. Put anything ${c.name} says out loud in quotation marks. Describe the attempt and leave the outcome open: the Dungeon Master decides what happens and rolls any dice. For example: "${c.name.split(/\s+/)[0] || c.name} edges along the wall and tries the far door, listening for anything on the other side."
-- The others in the same place are acting in the scene, not speaking to you. Treat what they do as things happening in the world, not as remarks aimed at ${c.name}. React directly to another character only when they clearly address ${c.name} by name, speak to ${c.name}, or act on ${c.name}; otherwise act on your own initiative where you are, or PASS.
+- You are one of a party sharing a table, and companions take their turns one after another, after the players. <turn> holds what everyone in the same place has done so far this turn: the players, and any companion who went before you. Play off it. Back someone up, join their plan, cover them, add the piece it is missing, or push back on it in character. Do not start something unrelated while the others are in the middle of something; strike out on your own only when nothing they are doing gives ${c.name} a part to play.
+- What the others do is happening in the scene; it is not said to ${c.name}. Answer it in words only when someone speaks to ${c.name} or names them; otherwise join in through what ${c.name} does. Do not repeat or redo what someone has already done this turn.
 - Never speak to, help or react to a party member who is somewhere else. If ${c.name} is on their own, deal with their own surroundings.
 - You are a supporting character. Follow the players' lead, help their plans along, add colour and now and then an idea of your own, and leave the big decisions and the spotlight to them.
 - If ${c.name} has nothing worth adding this turn, reply with exactly PASS.
@@ -163,7 +164,42 @@ export function addressHint(turn: TurnInput, name: string): string {
   const who = addressedBy(turn, name);
   return who.length
     ? `${who.join(' and ')} addressed ${name} this turn — react to ${who.length > 1 ? 'them' : 'that'}.`
-    : `No one addressed ${name} this turn; act in the scene or PASS.`;
+    : `No one addressed ${name} this turn; join in with what the others are doing, or PASS if ${name} has nothing to add.`;
+}
+
+/**
+ * The order own-AI companions take their turn in, one after another, each
+ * seeing what the ones before it did. A companion someone spoke to goes
+ * first, since it has the most reason to answer and the rest can follow its
+ * lead; after those the order is random, so no companion always speaks first
+ * or always gets the last word.
+ */
+export function companionOrder<C extends { name: string }>(
+  turn: TurnInput,
+  companions: C[],
+  random: () => number = Math.random,
+): C[] {
+  const rest = [...companions];
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j]!, rest[i]!];
+  }
+  const addressed = rest.filter((c) => addressedBy(turn, c.name).length > 0);
+  return [...addressed, ...rest.filter((c) => !addressed.includes(c))];
+}
+
+/** The line telling a companion who already took their turn before it. */
+function wentBefore(turn: TurnInput, name: string): string {
+  const before = [
+    ...new Set(
+      turn.actions
+        .filter((a) => a.displayName === COMPANION_LABEL && a.characterName && a.characterName !== name)
+        .map((a) => a.characterName!),
+    ),
+  ];
+  return before.length
+    ? `${before.join(' and ')} already took ${before.length > 1 ? 'their turns' : 'a turn'} before ${name}; ${name} goes now.`
+    : '';
 }
 
 /** Turn the model's reply into an action, or nothing when it passed or wandered off. */
@@ -243,6 +279,7 @@ export function companionPrompt(run: CompanionView): { system: string; storySoFa
       ? `${unseen} party member${unseen > 1 ? 's' : ''} acted somewhere else this turn; ${c.name} cannot see or hear that.`
       : '',
     here.split && here.with.length === 0 ? `${c.name} is on their own here.` : '',
+    wentBefore(turn, c.name),
     addressHint(turn, c.name),
     `What does ${c.name} do?`,
   ]

@@ -167,23 +167,39 @@ function useCountdown(deadline: number | null): number | null {
 /**
  * While a turn is gathering: who is done, who the table is waiting for, and
  * how long is left. Players write as many messages as they like, then tap
- * Done (or Pass without writing); the DM gets the turn once everyone has.
+ * Done; the DM gets the turn once everyone has. Pass is there the whole time,
+ * even before anyone has acted: it puts "<name> does nothing this turn." in
+ * the story and finishes the player's turn, opening one if need be.
  */
 export function TurnBar({
   turn,
   meId,
   isOwner,
   onDone,
+  onPass,
   onForce,
 }: {
   turn: TurnState;
   meId: string;
   isOwner: boolean;
   onDone: () => void;
+  onPass: () => void;
   onForce: () => void;
 }) {
   const seconds = useCountdown(turn.status === 'collecting' ? turn.deadline : null);
-  if (turn.status !== 'collecting') return null;
+  if (turn.status === 'resolving') return null;
+  if (turn.status === 'idle') {
+    return (
+      <div className="turnbar idle" role="status">
+        <div className="grow turn-text">
+          <span className="truncate">Your move. Act, or pass the turn.</span>
+        </div>
+        <button type="button" className="btn sm" onClick={onPass}>
+          Pass
+        </button>
+      </div>
+    );
+  }
 
   // The table waits on seats: each player-run character, or a player without one.
   const seat = (id: string) => turn.seats.find((s) => s.id === id);
@@ -232,7 +248,11 @@ export function TurnBar({
         <span className="turn-clock mono">{clock}</span>
       </div>
       {mineOpen && (
-        <button type="button" className={`btn sm${writing ? ' primary' : ''}`} onClick={onDone}>
+        <button
+          type="button"
+          className={`btn sm${writing ? ' primary' : ''}`}
+          onClick={writing ? onDone : onPass}
+        >
           {writing ? 'Done' : 'Pass'}
         </button>
       )}

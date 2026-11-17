@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { useAction } from './app';
 import { IconBack, IconCheck, IconClose, IconCopy } from './icons';
+import { FeedbackButton } from './feedback/button';
 
 /** Stable colour per person so avatars are recognisable at a glance. */
 function hue(seed: string): number {
@@ -207,6 +208,7 @@ export function PageHead({
         <h1 className="truncate">{title}</h1>
       </div>
       {action}
+      <FeedbackButton />
     </header>
   );
 }

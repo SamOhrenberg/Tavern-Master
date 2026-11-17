@@ -1,6 +1,7 @@
 import type {
   DmMode,
   DmStatus,
+  RollKind,
   ServerMessage,
   SettingLore,
   TurnSeat,
@@ -10,7 +11,7 @@ import type {
 import type { WebSocket } from 'ws';
 import { refreshBrief } from '../agent/brief.js';
 import { resolveRefs } from '../agent/codex.js';
-import { companionTurn, knownEntries, publicStory } from '../agent/companion.js';
+import { companionOrder, companionTurn, knownEntries, publicStory } from '../agent/companion.js';
 import {
   buildOpening,
   buildPrompt,
@@ -31,12 +32,13 @@ import { queueWork } from '../connector/work.js';
 import { q, q1, tx } from '../db/pool.js';
 import { enqueue } from '../jobs/queue.js';
 import { LlmNotConfigured, resolveLlm } from '../llm/index.js';
+import { polishNarration } from '../llm/polish.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { log } from '../log.js';
 import { conflict } from '../errors.js';
 import { snapshotState } from '../rewind.js';
 import { getMessage, insertMessage } from './messages.js';
-import { buildPlayerRoll, type RollRequest } from './rolls.js';
+import { buildPlayerRoll } from './rolls.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
 
 /** Seat ids for a line a player spoke for a companion start with this. */
@@ -49,6 +51,7 @@ const SESSION_GAP_HOURS = 6;
  */
 export const HISTORY_TOOLS = new Set(['correct_narration']);
 export const STATE_TOOLS = new Set([
+  'request_roll',
   'delete_entity',
   'update_character',
   'modify_inventory',
@@ -64,6 +67,10 @@ const OPENING = 'opening';
 const DM_IDLE_MS = 15 * 60_000;
 /** dm_seen_at is written at most this often. */
 const SEEN_WRITE_MS = 30_000;
+/** Longest one own-AI companion may take over its action. */
+const COMPANION_TIMEOUT_MS = 45_000;
+/** Longest all of them together may take; companions after that sit the turn out. */
+const COMPANIONS_BUDGET_MS = 120_000;
 
 /** How long after a connector call an outside DM still counts as listening. */
 const listenMs = () => (config().CONNECTOR_MAX_WAIT_SECONDS + 25) * 1000;
@@ -109,7 +116,7 @@ interface ActiveTurn {
 export interface CampaignRow {
   name: string;
   premise: string;
-  settings: { tone?: string; sheets?: 'players' | 'gm'; dm?: string };
+  settings: { tone?: string; sheets?: 'players' | 'gm'; dm?: string; polishWith?: string };
   owner_id: string;
   system_id: string;
   system_name: string;
@@ -118,6 +125,20 @@ export interface CampaignRow {
   homebrew: boolean;
   gm_instructions: string;
   outside_ais: { name: string; note: string }[];
+}
+
+/** The outside AI a campaign polishes its narration with ('' for none), and its tone. */
+async function polishSettings(campaignId: string): Promise<{ with: string; tone: string }> {
+  const row = await q1<{ settings: CampaignRow['settings'] }>(
+    'SELECT settings FROM campaigns WHERE id = $1',
+    [campaignId],
+  );
+  return { with: row?.settings.polishWith?.trim() ?? '', tone: row?.settings.tone ?? '' };
+}
+
+/** What the people at the table wrote this turn, as opposed to AI companions. */
+function playerLines(input: TurnInput): string[] {
+  return input.actions.filter((a) => a.userId).map((a) => a.text);
 }
 
 export async function loadCampaign(campaignId: string): Promise<CampaignRow> {
@@ -145,6 +166,7 @@ export const infoOf = (id: string, c: CampaignRow): CampaignInfo => ({
   homebrew: c.homebrew,
   gmInstructions: c.gm_instructions,
   outsideAis: c.outside_ais,
+  polishWith: c.settings.polishWith?.trim() || undefined,
 });
 
 /** Find the open play session, or start the first or next one. A session ends only through endSession. */
@@ -561,27 +583,71 @@ export class Room {
   }
 
   /**
-   * A player rolls their own dice. The server rolls and is authoritative; the
-   * client only animates the result. The roll threads into the open turn when
-   * there is one, and is broadcast to the table but never sent to the DM.
+   * A player makes a roll the DM asked for (request_roll). Players roll only
+   * when asked, and only for a character they run; the server rolls the
+   * expression the DM set, whatever the client sends, and the client only
+   * animates the result. The result joins the turn as that character's action,
+   * opening one if none is open, so the DM reads it next turn.
    */
-  roll(user: UserRef, req: RollRequest): Promise<void> {
+  roll(user: UserRef, requestId: string): Promise<void> {
     return this.run(async () => {
+      if (await this.resting(user)) return;
+      const ask = await q1<{ character_id: string; expression: string; reason: string; kind: RollKind }>(
+        `SELECT character_id, expression, reason, kind FROM roll_requests
+          WHERE id = $1 AND campaign_id = $2 AND status = 'pending'`,
+        [requestId, this.campaignId],
+      );
+      if (!ask) return this.tell(user.id, 'The DM is not waiting on that roll any more.');
       const chars = await pgStore.characters(this.campaignId);
-      const outcome = buildPlayerRoll(req, { userId: user.id, characters: chars });
+      const outcome = buildPlayerRoll(
+        { expression: ask.expression, reason: ask.reason, kind: ask.kind, characterId: ask.character_id },
+        { userId: user.id, characters: chars },
+      );
       if (!outcome.ok) return this.errorTo(user.id, outcome.code, outcome.message);
+      const seat = this.seatsOf(user.id).find((s) => s.characterId === ask.character_id);
+      if (!seat) return this.tell(user.id, 'Rejoin the table and try again.');
+      // Claimed before anything is posted, so a double tap cannot roll twice.
+      const claimed = await q1(
+        `UPDATE roll_requests SET status = 'rolled', closed_at = now() WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [requestId],
+      );
+      if (!claimed) return this.tell(user.id, 'That roll has already been made.');
+      const r = outcome.roll;
+      const faces = r.dice.map((d) => (d.kept ? String(d.value) : `~${d.value}~`)).join(', ');
+      // While the DM is resolving, the line waits for the next turn, and so does the roll.
+      const held = this.collector.phase === 'resolving';
+      await this.submit({
+        seat: seat.id,
+        userId: user.id,
+        text: `${seat.name} rolls ${r.reason || r.kind}: ${r.total} (${r.expression}: ${faces}).`,
+      });
       const ctx: TurnContext = {
         campaignId: this.campaignId,
         systemId: '',
-        turnId: this.turn?.id ?? null,
+        turnId: held ? null : (this.turn?.id ?? null),
         actors: [],
         citations: [],
         rolls: [],
         stateChanged: false,
       };
-      const id = await pgStore.recordRoll(ctx, outcome.roll);
-      this.broadcast({ type: 'roll', roll: { id, ...outcome.roll } });
+      const id = await pgStore.recordRoll(ctx, r);
+      await q('UPDATE roll_requests SET roll_id = $2 WHERE id = $1', [requestId, id]);
+      this.broadcast({ type: 'roll', roll: { id, ...r } });
+      this.broadcast({ type: 'state_changed' });
     });
+  }
+
+  /** Close the rolls the DM asked for that nobody made. Returns what they were. */
+  private async dropOpenRolls(): Promise<NonNullable<TurnInput['missedRolls']>> {
+    const rows = await q<{ name: string; expression: string; reason: string }>(
+      `UPDATE roll_requests r SET status = 'dropped', closed_at = now()
+         FROM characters c
+        WHERE c.id = r.character_id AND r.campaign_id = $1 AND r.status = 'pending'
+        RETURNING c.name, r.expression, r.reason`,
+      [this.campaignId],
+    );
+    if (rows.length) this.broadcast({ type: 'state_changed' });
+    return rows.map((r) => ({ characterName: r.name, expression: r.expression, reason: r.reason }));
   }
 
   /**
@@ -696,21 +762,29 @@ export class Room {
     return seat;
   }
 
+  /** Between sessions nobody acts. Tells the player why and returns true when that is so. */
+  private async resting(user: UserRef): Promise<boolean> {
+    if (await endIfStale(this.campaignId)) {
+      this.broadcast({ type: 'state_changed' });
+      this.tell(
+        user.id,
+        'It has been a while, so the last session was wrapped up. Read the recap and ready up; play resumes when the host starts the next one.',
+      );
+      return true;
+    }
+    if (await isResting(this.campaignId)) {
+      this.tell(
+        user.id,
+        'The session has ended. Ready up on the recap, and play resumes when the host starts the next one.',
+      );
+      return true;
+    }
+    return false;
+  }
+
   action(user: UserRef, text: string, characterId?: string): Promise<void> {
     return this.run(async () => {
-      if (await endIfStale(this.campaignId)) {
-        this.broadcast({ type: 'state_changed' });
-        return this.tell(
-          user.id,
-          'It has been a while, so the last session was wrapped up. Read the recap and ready up; play resumes when the host starts the next one.',
-        );
-      }
-      if (await isResting(this.campaignId)) {
-        return this.tell(
-          user.id,
-          'The session has ended. Ready up on the recap, and play resumes when the host starts the next one.',
-        );
-      }
+      if (await this.resting(user)) return;
       const mine = this.seatsOf(user.id);
       let seat: TurnSeat | undefined;
       if (characterId) {
@@ -831,6 +905,34 @@ export class Room {
     if (any) this.broadcast({ type: 'turn', turn: this.turnState() });
   }
 
+  /**
+   * This player sits the turn out, and says so in the story: each of their
+   * seats that has not acted gets "<name> does nothing this turn.", and then
+   * every seat of theirs is done. Works with no turn open, too: the line opens
+   * one, so a player can hand the scene back to the DM and the companions
+   * without having to think of something to do. Seats that already acted are
+   * simply done.
+   */
+  pass(user: UserRef): Promise<void> {
+    return this.run(async () => {
+      if (await this.resting(user)) return;
+      if (this.collector.phase === 'resolving') {
+        return this.tell(user.id, 'The DM is already working on this turn. Pass on the next one.');
+      }
+      const mine = this.seatsOf(user.id);
+      if (!mine.length) return this.tell(user.id, 'Rejoin the table and try again.');
+      for (const seat of mine) {
+        if (this.collector.hasActed(seat.id)) continue;
+        await this.submit({ seat: seat.id, userId: user.id, text: `${seat.name} does nothing this turn.` });
+        // The first line may have completed the turn already (a table of one).
+        if (this.collector.phase !== 'collecting') break;
+      }
+      let any = false;
+      for (const seat of mine) any = this.collector.finish(seat.id) || any;
+      if (any) this.broadcast({ type: 'turn', turn: this.turnState() });
+    });
+  }
+
   force(): void {
     this.collector.force();
   }
@@ -903,9 +1005,11 @@ export class Room {
   }
 
   /**
-   * Party members with an AI of their own take their turn. Each is asked
-   * separately and in parallel, sees only what its character could know, and
-   * may pass. A companion that fails or times out simply sits the turn out.
+   * Party members with an AI of their own take their turn, one after another
+   * (see companionOrder), so each sees what the players and the companions
+   * before it did and can play along instead of off on its own. Each is a
+   * separate call that knows only what its character could, and may pass. A
+   * companion that fails or runs out of time simply sits the turn out.
    */
   private async companions(
     turn: ActiveTurn,
@@ -923,41 +1027,42 @@ export class Room {
       pgStore.entities(this.campaignId),
     ]);
     const known = knownEntries(entities);
-    const replies = await Promise.all(
-      chars.map((character) =>
-        companionTurn({
-          llm,
-          campaign: info,
-          character,
-          story,
-          scene,
-          party,
-          known,
-          turn: input,
-          signal: AbortSignal.timeout(45_000),
-          onUsage: (usage, model) =>
-            recordUsage({
-              task: 'companion',
-              provider: llm.provider.name,
-              model,
-              keySource: llm.keySource,
-              campaignId: this.campaignId,
-              userIds: payers,
-              usage,
-            }),
-        }).catch((err) => {
-          log().warn(
-            { err, campaignId: this.campaignId, character: character.name },
-            'companion did not act',
-          );
-          return null;
-        }),
-      ),
-    );
     const out: TurnAction[] = [];
-    for (const [i, text] of replies.entries()) {
+    // One at a time keeps the table waiting longer, so the whole round has a budget too.
+    const until = Date.now() + COMPANIONS_BUDGET_MS;
+    for (const character of companionOrder(input, chars)) {
+      const left = Math.min(COMPANION_TIMEOUT_MS, until - Date.now());
+      if (left < 5_000) {
+        log().warn({ campaignId: this.campaignId, character: character.name }, 'companion out of time');
+        continue;
+      }
+      const text = await companionTurn({
+        llm,
+        campaign: info,
+        character,
+        story,
+        scene,
+        party,
+        known,
+        // The turn so far: the players' actions, then each companion that went before this one.
+        turn: { ...input, actions: [...input.actions, ...out] },
+        signal: AbortSignal.timeout(left),
+        onUsage: (usage, model) =>
+          recordUsage({
+            task: 'companion',
+            provider: llm.provider.name,
+            model,
+            keySource: llm.keySource,
+            campaignId: this.campaignId,
+            userIds: payers,
+            usage,
+          }),
+      }).catch((err) => {
+        log().warn({ err, campaignId: this.campaignId, character: character.name }, 'companion did not act');
+        return null;
+      });
       if (!text) continue;
-      const name = chars[i]!.name;
+      const name = character.name;
       const message = await insertMessage({
         campaignId: this.campaignId,
         sessionId: turn.sessionId,
@@ -1052,6 +1157,9 @@ export class Room {
           : [];
       }),
     };
+    // The DM moves on: rolls it asked for and nobody made are dropped, and it is told which.
+    const missed = await this.dropOpenRolls();
+    if (missed.length) input.missedRolls = missed;
 
     if (external) return this.awaitOutsideDm(turn, input, actors, campaign.system_id);
 
@@ -1077,6 +1185,7 @@ export class Room {
       rolls: [],
       stateChanged: false,
     };
+    const polishing = !!campaign.settings.polishWith;
     const llm = await resolveLlm('narration', campaign.owner_id);
     const prompt = await buildPrompt(info, input, ctx, pgStore);
 
@@ -1091,7 +1200,8 @@ export class Room {
       maxRounds: cfg.AGENT_MAX_TOOL_ROUNDS,
       maxTokens: cfg.LLM_MAX_OUTPUT_TOKENS,
       signal: AbortSignal.timeout(240_000),
-      onText: (text) => this.broadcast({ type: 'dm_delta', turnId: turn.id, text }),
+      // A draft that is about to be polished is not shown as it is written: the table would watch it change.
+      onText: polishing ? undefined : (text) => this.broadcast({ type: 'dm_delta', turnId: turn.id, text }),
       onTool: (tool, summary) => {
         this.broadcast({ type: 'dm_tool', turnId: turn.id, tool, summary });
         if (STATE_TOOLS.has(tool)) this.broadcast({ type: 'state_changed' });
@@ -1109,7 +1219,7 @@ export class Room {
         }),
     });
 
-    await this.publish(result.text, ctx, turn.sessionId, turn.id);
+    await this.publish(result.text, ctx, turn.sessionId, turn.id, playerLines(input));
     return true;
   }
 
@@ -1234,7 +1344,13 @@ export class Room {
   async narrateFromOutside(text: string): Promise<OutsideNarration> {
     const turn = this.desk.turn;
     if (turn?.claimed) {
-      const { redacted } = await this.publish(text, turn.ctx, turn.sessionId, turn.id);
+      const { redacted } = await this.publish(
+        text,
+        turn.ctx,
+        turn.sessionId,
+        turn.id,
+        playerLines(turn.input),
+      );
       this.loose = null;
       // resolve() picks up from here: marks the turn done and gives the floor back.
       this.desk.complete();
@@ -1266,16 +1382,35 @@ export class Room {
     return { kind: 'opening', redacted };
   }
 
-  /** Store and send a finished piece of narration, with anything secret blacked out. */
+  /**
+   * Store and send a finished piece of narration, with anything secret blacked
+   * out and, when the campaign names an AI to polish with, rewritten by it for
+   * style. `said` is what the players wrote this turn; their words are kept as
+   * they are (see polishNarration).
+   */
   private async publish(
     text: string,
     ctx: TurnContext,
     sessionId: string,
     turnId: string | null,
+    said: string[] = [],
   ): Promise<{ redacted: boolean }> {
-    const entities = await pgStore.entities(this.campaignId);
+    const [entities, polish] = await Promise.all([
+      pgStore.entities(this.campaignId),
+      polishSettings(this.campaignId),
+    ]);
     const secrets = entities.flatMap((e) => (e.secret && !e.secretRevealed ? [e.secret] : []));
     const safe = redactSecrets(text, secrets);
+    // Redacted first, so the other AI never sees a secret and cannot reword one past the redaction.
+    if (polish.with && safe.text.trim()) {
+      this.broadcast({
+        type: 'dm_tool',
+        turnId: turnId ?? OPENING,
+        tool: 'polish',
+        summary: `${polish.with} is polishing the narration`,
+      });
+      safe.text = (await polishNarration(polish.with, safe.text, said, polish.tone)).text;
+    }
     // Resolve [[name]] codex markers against the known world, after redaction so a
     // marker inside a withheld passage is gone before it can resolve.
     const { content, refs } = resolveRefs(safe.text || '…', entities);
@@ -1377,7 +1512,9 @@ export class Room {
       maxRounds: Math.max(cfg.AGENT_MAX_TOOL_ROUNDS, 12),
       maxTokens: cfg.LLM_MAX_OUTPUT_TOKENS,
       signal: AbortSignal.timeout(300_000),
-      onText: (text) => this.broadcast({ type: 'dm_delta', turnId: OPENING, text }),
+      onText: campaign.settings.polishWith
+        ? undefined
+        : (text) => this.broadcast({ type: 'dm_delta', turnId: OPENING, text }),
       onTool: (tool, summary) => this.broadcast({ type: 'dm_tool', turnId: OPENING, tool, summary }),
       onUsage: (usage, model) =>
         recordUsage({

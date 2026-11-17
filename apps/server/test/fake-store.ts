@@ -5,6 +5,7 @@ import type {
   GameStore,
   NoteRow,
   RecallHit,
+  RollAsk,
   StateEventInput,
   TurnContext,
 } from '../src/agent/store.js';
@@ -173,6 +174,12 @@ export class FakeStore implements GameStore {
   }
   async recall(_campaignId: string, _query: string, k: number) {
     return this.record.slice(0, k);
+  }
+  asks: (RollAsk & { turnId: string | null })[] = [];
+  async requestRoll(ctx: TurnContext, req: RollAsk) {
+    this.asks = this.asks.filter((a) => a.characterId !== req.characterId);
+    this.asks.push({ ...req, turnId: ctx.turnId });
+    return `ask-${this.asks.length}`;
   }
   async recordRoll() {
     return `roll-${Math.random().toString(36).slice(2, 8)}`;

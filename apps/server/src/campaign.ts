@@ -48,6 +48,8 @@ export interface CampaignPatch {
   gatherWindowSeconds?: number;
   sheets?: 'players' | 'gm';
   dm?: DmMode;
+  /** The outside AI that polishes the DM's narration, or '' for none. */
+  polishWith?: string;
   status?: 'active' | 'archived';
 }
 
@@ -58,6 +60,7 @@ export async function updateCampaign(campaignId: string, patch: CampaignPatch): 
   if (patch.gatherWindowSeconds !== undefined) settings.gatherWindowSeconds = patch.gatherWindowSeconds;
   if (patch.sheets !== undefined) settings.sheets = patch.sheets;
   if (patch.dm !== undefined) settings.dm = patch.dm;
+  if (patch.polishWith !== undefined) settings.polishWith = patch.polishWith;
   await q(
     `UPDATE campaigns SET name = coalesce($2, name), premise = coalesce($3, premise),
                           status = coalesce($4, status), settings = settings || $5::jsonb WHERE id = $1`,

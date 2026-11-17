@@ -223,6 +223,8 @@ const TOOL_LABEL: Record<string, string> = {
   search_documents: 'Consulting the campaign documents',
   edit_sheet: 'Updating a character sheet',
   search_setting: 'Drawing on the setting',
+  request_roll: 'Calling for a roll',
+  polish: 'Polishing the narration',
 };
 
 /** The reply in flight: tool activity first, then the words as they arrive. */

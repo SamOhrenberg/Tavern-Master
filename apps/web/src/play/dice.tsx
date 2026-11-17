@@ -1,23 +1,16 @@
-import type { Character, DiceRoll, RollKind } from '@tavern/protocol';
-import { useEffect, useRef, useState } from 'react';
-import { IconClose, IconD20 } from '../icons';
+import type { DiceRoll, RollKind, RollRequest } from '@tavern/protocol';
+import { useEffect, useState } from 'react';
+import { IconD20 } from '../icons';
 import { RollChip } from './story';
 
-export interface RollReq {
-  expression: string;
-  reason?: string;
-  characterId?: string;
-  kind?: RollKind;
-}
-
-const DICE = [4, 6, 8, 10, 12, 20, 100];
-const KINDS: { value: RollKind; label: string }[] = [
-  { value: 'check', label: 'Check' },
-  { value: 'attack', label: 'To hit' },
-  { value: 'damage', label: 'Damage' },
-  { value: 'save', label: 'Save' },
-  { value: 'initiative', label: 'Init' },
-];
+const KIND_LABEL: Record<RollKind, string> = {
+  check: 'a check',
+  attack: 'an attack',
+  damage: 'damage',
+  save: 'a saving throw',
+  initiative: 'initiative',
+  other: 'a roll',
+};
 
 const reduceMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -67,115 +60,46 @@ export function AnimatedRoll({ roll }: { roll: DiceRoll }) {
 }
 
 /**
- * A player's own dice. A quick d20, or a popover for any common die, a free
- * expression, what the roll is for, and an optional reason. The result is sent
- * to the server, which rolls and broadcasts it to the whole table.
+ * The rolls the DM has asked this player to make, and nothing otherwise:
+ * players roll only when asked. Each shows who rolls, what for and the dice;
+ * the server rolls exactly that expression, and the result goes into the turn
+ * as the character's action so the DM reads it.
  */
 export function DiceTray({
-  character,
+  requests,
   onRoll,
 }: {
-  /** The character the roll is attributed to, if the player runs one. */
-  character: Character | undefined;
-  onRoll: (req: RollReq) => boolean;
+  /** Open roll requests for characters this player runs. */
+  requests: RollRequest[];
+  onRoll: (requestId: string) => boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [expr, setExpr] = useState('1d20');
-  const [reason, setReason] = useState('');
-  const [kind, setKind] = useState<RollKind>('check');
-  const panel = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (panel.current && !panel.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
-  const fire = (expression: string, k: RollKind, why: string) => {
-    if (!expression.trim()) return;
-    if (onRoll({ expression, reason: why.trim() || undefined, characterId: character?.id, kind: k })) {
-      setOpen(false);
-      setReason('');
-    }
-  };
-
+  // Sent but not yet confirmed: the button stays disabled so a double tap cannot fire twice.
+  const [sent, setSent] = useState<string[]>([]);
+  const open = requests.filter((r) => !sent.includes(r.id));
+  if (!open.length) return null;
   return (
-    <div className="dice-tray" ref={panel}>
-      {open && (
-        <div className="dice-pop" role="dialog" aria-label="Roll dice">
-          <div className="dice-pop-head">
-            <span>Roll{character ? ` as ${character.name}` : ''}</span>
-            <button type="button" className="icon-btn sm" onClick={() => setOpen(false)} aria-label="Close">
-              <IconClose />
-            </button>
+    <div className="dice-tray" role="region" aria-label="Rolls the DM asked for">
+      {open.map((r) => (
+        <div key={r.id} className="roll-ask">
+          <div className="grow roll-ask-text">
+            <b>{r.characterName}</b>, the DM asks for a roll: {r.reason || KIND_LABEL[r.kind]}{' '}
+            <span className="mono muted">{r.expression}</span>
           </div>
-          <div className="dice-grid">
-            {DICE.map((sides) => (
-              <button key={sides} type="button" className="die-btn" onClick={() => setExpr(`1d${sides}`)}>
-                d{sides}
-              </button>
-            ))}
-          </div>
-          <input
-            className="dice-expr"
-            value={expr}
-            onChange={(e) => setExpr(e.target.value)}
-            placeholder="e.g. 2d6+3"
-            maxLength={64}
-            aria-label="Dice expression"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-          <div className="dice-kinds" role="radiogroup" aria-label="What the roll is for">
-            {KINDS.map((k) => (
-              <button
-                key={k.value}
-                type="button"
-                role="radio"
-                aria-checked={kind === k.value}
-                className={kind === k.value ? 'on' : ''}
-                onClick={() => setKind(k.value)}
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
-          <input
-            className="dice-reason"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="Reason (optional)"
-            maxLength={120}
-            aria-label="Reason"
-          />
-          <button type="button" className="btn block" onClick={() => fire(expr, kind, reason)}>
-            Roll {expr || 'dice'}
+          <button
+            type="button"
+            className="btn sm primary roll-quick"
+            onClick={() => {
+              if (!onRoll(r.id)) return;
+              setSent((s) => [...s, r.id]);
+              // Normally the request is gone by then; if the server turned the roll down, it is back.
+              window.setTimeout(() => setSent((s) => s.filter((x) => x !== r.id)), 6000);
+            }}
+          >
+            <IconD20 />
+            Roll
           </button>
         </div>
-      )}
-      <div className="dice-bar">
-        <button type="button" className="btn sm roll-quick" onClick={() => fire('1d20', 'check', '')}>
-          <IconD20 />
-          Roll d20
-        </button>
-        <button
-          type="button"
-          className="btn sm ghost"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
-          More dice
-        </button>
-      </div>
+      ))}
     </div>
   );
 }

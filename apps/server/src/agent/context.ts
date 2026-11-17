@@ -19,6 +19,8 @@ export interface TurnInput {
   number: number;
   actions: TurnAction[];
   passed: { displayName: string; characterName: string | null }[];
+  /** Rolls the DM asked for with request_roll that were not made before this turn closed. */
+  missedRolls?: { characterName: string; expression: string; reason: string }[];
 }
 
 export interface CampaignInfo {
@@ -37,6 +39,8 @@ export interface CampaignInfo {
   gmInstructions?: string;
   /** Other AIs the GM can ask with ask_ai, and what each is good for. */
   outsideAis?: { name: string; note: string }[];
+  /** The outside AI that rewrites the GM's narration for style before players see it, if any. */
+  polishWith?: string;
 }
 
 /** The admin's instructions for this system, and the other AIs the GM can ask. */
@@ -48,6 +52,10 @@ function systemExtras(c: CampaignInfo): string {
     parts.push(`## Other AIs you can ask
 With ask_ai you can have another AI write a piece for you when it does that better than you, as the instructions for this game system say. It knows nothing about the campaign except what you put in your request, so give it every name, number and fact it needs, and the style and length you want. Treat its answer as a draft: check it against the state and the rules, then use it in your narration. The players see that you asked, not what came back.
 ${list}`);
+  }
+  if (c.polishWith?.trim()) {
+    parts.push(`## Your narration is polished
+Before the players see it, each piece of narration you write is rewritten for style by another writer (${c.polishWith.trim()}), who keeps every event and fact you wrote. Write the substance well and leave the flourishes to them. When a player character speaks in your narration, quote the player's words exactly as they wrote them, in quotation marks: those quotes, codex links and rule citations reach the table untouched.`);
   }
   if (c.gmInstructions?.trim()) {
     parts.push(`## Instructions for this game system
@@ -115,6 +123,11 @@ export function renderTurn(t: TurnInput): string {
     const who = p.characterName ? ` character="${escapeXml(p.characterName)}"` : '';
     lines.push(`  <pass player="${escapeXml(p.displayName)}"${who}/>`);
   }
+  for (const m of t.missedRolls ?? []) {
+    lines.push(
+      `  <roll_not_made character="${escapeXml(m.characterName)}">${escapeXml(`${m.reason} (${m.expression})`)}</roll_not_made>`,
+    );
+  }
   lines.push('</turn>');
   return lines.join('\n');
 }
@@ -139,7 +152,10 @@ The <state> block lists every party member and who speaks for them.
 When the party splits up, record who is where with set_whereabouts, and call it with together once they regroup. A character with a where="…" in <state> is away from the current scene. Companions with their own AI see only the actions of those in the same place, so they rely on this. Resolve each group's actions in its own place, say where each part of your narration happens, and never let characters react to what happens where they are not.
 
 ## Dice
-Whenever the rules or the fiction call for a roll, use the roll_dice tool. Results come from the server and are shown to the players alongside your narration, so a number you make up would visibly contradict the record. Say what a roll is for, apply modifiers from the character's sheet, and narrate the result you were given, good or bad.
+Whenever the rules or the fiction call for a roll, the dice come from the server, never from you. Results are shown to the players, so a number you make up would visibly contradict the record.
+- A roll a player character makes (an ability check, a saving throw, their own attack or damage) is the player's to roll. Ask for it with request_roll, putting the modifier from their sheet in the expression, and end your narration at the moment the roll decides: say what they are rolling and why. The result arrives as their action in the next turn; narrate what it means then. Only that player is shown the dice, and only when you ask.
+- Roll everything else yourself with roll_dice: non-player characters, companions, and rolls the players must not see coming. Say what a roll is for and narrate the result you were given, good or bad.
+- A <roll_not_made> in a turn is a roll you asked for that the player did not make before the turn closed. Decide what that means in the fiction, or ask again.
 
 ## Rules
 Before adjudicating something the rulebooks cover (an attack, a spell, a condition, a skill check), search with lookup_rules. When a passage informs your ruling, cite it inline with its marker, like [R1]. If the search finds nothing relevant, make a fair ruling and say it is a ruling rather than citing a rule that was not returned.

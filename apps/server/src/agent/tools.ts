@@ -97,6 +97,50 @@ export const TOOLS: ToolSpec[] = [
   }),
 
   tool({
+    name: 'request_roll',
+    description:
+      'Ask the player of a player-run character to make a roll themselves: a check, save, attack or damage ' +
+      'roll their character makes. Only that player is shown the dice, the server rolls exactly the expression ' +
+      'you give (put their modifier in it), and the result reaches you as their action next turn. After asking, ' +
+      'end your narration at the moment the roll decides and tell them what to roll. One open request per ' +
+      'character; asking again replaces it. Roll for non-player characters and companions with roll_dice.',
+    schema: z.object({
+      character: name.describe('The player character who makes the roll'),
+      expression: z.string().trim().min(1).max(64).describe('Dice notation with the modifier, e.g. 1d20+5'),
+      reason: z.string().trim().min(1).max(120).describe('What the roll is for, e.g. "Stealth check"'),
+      kind: z
+        .enum(['attack', 'damage', 'check', 'save', 'initiative', 'other'])
+        .default('check')
+        .describe('attack=to hit, damage, check, save, initiative'),
+    }),
+    async run(input, ctx, store) {
+      try {
+        // Checked now, so a bad expression is the DM's to fix rather than the player's.
+        roll(input.expression, () => 1);
+      } catch (err) {
+        if (err instanceof DiceError) throw new ToolError(err.message);
+        throw err;
+      }
+      const c = await findCharacter(store, ctx, input.character);
+      if (c.controller !== 'player' || !c.playerIds.length) {
+        throw new ToolError(`${c.name} is not played by anyone at the table. Roll for them with roll_dice.`);
+      }
+      await store.requestRoll(ctx, {
+        characterId: c.id,
+        expression: input.expression,
+        reason: input.reason,
+        kind: input.kind,
+      });
+      ctx.stateChanged = true;
+      return (
+        `Asked ${c.name}'s player to roll ${input.expression} for ${input.reason}. They will see the dice ` +
+        'in the app; the result comes back to you as their action next turn. End your narration where the roll ' +
+        `decides and tell ${c.name} what to roll.`
+      );
+    },
+  }),
+
+  tool({
     name: 'lookup_rules',
     description:
       "Search this campaign's rulebooks. Use it before adjudicating anything the rules cover. Results are numbered " +

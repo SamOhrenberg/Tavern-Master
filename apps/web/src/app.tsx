@@ -129,7 +129,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={notify}>
       {children}
-      <div className="toasts" role="status" aria-live="polite">
+      {/* Left out of feedback screenshots. */}
+      <div className="toasts" role="status" aria-live="polite" data-feedback-hide="">
         {toasts.map((t) => (
           <div key={t.id} className={`toast${t.error ? ' error' : ''}`}>
             {t.text}

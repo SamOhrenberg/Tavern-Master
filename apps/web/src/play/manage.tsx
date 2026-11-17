@@ -71,6 +71,10 @@ export function ManageSheet({
   const [tone, setTone] = useState(c.settings.tone);
   const [windowSeconds, setWindowSeconds] = useState(c.settings.gatherWindowSeconds);
   const [sheets, setSheets] = useState(c.settings.sheets);
+  const [polishWith, setPolishWith] = useState(c.settings.polishWith ?? '');
+  // Polishing needs another AI an admin set up; keep showing a choice that was made before one was removed.
+  const polishers = meta?.outsideAis ?? [];
+  const canPolish = polishers.length > 0 || !!polishWith;
   const prep = c.phase === 'prep';
 
   const invitable = (friends.data?.friends ?? []).filter(
@@ -85,7 +89,14 @@ export function ManageSheet({
     void run(async () => {
       await api(`/campaigns/${c.id}`, {
         method: 'PATCH',
-        body: { name, premise, tone, gatherWindowSeconds: windowSeconds, sheets },
+        body: {
+          name,
+          premise,
+          tone,
+          gatherWindowSeconds: windowSeconds,
+          sheets,
+          ...(canPolish ? { polishWith } : {}),
+        },
       });
       onChanged();
     }, 'Campaign updated');
@@ -305,6 +316,28 @@ export function ManageSheet({
                 <option value="gm">The DM keeps them</option>
               </select>
             </Field>
+            {canPolish && (
+              <Field
+                label="Polish the narration"
+                hint={
+                  polishWith
+                    ? `The DM writes each scene, then ${polishWith} rewrites it for style before the table sees it. What players wrote is kept word for word.`
+                    : 'The DM’s narration goes to the table as the DM writes it.'
+                }
+              >
+                <select className="select" value={polishWith} onChange={(e) => setPolishWith(e.target.value)}>
+                  <option value="">Off</option>
+                  {!polishers.some((n) => n.toLowerCase() === polishWith.toLowerCase()) && polishWith && (
+                    <option value={polishWith}>{polishWith} (no longer set up)</option>
+                  )}
+                  {polishers.map((n) => (
+                    <option key={n} value={n}>
+                      With {n}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <button type="submit" className="btn block" disabled={busy}>
               Save changes
             </button>

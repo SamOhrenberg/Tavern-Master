@@ -58,6 +58,55 @@ describe('tool dispatch', () => {
     });
   });
 
+  it('asks a player to make their own roll, and only for a player-run character', async () => {
+    const store = new FakeStore();
+    store.chars = [
+      character({ id: 'c1', name: 'Thorn', playerIds: ['u-ann'] }),
+      character({ id: 'c4', name: 'Pip', kind: 'npc', controller: 'agent' }),
+    ];
+    const ctx = context({ turnId: 't-1' });
+    const out = await dispatchTool(
+      'request_roll',
+      { character: 'Thorn', expression: '1d20+3', reason: 'Stealth check', kind: 'check' },
+      ctx,
+      store,
+    );
+    expect(out.isError).toBe(false);
+    expect(out.content).toContain("Asked Thorn's player to roll 1d20+3 for Stealth check");
+    expect(store.asks).toEqual([
+      { characterId: 'c1', expression: '1d20+3', reason: 'Stealth check', kind: 'check', turnId: 't-1' },
+    ]);
+    // Nothing is rolled now: the player rolls it.
+    expect(ctx.rolls).toHaveLength(0);
+    expect(ctx.stateChanged).toBe(true);
+
+    // Asking again replaces the open request.
+    await dispatchTool(
+      'request_roll',
+      { character: 'Thorn', expression: '1d20+1', reason: 'Dex save', kind: 'save' },
+      ctx,
+      store,
+    );
+    expect(store.asks.map((a) => a.reason)).toEqual(['Dex save']);
+
+    // A companion has no player to roll for it, and bad dice are the DM's to fix.
+    const pip = await dispatchTool(
+      'request_roll',
+      { character: 'Pip', expression: '1d20', reason: 'Look' },
+      ctx,
+      store,
+    );
+    expect(pip.isError).toBe(true);
+    expect(pip.content).toContain('roll_dice');
+    const bad = await dispatchTool(
+      'request_roll',
+      { character: 'Thorn', expression: 'lots', reason: 'x' },
+      ctx,
+      store,
+    );
+    expect(bad.isError).toBe(true);
+  });
+
   it('defaults a roll with no kind to "other"', async () => {
     const ctx = context();
     await dispatchTool(

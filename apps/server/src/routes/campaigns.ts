@@ -7,6 +7,7 @@ import type {
   Entity,
   GameState,
   Recap,
+  RollKind,
 } from '@tavern/protocol';
 import { rm } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
@@ -36,6 +37,7 @@ import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
 import { requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
+import { findOutsideAi } from '../llm/outside.js';
 import { usageTotals } from '../llm/usage.js';
 import { editMessage, listMessages } from '../realtime/messages.js';
 import { dmStatusOf, getRoom, openRoom } from '../realtime/room.js';
@@ -65,6 +67,8 @@ const patchSchema = z.object({
   gatherWindowSeconds: z.union([z.literal(0), z.number().int().min(5).max(600)]).optional(),
   sheets: z.enum(['players', 'gm']).optional(),
   dm: z.enum(['server', 'claude']).optional(),
+  // The name of an outside AI to polish narration with; '' turns it off.
+  polishWith: z.string().trim().max(80).optional(),
   status: z.enum(['active', 'archived']).optional(),
 });
 function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
@@ -73,6 +77,7 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
     tone: raw.tone ?? '',
     sheets: raw.sheets === 'gm' ? 'gm' : 'players',
     dm: dmModeOf(raw),
+    polishWith: typeof raw.polishWith === 'string' ? raw.polishWith : '',
   };
 }
 
@@ -168,6 +173,11 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const body = parse(patchSchema, req.body);
     if (body.dm === 'server' && !(await builtInAiFor(auth.user.id)))
       throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
+    if (body.polishWith) {
+      const ai = await findOutsideAi(body.polishWith);
+      if (!ai) throw badRequest(`No other AI called "${body.polishWith}" is set up on this server.`);
+      body.polishWith = ai.name;
+    }
     await updateCampaign(campaignId, body);
     const room = getRoom(campaignId);
     if (body.dm === 'server') {
@@ -541,7 +551,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     '/api/campaigns/:id/state',
     async (req): Promise<{ state: GameState }> => {
       const { auth, campaignId } = await requireMember(req);
-      const [chars, entities, flags, scene, events, notes] = await Promise.all([
+      const [chars, entities, flags, scene, events, notes, asks] = await Promise.all([
         pgStore.characters(campaignId),
         pgStore.entities(campaignId),
         pgStore.flags(campaignId),
@@ -554,6 +564,19 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           `SELECT c.id, c.private_notes FROM characters c JOIN character_players p ON p.character_id = c.id
             WHERE c.campaign_id = $1 AND p.user_id = $2`,
           [campaignId, auth.user.id],
+        ),
+        q<{
+          id: string;
+          character_id: string;
+          name: string;
+          expression: string;
+          reason: string;
+          kind: RollKind;
+        }>(
+          `SELECT r.id, r.character_id, c.name, r.expression, r.reason, r.kind
+             FROM roll_requests r JOIN characters c ON c.id = r.character_id
+            WHERE r.campaign_id = $1 AND r.status = 'pending' ORDER BY r.created_at`,
+          [campaignId],
         ),
       ]);
       const myNotes = new Map(notes.map((n) => [n.id, n.private_notes]));
@@ -589,6 +612,14 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
             tool: e.tool,
             summary: e.summary,
             createdAt: e.created_at.toISOString(),
+          })),
+          rollRequests: asks.map((r) => ({
+            id: r.id,
+            characterId: r.character_id,
+            characterName: r.name,
+            expression: r.expression,
+            reason: r.reason,
+            kind: r.kind,
           })),
         },
       };

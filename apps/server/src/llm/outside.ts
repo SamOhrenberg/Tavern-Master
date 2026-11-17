@@ -48,7 +48,7 @@ export async function listOutsideAis(): Promise<OutsideAiListing[]> {
   return q<OutsideAiListing>('SELECT name, note FROM outside_ais ORDER BY lower(name)');
 }
 
-async function findOutsideAi(name: string): Promise<OutsideAi | null> {
+export async function findOutsideAi(name: string): Promise<OutsideAi | null> {
   const row = await q1<{
     name: string;
     provider: OutsideProvider;
@@ -85,8 +85,11 @@ export async function callOutsideAi(
   ai: OutsideAi,
   request: string,
   fetchImpl: typeof fetch = fetch,
+  opts: { system?: string; timeoutMs?: number; maxChars?: number } = {},
 ): Promise<string> {
-  const signal = AbortSignal.timeout(TIMEOUT_MS);
+  const system = opts.system ?? SYSTEM;
+  const maxChars = opts.maxChars ?? MAX_ANSWER_CHARS;
+  const signal = AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS);
   let text: string;
   let cut = false;
   if (ai.provider === 'gemini') {
@@ -95,7 +98,7 @@ export async function callOutsideAi(
       signal,
       headers: { 'content-type': 'application/json', 'x-goog-api-key': ai.apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
+        systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: request }] }],
         generationConfig: {
           maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -133,7 +136,7 @@ export async function callOutsideAi(
       body: JSON.stringify({
         model: ai.model,
         messages: [
-          { role: 'system', content: SYSTEM },
+          { role: 'system', content: system },
           { role: 'user', content: request },
         ],
         [cap]: MAX_OUTPUT_TOKENS,
@@ -153,7 +156,7 @@ export async function callOutsideAi(
     );
   }
   if (!text) throw new OutsideAiError('it returned nothing');
-  return text.length > MAX_ANSWER_CHARS ? `${text.slice(0, MAX_ANSWER_CHARS)}…` : text;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
 /**

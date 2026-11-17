@@ -66,6 +66,8 @@ export function publicSummary(tool: string, input: unknown, result: string): str
       return 'Tidied the codex';
     case 'clear_flag':
       return 'Updated the story record';
+    case 'request_roll':
+      return `Asked ${String((input as { character?: unknown })?.character ?? 'a player').slice(0, 80)} for a roll`;
     case 'ask_ai':
       // The answer is the GM's to use in its narration, so it is not shown here.
       return `Asked ${String((input as { ai?: unknown })?.ai ?? 'another AI').slice(0, 40)} for help`;

@@ -372,113 +372,43 @@
   }
 }
 
+/* Shown only to the player whose character the DM asked to roll. */
 .dice-tray {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 8px;
 }
-.dice-bar {
+.roll-ask {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 185, 101, 0.45);
+  border-radius: var(--r-md);
+  background: var(--gold-wash);
+  animation: rise 0.25s var(--ease);
+}
+.roll-ask-text {
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.3;
+}
+.roll-ask-text b {
+  color: var(--gold-bright);
+}
+.roll-ask-text .mono {
+  font-size: 12.5px;
 }
 .roll-quick {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
 }
 .roll-quick svg {
   width: 16px;
   height: 16px;
-}
-.dice-pop {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow-pop);
-  animation: rise 0.18s var(--ease);
-}
-.dice-pop-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 13.5px;
-  font-weight: 650;
-  color: var(--text);
-}
-.dice-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 6px;
-}
-.die-btn {
-  min-height: 40px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-strong);
-  color: var(--text);
-  font: 650 13px var(--font-mono);
-}
-.die-btn:active {
-  background: var(--gold-wash);
-}
-.dice-expr {
-  width: 100%;
-  min-height: 42px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  font: 650 15px var(--font-mono);
-}
-.dice-expr:focus,
-.dice-reason:focus {
-  outline: none;
-  border-color: rgba(230, 185, 101, 0.5);
-}
-.dice-kinds {
-  display: flex;
-  gap: 6px;
-}
-.dice-kinds button {
-  flex: 1;
-  min-height: 34px;
-  padding: 0 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-strong);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-.dice-kinds button.on {
-  border-color: rgba(230, 185, 101, 0.5);
-  background: var(--gold-wash);
-  color: var(--gold-bright);
-}
-.dice-reason {
-  width: 100%;
-  min-height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 14px;
-}
-@media (min-width: 560px) {
-  .dice-pop {
-    left: auto;
-    width: 340px;
-  }
 }
 
 .sources {
@@ -813,6 +743,12 @@
   gap: 10px;
   padding: 2px 4px 10px;
   animation: rise 0.3s var(--ease);
+}
+/* Between turns the bar only offers Pass, so it stays quiet and does not animate in after every scene. */
+.turnbar.idle {
+  padding-top: 0;
+  animation: none;
+  color: var(--muted);
 }
 .turn-people {
   display: flex;

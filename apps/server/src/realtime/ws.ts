@@ -11,13 +11,8 @@ const text = z.string().trim().min(1).max(2000);
 const clientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('action'), text, characterId: z.string().uuid().optional() }),
   z.object({ type: z.literal('ooc'), text }),
-  z.object({
-    type: z.literal('roll'),
-    expression: z.string().trim().min(1).max(64),
-    reason: z.string().trim().max(120).optional(),
-    characterId: z.string().uuid().optional(),
-    kind: z.enum(['attack', 'damage', 'check', 'save', 'initiative', 'other']).optional(),
-  }),
+  // Players roll only what the DM asked for; the server knows the dice.
+  z.object({ type: z.literal('roll'), requestId: z.string().uuid() }),
   z.object({ type: z.literal('done') }),
   z.object({ type: z.literal('pass') }),
   z.object({ type: z.literal('force') }),
@@ -123,14 +118,20 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
                 message: 'You are rolling too quickly.',
               });
             }
-            await room.roll(user, {
-              expression: msg.expression,
-              reason: msg.reason,
-              characterId: msg.characterId,
-              kind: msg.kind,
-            });
-          } else if (msg.type === 'done' || msg.type === 'pass') {
+            await room.roll(user, msg.requestId);
+          } else if (msg.type === 'done') {
             room.done(user);
+          } else if (msg.type === 'pass') {
+            // Passing writes a line into the turn and can open one, so it counts as an action.
+            const limit = rateLimiters().llm.take(`user:${user.id}`);
+            if (!limit.ok) {
+              return send({
+                type: 'error',
+                code: 'rate_limited',
+                message: `Slow down a little. Try again in ${limit.retryAfter}s.`,
+              });
+            }
+            await room.pass(user);
           } else if (msg.type === 'force') {
             if (role !== 'owner')
               return send({

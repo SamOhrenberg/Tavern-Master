@@ -4,6 +4,7 @@ import {
   addressedBy,
   addressHint,
   companionAction,
+  companionOrder,
   companionPrompt,
   companionSystem,
   companionTurn,
@@ -385,7 +386,9 @@ describe('a companion with its own AI', () => {
   });
 
   it('appends a hint line to the turn about who addressed the companion', async () => {
-    expect(addressHint(turn, 'Pip')).toBe('No one addressed Pip this turn; act in the scene or PASS.');
+    expect(addressHint(turn, 'Pip')).toBe(
+      'No one addressed Pip this turn; join in with what the others are doing, or PASS if Pip has nothing to add.',
+    );
     const spoken = {
       number: 4,
       actions: [{ userId: 'u-ann', displayName: 'Ann', characterName: 'Thorn', text: 'Pip, watch the door' }],
@@ -406,9 +409,73 @@ describe('a companion with its own AI', () => {
       turn,
     });
     const sent = provider.requests[0]!.messages.map((m) => JSON.stringify(m.content)).join('\n');
-    expect(sent).toContain('No one addressed Pip this turn; act in the scene or PASS.');
+    expect(sent).toContain(
+      'No one addressed Pip this turn; join in with what the others are doing, or PASS if Pip has nothing to add.',
+    );
     // The default-addressing rule is stated in the system prompt too.
-    expect(companionSystem(campaign, pip)).toContain('not speaking to you');
+    expect(companionSystem(campaign, pip)).toContain('it is not said to Pip');
+    // And so is playing along with the table rather than off on its own.
+    expect(companionSystem(campaign, pip)).toContain('Play off it.');
+  });
+
+  it('takes companions one at a time: whoever was spoken to first, the rest shuffled', () => {
+    const gull = { name: 'Gull' };
+    const wren = { name: 'Wren' };
+    const pipC = { name: 'Pip' };
+    const quiet = { number: 2, actions: [], passed: [] };
+    // Nobody addressed: a shuffle (here a fixed one).
+    expect(companionOrder(quiet, [pipC, gull, wren], () => 0).map((c) => c.name)).toEqual([
+      'Gull',
+      'Wren',
+      'Pip',
+    ]);
+    expect(companionOrder(quiet, [pipC, gull, wren], () => 0.99).map((c) => c.name)).toEqual([
+      'Pip',
+      'Gull',
+      'Wren',
+    ]);
+    // Someone a player spoke to goes first, whatever the shuffle.
+    const spoken = {
+      number: 2,
+      actions: [{ userId: 'u', displayName: 'Ann', characterName: 'Thorn', text: 'Wren, cover me' }],
+      passed: [],
+    };
+    for (const r of [0, 0.5, 0.99]) expect(companionOrder(spoken, [pipC, gull, wren], () => r)[0]).toBe(wren);
+  });
+
+  it('shows a companion what the companions before it did this turn', () => {
+    const view = companionPrompt({
+      campaign,
+      character: pip,
+      party: [thornPc, pip],
+      known: [],
+      story: { summaries: '', recent: '' },
+      scene: '',
+      turn: {
+        number: 3,
+        actions: [
+          ...turn.actions,
+          {
+            userId: '',
+            displayName: COMPANION_LABEL,
+            characterName: 'Gull',
+            text: 'Gull raises her lantern.',
+          },
+        ],
+        passed: [],
+      },
+    });
+    expect(view.text).toContain('Gull raises her lantern.');
+    expect(view.text).toContain('Gull already took a turn before Pip; Pip goes now.');
+  });
+
+  it('tells the DM about a roll it asked for that was not made', () => {
+    const out = renderTurn({
+      ...turn,
+      missedRolls: [{ characterName: 'Thorn', expression: '1d20+3', reason: 'Stealth check' }],
+    });
+    expect(out).toContain('<roll_not_made character="Thorn">Stealth check (1d20+3)</roll_not_made>');
+    expect(systemPrompt(campaign)).toContain('request_roll');
   });
 
   it('may pass, and its reply is kept short', () => {

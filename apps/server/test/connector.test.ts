@@ -264,7 +264,8 @@ describe('connector instructions', () => {
     expect(guide).toContain('wait_for_work');
     expect(guide).not.toContain('take_turn');
     // Both ways of playing an own-AI companion: a blind subagent, or Claude itself.
-    expect(guide).toContain('start it once for each, in parallel');
+    expect(guide).toContain('wait for it to finish, then start it for the next');
+    expect(guide).not.toContain('in parallel');
     expect(guide).toContain('If you cannot start subagents');
   });
 

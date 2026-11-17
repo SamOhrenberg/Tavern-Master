@@ -149,3 +149,22 @@ export const IconDots = icon(
     <circle cx="18" cy="12" r="1.200" fill="currentColor" />
   </>,
 );
+export const IconFeedback = icon(
+  <>
+    <path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-7.5L7 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z" />
+    <path d="M12 8v3.5M12 13.8v.01" />
+  </>,
+);
+export const IconImage = icon(
+  <>
+    <rect x="3.5" y="5" width="17" height="14" rx="2" />
+    <circle cx="9" cy="10" r="1.6" />
+    <path d="M20.5 16l-5-5-8.5 8" />
+  </>,
+);
+export const IconScreen = icon(
+  <>
+    <rect x="6.5" y="2.5" width="11" height="19" rx="2.2" />
+    <path d="M10.5 18.5h3" />
+  </>,
+);

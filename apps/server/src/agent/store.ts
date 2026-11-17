@@ -5,6 +5,7 @@ import type {
   DiceRoll,
   EntityKind,
   InventoryItem,
+  RollKind,
   RuleHit,
 } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
@@ -101,6 +102,14 @@ export interface RecallHit {
   text: string;
 }
 
+/** A roll the DM asks a player to make for their character. */
+export interface RollAsk {
+  characterId: string;
+  expression: string;
+  reason: string;
+  kind: RollKind;
+}
+
 /** The persistence the GM's tools need. Tests swap in an in-memory version. */
 export interface GameStore {
   /** Library rulebooks of one system, plus that campaign's own house-rule documents. */
@@ -145,6 +154,11 @@ export interface GameStore {
   /** Search what was actually said and done in past play. */
   recall(campaignId: string, query: string, k: number): Promise<RecallHit[]>;
   recordRoll(ctx: TurnContext, roll: Omit<DiceRoll, 'id'>): Promise<string>;
+  /**
+   * Ask the players of a player-run character to make a roll. Replaces any
+   * request that character still has open. Returns the request's id.
+   */
+  requestRoll(ctx: TurnContext, req: RollAsk): Promise<string>;
   recordEvent(ctx: TurnContext, ev: StateEventInput): Promise<void>;
 }
 
@@ -419,6 +433,21 @@ export const pgStore: GameStore = {
         .join(', '),
       text: r.snippet,
     }));
+  },
+
+  async requestRoll(ctx, req) {
+    // One open request per character: a new one replaces what it was asked before.
+    await q(
+      `UPDATE roll_requests SET status = 'dropped', closed_at = now()
+        WHERE campaign_id = $1 AND character_id = $2 AND status = 'pending'`,
+      [ctx.campaignId, req.characterId],
+    );
+    const row = await q1<{ id: string }>(
+      `INSERT INTO roll_requests (campaign_id, character_id, expression, reason, kind, turn_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [ctx.campaignId, req.characterId, req.expression, req.reason, req.kind, ctx.turnId],
+    );
+    return row!.id;
   },
 
   async recordRoll(ctx, roll) {

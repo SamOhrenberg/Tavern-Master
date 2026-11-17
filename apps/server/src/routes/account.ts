@@ -12,6 +12,8 @@ import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
+import { feedbackTarget } from '../feedback/github.js';
+import { listOutsideAis } from '../llm/outside.js';
 import { usageTotals } from '../llm/usage.js';
 import { decryptSecret, encryptSecret } from '../security/crypto.js';
 import { displayNameSchema } from './auth.js';
@@ -57,14 +59,17 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
   /** What this server can do for you, for screens that offer a choice. */
   app.get('/api/meta', async (req): Promise<ServerMeta> => {
     const auth = requireUser(req);
-    const [builtInAi, connected] = await Promise.all([
+    const [builtInAi, connected, outside] = await Promise.all([
       builtInAiFor(auth.user.id),
       claudeConnected(auth.user.id),
+      listOutsideAis(),
     ]);
     return {
       builtInAi,
       connectorUrl: new URL(CONNECTOR_PATH, config().baseUrl).toString(),
       claudeConnected: connected,
+      outsideAis: outside.map((a) => a.name),
+      feedback: !!feedbackTarget(),
     };
   });
 

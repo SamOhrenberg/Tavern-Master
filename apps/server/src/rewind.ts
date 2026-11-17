@@ -150,6 +150,18 @@ async function rewindAfter(
       [campaignId, at.created_at],
       c,
     );
+    // Rolls the DM asked for after that point were never asked; ones answered or dropped since are open again.
+    await q(
+      `DELETE FROM roll_requests WHERE campaign_id = $1 AND created_at > $2`,
+      [campaignId, at.created_at],
+      c,
+    );
+    await q(
+      `UPDATE roll_requests SET status = 'pending', closed_at = NULL, roll_id = NULL
+        WHERE campaign_id = $1 AND closed_at > $2`,
+      [campaignId, at.created_at],
+      c,
+    );
     if (snap) {
       await q(
         `DELETE FROM state_events WHERE campaign_id = $1 AND (created_at > $3 OR turn_id IN ${gone})`,

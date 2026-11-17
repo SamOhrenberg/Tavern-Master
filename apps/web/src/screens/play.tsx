@@ -15,7 +15,8 @@ import { IconBack, IconChevron, IconDots, IconGavel, IconScroll, IconSparkle, Ic
 import { CastPanels, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
 import { Composer, TurnBar, type Mode } from '../play/composer';
-import { AnimatedRoll, DiceTray, type RollReq } from '../play/dice';
+import { FeedbackButton } from '../feedback/button';
+import { AnimatedRoll, DiceTray } from '../play/dice';
 import { MessageMenu } from '../play/history';
 import { ManageSheet } from '../play/manage';
 import { RecapView, TalkBox } from '../play/recap';
@@ -293,8 +294,10 @@ function Play({ id, campaign, state, template }: TableProps) {
     return ok;
   };
 
-  const roll = (req: RollReq): boolean => {
-    const ok = table.send({ type: 'roll', ...req });
+  // Rolls the DM asked for, for characters this player runs. Nobody else sees dice.
+  const asks = (game?.rollRequests ?? []).filter((r) => mine.some((ch) => ch.id === r.characterId));
+  const roll = (requestId: string): boolean => {
+    const ok = table.send({ type: 'roll', requestId });
     if (!ok) notify('Not connected to the table. Reconnecting…', 'error');
     else toBottom();
     return ok;
@@ -352,6 +355,26 @@ function Play({ id, campaign, state, template }: TableProps) {
           : `You and ${others} other${others > 1 ? 's' : ''} at the table`;
   // A turn is waiting for a Claude that is not there to take it.
   const stalled = claude && !table.stream && table.turn.status === 'resolving' && dmAbsent(dm);
+  // Nothing has been said yet and Claude writes the opening scene: say where that stands, live,
+  // instead of leaving the table looking at an empty story. Its tool calls show up as a stream.
+  const awaitingOpening =
+    claude &&
+    loaded &&
+    !archived &&
+    !resting &&
+    messages.length === 0 &&
+    rolls.length === 0 &&
+    table.turn.status === 'idle' &&
+    !table.stream;
+  const openingWait = !dmAbsent(dm)
+    ? 'Claude is at the table, preparing the opening scene…'
+    : owner
+      ? dm.state === 'never'
+        ? 'Waiting for Claude to join. Start the Dungeon Master from your Claude app; it writes the opening scene first.'
+        : 'Waiting for Claude. Start the Dungeon Master again from your Claude app to get the opening scene.'
+      : dm.state === 'never'
+        ? `Waiting for Claude to join. ${host} runs the Dungeon Master from their Claude app; the opening scene comes once it is here.`
+        : `Waiting for Claude to come back. ${host} runs the Dungeon Master from their Claude app.`;
 
   const giveBack = () =>
     run(async () => {
@@ -407,6 +430,7 @@ function Play({ id, campaign, state, template }: TableProps) {
             <IconGavel />
           </button>
         )}
+        <FeedbackButton />
         <button
           type="button"
           className="icon-btn"
@@ -447,10 +471,10 @@ function Play({ id, campaign, state, template }: TableProps) {
                   <IconSparkle />
                   <h2>{c.name}</h2>
                   <p className="story-lede">
-                    {claude
-                      ? 'Claude will write the opening scene when it is at the table.'
-                      : c.premise ||
-                        'Every tale starts with someone doing something. The Dungeon Master is listening.'}
+                    {c.premise ||
+                      (claude
+                        ? 'The story starts with an opening scene from the Dungeon Master.'
+                        : 'Every tale starts with someone doing something. The Dungeon Master is listening.')}
                   </p>
                   {!archived && !claude && (
                     <div className="stack tight">
@@ -490,6 +514,17 @@ function Play({ id, campaign, state, template }: TableProps) {
                 </>
               )}
               {table.stream && <LiveDm stream={table.stream} />}
+              {awaitingOpening && (
+                <LiveDm stream={{ turnId: 'opening', text: '', tools: [] }} waitingOn={openingWait}>
+                  {owner && dmAbsent(dm) && (
+                    <div className="give-back">
+                      <button type="button" className="btn sm ghost" onClick={() => setSettingUp(true)}>
+                        Claude setup
+                      </button>
+                    </div>
+                  )}
+                </LiveDm>
+              )}
               {!table.stream && table.turn.status === 'resolving' && (
                 <LiveDm
                   stream={{ turnId: '', text: '', tools: [] }}
@@ -552,9 +587,13 @@ function Play({ id, campaign, state, template }: TableProps) {
                   meId={me.id}
                   isOwner={c.role === 'owner'}
                   onDone={() => table.send({ type: 'done' })}
+                  onPass={() => {
+                    if (table.send({ type: 'pass' })) toBottom();
+                    else notify('Not connected to the table. Reconnecting…', 'error');
+                  }}
                   onForce={() => table.send({ type: 'force' })}
                 />
-                <DiceTray character={actingAs} onRoll={roll} />
+                <DiceTray requests={asks} onRoll={roll} />
                 <Composer
                   characters={mine}
                   companions={companions}

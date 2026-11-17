@@ -47,12 +47,20 @@ the party in structured state rather than in its memory.
   any OpenAI-compatible endpoint) with their own keys, and write standing GM
   instructions per game system, such as "ask Gemini to write every
   achievement". In play the DM, built-in or Claude, sends the request with
-  the `ask_ai` tool and works the answer into its narration.
+  the `ask_ai` tool and works the answer into its narration. A host can also
+  have one of them polish every scene: the DM writes the narration, the other
+  AI rewrites it for style, and what the players said stays word for word.
 - **Or let Claude run the whole table.** Choose Claude when you make a
   campaign and the host's Claude is every AI at it, on their own Claude plan:
   the Dungeon Master, the character guide, the sheet reader and the
   chronicler. Friends play in the app as usual. A server with no API key at
   all is a supported install.
+- **Feedback from inside the app.** A quiet icon in every screen's header
+  opens a sheet to report a bug, suggest an idea or say what you think, with
+  a screenshot of the page you were on or a picture from your device. Each
+  one becomes a GitHub issue on the repository you configure (with a
+  fine-grained token), and players follow its status and replies in the app.
+  Pictures stay on your server; the issue links to them for admins.
 - **Built for the open internet.** Invite-only sign-up, argon2id, TOTP,
   rate limiting, CSRF protection, strict headers, non-root read-only
   containers.
@@ -231,7 +239,11 @@ flowchart LR
 | LLM | a small provider interface with per-task models | swap providers by env var |
 
 **The DM is a tool-calling loop.** The model writes prose; everything that
-must be true is done by a tool. Dice are rolled by the server, rules come from
+must be true is done by a tool. Dice are rolled by the server. When a player
+character makes a roll, the DM asks for it with `request_roll`: only the
+players of that character are shown the dice, the server rolls the expression
+the DM set when they tap Roll, and the result joins the next turn as that
+character's action (a roll nobody made is dropped, and the DM is told). Rules come from
 retrieval scoped to the campaign's system, and characters, inventory, NPCs,
 quests and flags change only through validated writes that are logged and
 shown to the players. Player messages and uploaded documents are treated as
@@ -239,7 +251,9 @@ untrusted data: tools enforce campaign scoping and ownership themselves, so a
 prompt injection cannot do anything the tools do not allow.
 
 **Turns are "ready-or-timeout".** A turn opens on the first action. Players can
-send several messages, then tap Done (or Pass without acting). The turn closes
+send several messages, then tap Done. Pass is always there, even before anyone
+has acted: it puts "<character> does nothing this turn." in the story and
+finishes that player's turn, opening one if none is open. The turn closes
 when every present player is done or has passed, when the gather window
 expires (it can also be set to wait indefinitely), or when the owner sends it
 early. The server serialises the turn with each
@@ -260,7 +274,17 @@ character, so someone running two characters acts with each. A companion with
 its own AI is asked what it does in a separate model call that contains only
 its sheet, the story as the players have seen it and this turn's actions. None
 of the DM's notes, secrets or DM-only documents are in that call, so it cannot
-act on them. Its action then reaches the DM like a player's.
+act on them. Companions go one after another, after the players: one someone
+spoke to goes first, the rest in a random order, and each sees what the ones
+before it did, so they play along with the table instead of each doing
+something of its own. Their actions then reach the DM like a player's.
+
+**Polished narration.** A campaign can name one of the admin's other AIs to
+polish with. The DM's finished narration has secrets blacked out, then every
+line a player wrote, codex link and rule citation is swapped for a numbered
+marker before the draft goes to that AI for a rewrite. The markers are put
+back afterwards; if any is lost, repeated or invented, or the length strays
+far from the draft's, or the AI fails, the draft is posted as written.
 
 **Or Claude is every AI at the table.** A campaign's one switch is who its AI
 is. When it is Claude, the server calls no model for that campaign at all. A

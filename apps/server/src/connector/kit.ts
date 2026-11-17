@@ -61,9 +61,11 @@ Run the table.
 1. Call \`open_campaign\` and follow the instructions it returns.
 2. Call \`wait_for_work\`. Do what the result asks, then call it again. Repeat.
 3. When a turn lists companions with an AI of their own that have not acted, start the
-   \`companion\` subagent once for each, all at the same time. Give each one the character's
-   name and nothing else: no scene, no plans, no hints. When they finish, call \`wait_for_work\`
-   to read the turn again with their actions in it, then resolve it.
+   \`companion\` subagent for each, one at a time, in the order the turn lists them: wait for
+   one to finish before starting the next, so each sees what the ones before it did. Give each
+   one the character's name and nothing else: no scene, no plans, no hints. When they have all
+   finished, call \`wait_for_work\` to read the turn again with their actions in it, then
+   resolve it.
 4. Write nothing between calls. No status lines, no summaries.
 5. Never leave a turn or a request half done: narrate a turn you claimed, finish or \`skip_work\`
    a request you were given.

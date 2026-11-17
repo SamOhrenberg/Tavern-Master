@@ -20,6 +20,7 @@ import { accountRoutes } from './routes/account.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
 import { campaignRoutes } from './routes/campaigns.js';
+import { feedbackRoutes } from './routes/feedback.js';
 import { friendRoutes } from './routes/friends.js';
 import { partyRoutes } from './routes/party.js';
 import { rulesRoutes } from './routes/rules.js';
@@ -107,6 +108,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(realtimeRoutes);
   await app.register(connectorRoutes);
   await app.register(oauthRoutes);
+  await app.register(feedbackRoutes);
 
   await registerSpa(app);
   return app;

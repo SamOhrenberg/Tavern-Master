@@ -4,6 +4,7 @@ import { NavLink, Navigate, Outlet, Route, Routes, useOutletContext } from 'reac
 import { api } from './api';
 import { useAuth, useQuery } from './app';
 import { IconBook, IconCampfire, IconCog, IconShield, IconUsers } from './icons';
+import { FeedbackProvider } from './feedback/sheet';
 import { AdminScreen } from './screens/admin';
 import { AuthScreen } from './screens/auth';
 import { CampaignsScreen } from './screens/campaigns';
@@ -103,6 +104,14 @@ export function AppRoutes() {
   if (me === undefined) return <Splash />;
   if (!me) return <AuthScreen />;
   return (
+    <FeedbackProvider>
+      <AppRoutesInner admin={me.role === 'admin'} />
+    </FeedbackProvider>
+  );
+}
+
+function AppRoutesInner({ admin }: { admin: boolean }) {
+  return (
     <Routes>
       <Route path="/c/:id" element={<PlayScreen />} />
       <Route path="/connect" element={<ConnectScreen />} />
@@ -112,7 +121,7 @@ export function AppRoutes() {
         <Route path="library" element={<LibraryScreen />} />
         <Route path="library/:id" element={<SystemScreen />} />
         <Route path="you" element={<SettingsScreen />} />
-        <Route path="admin" element={me.role === 'admin' ? <AdminScreen /> : <Navigate to="/" replace />} />
+        <Route path="admin" element={admin ? <AdminScreen /> : <Navigate to="/" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

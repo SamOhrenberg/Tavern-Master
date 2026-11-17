@@ -633,3 +633,143 @@
   border-color: rgba(255, 122, 122, 0.45);
   color: #ffc4c4;
 }
+
+/* ---------- feedback ---------- */
+/* Quieter than the header's other icons: there when you look for it, out of the way otherwise. */
+.feedback-btn {
+  position: relative;
+  color: var(--muted);
+}
+.feedback-btn svg {
+  width: 21px;
+  height: 21px;
+}
+.feedback-dot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.feedback-attach {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.feedback-attach .btn {
+  justify-content: flex-start;
+}
+.feedback-attach .btn svg {
+  width: 18px;
+  height: 18px;
+}
+.feedback-thumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 4px 6px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.feedback-thumb img {
+  width: 48px;
+  height: 64px;
+  flex: none;
+  object-fit: cover;
+  object-position: top;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.feedback-thumb .icon-btn {
+  width: 36px;
+  height: 36px;
+}
+.feedback-thumb .icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.feedback-card {
+  padding: 0;
+  overflow: hidden;
+}
+.feedback-card.new {
+  border-color: rgba(230, 185, 101, 0.45);
+}
+.feedback-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 12px 14px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.feedback-card-head > .grow {
+  min-width: 0;
+}
+.feedback-card-meta {
+  display: block;
+  margin-bottom: 2px;
+}
+.feedback-card-title {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.feedback-chev {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.2s;
+}
+.feedback-chev.up {
+  transform: rotate(180deg);
+}
+.feedback-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 12px;
+}
+.feedback-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+.feedback-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.feedback-images {
+  display: flex;
+  gap: 8px;
+}
+.feedback-images img {
+  width: 72px;
+  height: 96px;
+  object-fit: cover;
+  object-position: top;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.feedback-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feedback-reply {
+  padding: 10px 12px;
+  border-left: 2px solid var(--gold);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--surface);
+}

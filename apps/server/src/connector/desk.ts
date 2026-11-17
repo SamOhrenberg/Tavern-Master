@@ -12,6 +12,8 @@ export interface DeskTurn {
   claimed: boolean;
   /** Companions with an AI of their own that have acted (or passed) in this turn. */
   companionsActed?: string[];
+  /** The order those companions take their turns in, chosen once when the turn is first shown. */
+  companionOrder?: string[];
 }
 
 type Timer = (fn: () => void, ms: number) => { cancel(): void };

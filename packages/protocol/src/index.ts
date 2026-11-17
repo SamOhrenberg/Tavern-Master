@@ -205,6 +205,12 @@ export interface CampaignSettings {
    * and then the server calls no model for this campaign at all.
    */
   dm: DmMode;
+  /**
+   * The name of another AI (one an admin added, such as Gemini) that rewrites
+   * the DM's narration for style before the table sees it, or '' for none.
+   * What the players wrote is never changed.
+   */
+  polishWith: string;
 }
 
 /** Who is every AI for a campaign: the server's built-in model, or the owner's Claude. */
@@ -232,6 +238,53 @@ export interface ServerMeta {
   connectorUrl: string;
   /** You have a connection (approved sign-in or hand-made token) that has been used at least once. */
   claudeConnected: boolean;
+  /** Other AIs an admin set up, by name: the ones a campaign can polish its narration with. */
+  outsideAis: string[];
+  /** The feedback button is on: feedback goes to the server's GitHub issue tracker. */
+  feedback: boolean;
+}
+
+// ---------- feedback ----------
+
+export type FeedbackKind = 'bug' | 'idea' | 'feedback';
+
+/**
+ * Where a piece of feedback stands. 'sending' has not reached GitHub yet (it
+ * is retried); the rest mirror the issue: open, done (closed as completed),
+ * or closed (closed as not planned or a duplicate).
+ */
+export type FeedbackStatus = 'sending' | 'open' | 'done' | 'closed';
+
+export interface FeedbackReply {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface FeedbackItem {
+  id: string;
+  kind: FeedbackKind;
+  title: string;
+  body: string;
+  createdAt: string;
+  status: FeedbackStatus;
+  /** Labels on the issue, e.g. "in progress", "needs info". */
+  labels: string[];
+  issueNumber: number | null;
+  issueUrl: string | null;
+  /** Replies on the issue, oldest first. */
+  replies: FeedbackReply[];
+  /** When the issue last changed, as GitHub reports it. */
+  updatedAt: string | null;
+  images: { n: number; source: 'screenshot' | 'photo' }[];
+}
+
+export interface FeedbackList {
+  items: FeedbackItem[];
+  /** owner/name of the repository feedback goes to. */
+  repo: string;
+  /** Whether that repository is public, when known: then titles and descriptions are public. */
+  publicRepo: boolean | null;
 }
 
 /** A sign-in request from an MCP client, shown on the approval screen. */
@@ -474,6 +527,21 @@ export interface GameState {
   entities: Entity[];
   flags: Record<string, unknown>;
   events: StateEvent[];
+  /** Rolls the DM has asked players to make and is waiting on. */
+  rollRequests: RollRequest[];
+}
+
+/**
+ * A roll the DM asked for. Only the players who run the character are shown
+ * dice for it; the server rolls exactly this expression.
+ */
+export interface RollRequest {
+  id: string;
+  characterId: string;
+  characterName: string;
+  expression: string;
+  reason: string;
+  kind: RollKind;
 }
 
 // ---------- chat ----------
@@ -564,11 +632,15 @@ export interface TurnState {
 export type ClientMessage =
   | { type: 'action'; text: string; characterId?: string }
   | { type: 'ooc'; text: string }
-  /** A player rolling their own dice. `kind` and `characterId` are optional. */
-  | { type: 'roll'; expression: string; reason?: string; characterId?: string; kind?: RollKind }
+  /** A player making a roll the DM asked for (a RollRequest). The server rolls the dice the DM set. */
+  | { type: 'roll'; requestId: string }
   /** This player is finished with the turn: done if they acted, passing if not. */
   | { type: 'done' }
-  /** The same as done; kept for clients from before it. */
+  /**
+   * This player sits the turn out: "<name> does nothing this turn." goes into
+   * the story for each of their characters that has not acted, and they are
+   * done. Opens a turn when none is open.
+   */
   | { type: 'pass' }
   | { type: 'force' }
   | { type: 'ping' };

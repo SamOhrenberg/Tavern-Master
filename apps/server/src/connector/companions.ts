@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { companionAction, companionPrompt, knownEntries, publicStory } from '../agent/companion.js';
+import {
+  companionAction,
+  companionOrder,
+  companionPrompt,
+  knownEntries,
+  publicStory,
+} from '../agent/companion.js';
 import { pgStore, type CharRow } from '../agent/store.js';
 import { infoOf, loadCampaign } from '../realtime/room.js';
 import { own, openTable, ToolError, type ConnectorTool, type Table } from './toolkit.js';
@@ -33,12 +39,27 @@ async function ownAiCompanion(
   return { c, turn };
 }
 
-// A turn tells the DM which own-AI companions still have to act in it.
+// A turn tells the DM which own-AI companions still have to act in it, in the order they
+// go: one after another, so each sees what the players and the ones before it did. The
+// order is picked once per turn so reading the turn again does not reshuffle it.
 addTurnNote(async (t, turn) => {
-  const waiting = (await pgStore.characters(t.id))
-    .filter((c) => c.controller === 'agent' && !(turn.companionsActed ?? []).includes(c.name))
-    .map((c) => c.name);
-  return waiting.length ? `Companions with an AI of their own, not yet acted: ${waiting.join(', ')}.` : '';
+  const own = (await pgStore.characters(t.id)).filter((c) => c.controller === 'agent');
+  const known = new Set(turn.companionOrder ?? []);
+  const fresh = own.filter((c) => !known.has(c.name));
+  if (fresh.length) {
+    turn.companionOrder = [
+      ...(turn.companionOrder ?? []),
+      ...companionOrder(turn.input, fresh).map((c) => c.name),
+    ];
+  }
+  const names = new Set(own.map((c) => c.name));
+  const waiting = (turn.companionOrder ?? []).filter(
+    (n) => names.has(n) && !(turn.companionsActed ?? []).includes(n),
+  );
+  if (!waiting.length) return '';
+  return waiting.length === 1
+    ? `Companion with an AI of their own, not yet acted: ${waiting[0]}.`
+    : `Companions with an AI of their own, not yet acted, to go one at a time in this order: ${waiting.join(', ')}.`;
 });
 
 export const COMPANION_TOOLS: ConnectorTool[] = [

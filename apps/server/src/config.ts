@@ -122,6 +122,22 @@ const schema = z.object({
   OAUTH_ACCESS_TOKEN_MINUTES: int(60, 5, 1440),
   OAUTH_REFRESH_TOKEN_DAYS: int(90, 1, 365),
 
+  // --- feedback ---
+  // In-app feedback becomes issues on this GitHub repository ("owner/name"),
+  // created with a fine-grained token that has Issues: read and write on it.
+  // Without both, the feedback button is hidden.
+  GITHUB_FEEDBACK_REPO: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() ? v.trim() : undefined))
+    .pipe(
+      z
+        .string()
+        .regex(/^[\w.-]+\/[\w.-]+$/, 'GITHUB_FEEDBACK_REPO must look like owner/name')
+        .optional(),
+    ),
+  GITHUB_FEEDBACK_TOKEN: optional,
+
   // --- budgets (tokens per rolling 24h; 0 disables) ---
   USER_DAILY_TOKEN_BUDGET: int(8_000_000),
   CAMPAIGN_DAILY_TOKEN_BUDGET: int(6_000_000),

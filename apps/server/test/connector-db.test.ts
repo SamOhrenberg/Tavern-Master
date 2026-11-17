@@ -239,7 +239,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     room.done(annRef());
     const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
     expect(turn.text).toContain('Turn 4 is yours');
-    expect(turn.text).toContain('Companions with an AI of their own, not yet acted: Gull, Kestrel.');
+    // They go one at a time, in an order picked once for the turn.
+    expect(turn.text).toMatch(
+      /Companions with an AI of their own, not yet acted, to go one at a time in this order: (Gull, Kestrel|Kestrel, Gull)\./,
+    );
+    const order = /in this order: (\w+), (\w+)\./.exec(turn.text)!.slice(1);
+    // Reading the turn again does not reshuffle it.
+    expect((await claude.call('wait_for_work', { wait_seconds: 0 })).text).toContain(
+      `in this order: ${order.join(', ')}.`,
+    );
 
     const view = await claude.call('companion_view', { character: 'gull' });
     expect(view.text).toContain('A gull-eyed lookout.');
@@ -310,6 +318,104 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     ).toBe('agent');
     expect((await claude.call('narrate', { text: 'The boat swings north.' })).text).toContain(
       'Posted turn 5',
+    );
+    await settle();
+  });
+
+  it('lets the DM ask a player for a roll, which only that player can make, and hands the DM the result', async () => {
+    const room = await openRoom(camp);
+    const rolls = async () =>
+      (await q1<{ n: number }>(`SELECT count(*)::int AS n FROM dice_rolls WHERE campaign_id = $1`, [camp]))!
+        .n;
+    await room.action(annRef(), 'I creep toward the bell tower');
+    room.done(annRef());
+    const first = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(first.text).toMatch(/Turn \d+ is yours/);
+    // Not for a companion: nobody at the table plays it.
+    const gull = await claude.call('request_roll', {
+      character: 'Gull',
+      expression: '1d20',
+      reason: 'Look',
+      kind: 'check',
+    });
+    expect(gull.isError).toBe(true);
+    for (const why of ['Stealth check', 'Dexterity save']) {
+      const asked = await claude.call('request_roll', {
+        character: 'Wren',
+        expression: '1d20+3',
+        reason: why,
+        kind: 'check',
+      });
+      expect(asked.text).toContain("Asked Wren's player");
+    }
+    await claude.call('narrate', { text: 'A loose stone shifts. Wren, roll Dexterity.' });
+    await settle();
+
+    // One open request per character: the later one replaced the first.
+    const open = await q<{ id: string; reason: string }>(
+      `SELECT id, reason FROM roll_requests WHERE campaign_id = $1 AND status = 'pending'`,
+      [camp],
+    );
+    expect(open.map((r) => r.reason)).toEqual(['Dexterity save']);
+
+    // Someone who does not run Wren cannot make the roll.
+    const before = await rolls();
+    await room.roll({ id: host, username: `host-${tag}`, displayName: 'Host' }, open[0]!.id);
+    expect(await rolls()).toBe(before);
+
+    await room.roll(annRef(), open[0]!.id);
+    // A second tap does nothing.
+    await room.roll(annRef(), open[0]!.id);
+    const made = await q1<{ status: string; roll_id: string | null }>(
+      `SELECT status, roll_id FROM roll_requests WHERE id = $1`,
+      [open[0]!.id],
+    );
+    expect(made?.status).toBe('rolled');
+    expect(made?.roll_id).toBeTruthy();
+    expect(await rolls()).toBe(before + 1);
+
+    room.done(annRef());
+    const next = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(next.text).toMatch(/Wren rolls Dexterity save: \d+ \(1d20\+3: \d+\)\./);
+    expect(next.text).not.toContain('roll_not_made');
+
+    // A roll asked for and never made is dropped when the next turn goes to the DM, and the DM is told.
+    await claude.call('request_roll', {
+      character: 'Wren',
+      expression: '1d20',
+      reason: 'Perception',
+      kind: 'check',
+    });
+    await claude.call('narrate', { text: 'Something moves above.' });
+    await settle();
+    await room.action(annRef(), 'I ignore it and climb');
+    room.done(annRef());
+    const after = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(after.text).toContain('<roll_not_made character="Wren">Perception (1d20)</roll_not_made>');
+    const pending = await q1<{ n: number }>(
+      `SELECT count(*)::int AS n FROM roll_requests WHERE campaign_id = $1 AND status = 'pending'`,
+      [camp],
+    );
+    expect(pending?.n).toBe(0);
+    await claude.call('narrate', { text: 'The climb is quiet.' });
+    await settle();
+  });
+
+  it('lets a player pass with no turn open: a line in the story, and their turn is done', async () => {
+    const room = await openRoom(camp);
+    expect(room.turnState().status).toBe('idle');
+    await room.pass(annRef());
+
+    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(turn.text).toMatch(/Turn \d+ is yours/);
+    expect(turn.text).toContain('Wren does nothing this turn.');
+    const posted = await q1<{ user_id: string | null; character_name: string | null }>(
+      `SELECT user_id, character_name FROM messages WHERE campaign_id = $1 AND kind = 'action' ORDER BY id DESC LIMIT 1`,
+      [camp],
+    );
+    expect(posted).toEqual({ user_id: ann, character_name: 'Wren' });
+    expect((await claude.call('narrate', { text: 'The tide turns without them.' })).text).toContain(
+      'Posted turn',
     );
     await settle();
   });
