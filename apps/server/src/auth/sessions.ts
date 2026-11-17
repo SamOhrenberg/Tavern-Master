@@ -80,9 +80,18 @@ export async function resolveSession(token: string | undefined): Promise<AuthCon
   };
 }
 
+// Revoking a session also forgets the push subscription made with it: a
+// signed-out device must stop showing the table on its lock screen.
+
 export async function revokeSession(sessionId: string, userId: string): Promise<boolean> {
   const rows = await q(
-    'UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id',
+    `WITH revoked AS (
+       UPDATE sessions SET revoked_at = now()
+        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id
+     ), forgotten AS (
+       DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM revoked)
+     )
+     SELECT id FROM revoked`,
     [sessionId, userId],
   );
   return rows.length > 0;
@@ -90,8 +99,13 @@ export async function revokeSession(sessionId: string, userId: string): Promise<
 
 export async function revokeAllSessions(userId: string, exceptSessionId?: string): Promise<number> {
   const rows = await q(
-    `UPDATE sessions SET revoked_at = now()
-      WHERE user_id = $1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id <> $2) RETURNING id`,
+    `WITH revoked AS (
+       UPDATE sessions SET revoked_at = now()
+        WHERE user_id = $1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id <> $2) RETURNING id
+     ), forgotten AS (
+       DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM revoked)
+     )
+     SELECT id FROM revoked`,
     [userId, exceptSessionId ?? null],
   );
   return rows.length;

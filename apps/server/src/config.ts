@@ -138,6 +138,24 @@ const schema = z.object({
     ),
   GITHUB_FEEDBACK_TOKEN: optional,
 
+  // --- push notifications ---
+  // The VAPID key pair browsers subscribe with. Normally empty: the server
+  // makes one on first start and keeps it in the database. Set both only to
+  // carry a pair over from somewhere else.
+  VAPID_PUBLIC_KEY: optional,
+  VAPID_PRIVATE_KEY: optional,
+  // Who push services may contact about this server: an https: URL or a
+  // mailto: address. Empty uses BASE_URL when it is https.
+  VAPID_SUBJECT: optional,
+  // Minimum seconds between two notifications to one person about the same
+  // campaign's table talk and party actions. Narration, rolls and sessions
+  // are never held back.
+  PUSH_COOLDOWN_SECONDS: int(60, 0, 3600),
+  // Minutes a turn waits on someone before they are nudged that it is their
+  // move. Once per turn. With a gather window shorter than this the turn
+  // closes on its own first, so it matters most for "until everyone is ready".
+  PUSH_WAITING_MINUTES: int(5, 1, 1440),
+
   // --- budgets (tokens per rolling 24h; 0 disables) ---
   USER_DAILY_TOKEN_BUDGET: int(8_000_000),
   CAMPAIGN_DAILY_TOKEN_BUDGET: int(6_000_000),

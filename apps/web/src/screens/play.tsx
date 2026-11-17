@@ -26,7 +26,9 @@ import { ClaudeSetupSheet, dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
 import { LiveDm, MessageItem, sameSpeaker } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
+import { PushNudge } from './notifications';
 import { Prep } from './prep';
+import { clearNotifications } from '../push';
 
 const PAGE = 60;
 const OPENERS = [
@@ -115,6 +117,8 @@ function Play({ id, campaign, state, template }: TableProps) {
   // Between sessions, reading the full story instead of the recap.
   const [reading, setReading] = useState(false);
   // This player's own choice to keep AI companion messages off their screen.
+  // Sent something this visit: the moment to offer notifications for the wait that follows.
+  const [sentOnce, setSentOnce] = useState(false);
   const [hideAi, setHideAi] = useState(() => {
     try {
       return localStorage.getItem(`hideAi:${id}`) === '1';
@@ -145,6 +149,16 @@ function Play({ id, campaign, state, template }: TableProps) {
   useEffect(() => {
     void loadLatest();
   }, [loadLatest]);
+
+  // What this campaign's notifications said is on screen now: clear them from the lock screen and badge.
+  useEffect(() => {
+    const clear = () => {
+      if (document.visibilityState === 'visible') void clearNotifications(id);
+    };
+    clear();
+    document.addEventListener('visibilitychange', clear);
+    return () => document.removeEventListener('visibilitychange', clear);
+  }, [id]);
 
   const c = campaign.data?.campaign;
   const reloadState = state.reload;
@@ -290,7 +304,10 @@ function Play({ id, campaign, state, template }: TableProps) {
       mode === 'act' ? { type: 'action', text, characterId: actingAs?.id } : { type: 'ooc', text },
     );
     if (!ok) notify('Not connected to the table. Reconnecting…', 'error');
-    else toBottom();
+    else {
+      toBottom();
+      setSentOnce(true);
+    }
     return ok;
   };
 
@@ -582,6 +599,7 @@ function Play({ id, campaign, state, template }: TableProps) {
                     <IconChevron className="chev" />
                   </button>
                 )}
+                <PushNudge armed={sentOnce} />
                 <TurnBar
                   turn={table.turn}
                   meId={me.id}

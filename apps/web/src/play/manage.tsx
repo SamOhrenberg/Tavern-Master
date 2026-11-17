@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAction, useMe, useMeta, useQuery } from '../app';
 import { IconCrown } from '../icons';
+import { CampaignNotifyToggle } from '../screens/notifications';
 import { Avatar, ConfirmButton, Field, Presence, Sheet, formatTokens, formatUsd } from '../ui';
 import { DmChip } from './claude';
 import { Documents } from './documents';
@@ -351,11 +352,12 @@ export function ManageSheet({
         </>
       )}
 
-      {canHideAi && (
-        <>
-          <div className="section-title">
-            <span>Your view</span>
-          </div>
+      <div className="section-title">
+        <span>Your view</span>
+      </div>
+      <div className="stack">
+        <CampaignNotifyToggle campaignId={c.id} />
+        {canHideAi && (
           <label className="card row view-toggle">
             <div className="grow">
               <b>Hide companion messages</b>
@@ -366,8 +368,8 @@ export function ManageSheet({
             </div>
             <input type="checkbox" checked={hideAi} onChange={(e) => onHideAi(e.target.checked)} />
           </label>
-        </>
-      )}
+        )}
+      </div>
 
       {!prep && (
         <>

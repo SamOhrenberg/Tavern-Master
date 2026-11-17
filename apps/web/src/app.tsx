@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { api, errorMessage, setCsrfToken, setUnauthorizedHandler } from './api';
+import { disablePush } from './push';
 
 // ---------- session ----------
 
@@ -42,6 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setMe]);
 
   const logout = useCallback(async () => {
+    // A signed-out phone must not keep showing this account's games on its lock screen.
+    await disablePush().catch(() => undefined);
     await api('/auth/logout', { method: 'POST' }).catch(() => undefined);
     setMe(null);
   }, [setMe]);

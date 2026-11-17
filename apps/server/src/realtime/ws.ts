@@ -17,6 +17,7 @@ const clientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pass') }),
   z.object({ type: z.literal('force') }),
   z.object({ type: z.literal('ping') }),
+  z.object({ type: z.literal('visible'), visible: z.boolean() }),
 ]);
 
 /**
@@ -55,7 +56,10 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
 
       const user = { id: auth.user.id, username: auth.user.username, displayName: auth.user.displayName };
       const room = await openRoom(campaignId.data);
-      void room.join(socket, user);
+      // The app says in the URL whether it opened this socket on screen, so a
+      // background reconnect never counts as someone looking at the table.
+      const { visible } = (req.query ?? {}) as { visible?: string };
+      void room.join(socket, user, visible !== '0');
       // A campaign that has just begun gets its opening scene as soon as someone is there to read it.
       void room.maybeOpen();
 
@@ -75,6 +79,9 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
           if (!parsed.success)
             return send({ type: 'error', code: 'bad_message', message: 'Message was not understood.' });
           const msg = parsed.data;
+          // Anything from the app means it is still alive; push notifications skip whoever is watching.
+          room.heard(socket, msg.type === 'visible' ? msg.visible : undefined);
+          if (msg.type === 'visible') return;
           if (msg.type === 'ping') return send({ type: 'pong' });
 
           const member = await membership(room.campaignId, auth.sessionId);

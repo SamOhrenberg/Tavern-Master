@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireUser } from '../http/security.js';
+import { notifyUser } from '../notify/notify.js';
 
 const requestSchema = z.object({ username: z.string().trim().min(1).max(64) });
 
@@ -70,6 +71,12 @@ export async function friendRoutes(app: FastifyInstance): Promise<void> {
       auth.user.id,
       target.id,
     ]);
+    void notifyUser(target.id, {
+      title: 'Friend request',
+      body: `${auth.user.displayName} wants to be friends.`,
+      url: '/friends',
+      tag: `friend:${auth.user.id}`,
+    });
     return { ok: true, accepted: false };
   });
 

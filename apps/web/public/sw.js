@@ -1,6 +1,7 @@
-// Service worker: makes the app installable and lets the shell open instantly.
-// Game data is never cached here; /api and /ws always go to the network.
-const VERSION = 'tavern-v1';
+// Service worker: makes the app installable, lets the shell open instantly,
+// and shows push notifications. Game data is never cached here; /api and /ws
+// always go to the network.
+const VERSION = 'tavern-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/favicon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
@@ -79,4 +80,90 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
+});
+
+// ---------- push notifications ----------
+
+/** The app badge counts what is waiting: one per campaign with news, since a campaign's notifications replace each other. */
+async function updateBadge() {
+  if (!self.navigator.setAppBadge) return;
+  const shown = await self.registration.getNotifications();
+  await (shown.length ? self.navigator.setAppBadge(shown.length) : self.navigator.clearAppBadge()).catch(
+    () => undefined,
+  );
+}
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { body: event.data ? event.data.text() : '' };
+  }
+  // Every push must show something: Safari stops delivering to apps that stay quiet.
+  event.waitUntil(
+    self.registration
+      .showNotification(data.title || 'Tavern Master', {
+        body: data.body || '',
+        tag: data.tag || 'tavern',
+        // A replacement for a campaign's earlier notification still alerts.
+        renotify: !!data.tag,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        timestamp: Date.now(),
+        data: { url: typeof data.url === 'string' && data.url.startsWith('/') ? data.url : '/' },
+      })
+      .then(updateBadge),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const path = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    (async () => {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const win = wins.find((w) => new URL(w.url).origin === self.location.origin);
+      if (win) {
+        // The app routes itself, so the open page keeps its state instead of reloading.
+        win.postMessage({ type: 'open', url: path });
+        await win.focus().catch(() => undefined);
+      } else {
+        await self.clients.openWindow(path);
+      }
+      await updateBadge();
+    })(),
+  );
+});
+
+self.addEventListener('notificationclose', (event) => {
+  event.waitUntil(updateBadge());
+});
+
+// Chrome and Firefox may swap a subscription for a new one; hand it to the
+// server straight away. (Safari does not fire this; the app re-checks on launch.)
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(
+    (async () => {
+      const keyRes = await fetch('/api/notifications/key', { credentials: 'same-origin' });
+      if (!keyRes.ok) return;
+      const { publicKey } = await keyRes.json();
+      const pad = '='.repeat((4 - (publicKey.length % 4)) % 4);
+      const raw = atob((publicKey + pad).replace(/-/g, '+').replace(/_/g, '/'));
+      const key = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+      const sub = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: key,
+      });
+      const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      const me = meRes.ok ? await meRes.json() : null;
+      if (!me || !me.user) return;
+      await fetch('/api/notifications/subscriptions', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.user.csrfToken },
+        body: JSON.stringify(sub.toJSON()),
+      });
+    })().catch(() => undefined),
+  );
 });

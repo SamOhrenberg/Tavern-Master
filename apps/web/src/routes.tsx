@@ -1,10 +1,11 @@
 import type { CampaignInvite, Friend } from '@tavern/protocol';
-import { useEffect } from 'react';
-import { NavLink, Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom';
+import { useEffect, useRef } from 'react';
+import { NavLink, Navigate, Outlet, Route, Routes, useNavigate, useOutletContext } from 'react-router-dom';
 import { api } from './api';
 import { useAuth, useQuery } from './app';
 import { IconBook, IconCampfire, IconCog, IconShield, IconUsers } from './icons';
 import { FeedbackProvider } from './feedback/sheet';
+import { syncPush } from './push';
 import { AdminScreen } from './screens/admin';
 import { AuthScreen } from './screens/auth';
 import { CampaignsScreen } from './screens/campaigns';
@@ -110,7 +111,27 @@ export function AppRoutes() {
   );
 }
 
+/** Tapping a notification while the app is open routes inside it instead of reloading. */
+function usePushBridge() {
+  // navigate changes with every route, and this must run once per launch.
+  const navigate = useNavigate();
+  const go = useRef(navigate);
+  go.current = navigate;
+  useEffect(() => {
+    void syncPush().catch(() => undefined);
+    const sw = 'serviceWorker' in navigator ? navigator.serviceWorker : undefined;
+    const onMessage = (e: MessageEvent) => {
+      const data = e.data as { type?: string; url?: unknown } | null;
+      if (data?.type === 'open' && typeof data.url === 'string' && data.url.startsWith('/'))
+        go.current(data.url);
+    };
+    sw?.addEventListener('message', onMessage);
+    return () => sw?.removeEventListener('message', onMessage);
+  }, []);
+}
+
 function AppRoutesInner({ admin }: { admin: boolean }) {
+  usePushBridge();
   return (
     <Routes>
       <Route path="/c/:id" element={<PlayScreen />} />

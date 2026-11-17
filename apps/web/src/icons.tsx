@@ -131,6 +131,12 @@ export const IconPhone = icon(
     <path d="M10.500 5.500h3" />
   </>,
 );
+export const IconBell = icon(
+  <>
+    <path d="M6 9a6 6 0 0 1 12 0c0 6.500 2.500 8 2.500 8h-17S6 15.500 6 9z" />
+    <path d="M10.300 20.500a1.900 1.900 0 0 0 3.400 0" />
+  </>,
+);
 /** The iOS share glyph (box with an arrow leaving the top). */
 export const IconShareIos = icon(
   <path d="M12 15V3.500M8 7l4-4 4 4M8.500 10.500H7A1.500 1.500 0 0 0 5.500 12v7A1.500 1.500 0 0 0 7 20.500h10a1.500 1.500 0 0 0 1.500-1.500v-7a1.500 1.500 0 0 0-1.500-1.500h-1.500" />,

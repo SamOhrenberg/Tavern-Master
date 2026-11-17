@@ -35,9 +35,10 @@ import { enqueue } from '../jobs/queue.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
-import { requireUser } from '../http/security.js';
+import { enforceLimit, rateLimiters, requireUser } from '../http/security.js';
 import { builtInAiFor } from '../llm/index.js';
 import { findOutsideAi } from '../llm/outside.js';
+import { notifyUser } from '../notify/notify.js';
 import { usageTotals } from '../llm/usage.js';
 import { editMessage, listMessages } from '../realtime/messages.js';
 import { dmStatusOf, getRoom, openRoom } from '../realtime/room.js';
@@ -456,6 +457,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
   // ---- invitations: an owner can invite accepted friends ----
   app.post<{ Params: { id: string } }>('/api/campaigns/:id/invites', async (req) => {
     const { auth, campaignId } = await requireMember(req, true);
+    // Each invitation buzzes someone's phone.
+    enforceLimit(rateLimiters().auth, `invite:${auth.user.id}`);
     const { userId } = parse(z.object({ userId: uuid }), req.body);
     if (!(await areFriends(auth.user.id, userId))) throw forbidden('You can only invite friends.');
     if (
@@ -463,11 +466,22 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     ) {
       throw conflict('They are already in this campaign.');
     }
-    await q(
+    // Asking again while an invitation is still pending changes nothing and notifies no one.
+    const fresh = await q(
       `INSERT INTO campaign_invites (campaign_id, inviter_id, invitee_id) VALUES ($1, $2, $3)
-       ON CONFLICT (campaign_id, invitee_id) DO UPDATE SET status = 'pending', inviter_id = $2, created_at = now(), responded_at = NULL`,
+       ON CONFLICT (campaign_id, invitee_id) DO UPDATE SET status = 'pending', inviter_id = $2, created_at = now(), responded_at = NULL
+        WHERE campaign_invites.status <> 'pending'
+       RETURNING id`,
       [campaignId, auth.user.id, userId],
     );
+    if (!fresh.length) return { ok: true };
+    const campaign = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
+    void notifyUser(userId, {
+      title: 'Campaign invitation',
+      body: `${auth.user.displayName} invited you to ${campaign?.name ?? 'a campaign'}.`,
+      url: '/',
+      tag: `invite:${campaignId}`,
+    });
     return { ok: true };
   });
 

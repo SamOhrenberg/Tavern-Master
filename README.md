@@ -43,6 +43,14 @@ screenshots in [portfolio.md](portfolio.md).
   scenes, or restart a session, and the whole game state goes back with it.
 - **An app on your phone.** The client is built phone-first and installs to
   the Home Screen on iOS and Android, where it runs full screen.
+- **Notifications when the table moves.** Push notifications (Web Push, no
+  third-party account) when the DM narrates, someone acts or chats, the DM
+  asks you for a roll, a turn has been waiting on you for a few minutes, a
+  session starts, or you are invited somewhere. Nothing is sent about a
+  campaign you have open on screen, busy tables are spaced out, each
+  campaign's notifications replace each other instead of piling up, and each
+  kind can be switched off, or a whole campaign muted. Quiet hours hold
+  everything overnight and send one summary per campaign in the morning.
 - **Bring any model.** Anthropic API, AWS Bedrock, Azure AI Foundry or any
   OpenAI-compatible endpoint, with per-task model routing, prompt caching,
   token budgets and cost tracking.
@@ -237,6 +245,7 @@ flowchart LR
 | Vector search | pgvector, exact scan filtered by game system, fused with full-text rank | 100 % recall at this scale, no extra service |
 | Auth | argon2id, server-side sessions in HttpOnly cookies, TOTP | revocable, nothing sensitive readable by scripts |
 | Realtime | one WebSocket per open campaign | bidirectional and streams DM output |
+| Notifications | Web Push with a VAPID key pair made on first start | works in the installed iPhone app; push payloads are end-to-end encrypted |
 | Files | a local volume, random names, never served back | no object store to run |
 | Jobs | a `jobs` table claimed with `FOR UPDATE SKIP LOCKED` | no Redis |
 | LLM | a small provider interface with per-task models | swap providers by env var |
@@ -415,8 +424,10 @@ starts). The first visit in Safari shows how to add the app to the Home
 Screen; from there it opens full screen like any other app.
 
 Installing works over plain HTTP on a home network. The service worker, which
-makes the app open instantly from cache, needs HTTPS and so is only active
-behind a TLS-terminating proxy or on `localhost`.
+makes the app open instantly from cache and receives push notifications, needs
+HTTPS and so is only active behind a TLS-terminating proxy or on `localhost`.
+On iPhone and iPad, notifications also need the app added to the Home Screen
+(iOS 16.4 or later); turn them on under You, Notifications.
 
 To try the production build instead of the dev server:
 

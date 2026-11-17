@@ -244,6 +244,61 @@ export interface ServerMeta {
   feedback: boolean;
 }
 
+// ---------- notifications ----------
+
+/**
+ * What a push notification can be about. Each can be switched off on its own;
+ * a missing key means on.
+ */
+export type NotifyCategory =
+  /** The DM (the built-in AI or Claude) posted narration. */
+  | 'narration'
+  /** Another player, or an AI-run companion, acted in the story. */
+  | 'actions'
+  /** Table talk: out-of-character chat. */
+  | 'chat'
+  /** The DM asked one of your characters for a roll. */
+  | 'rolls'
+  /** A turn has been waiting on you for a while. */
+  | 'waiting'
+  /** The campaign began, or the host started the next session. */
+  | 'sessions'
+  /** A campaign invitation or a friend request. */
+  | 'invites';
+
+export type NotifyPrefs = Record<NotifyCategory, boolean>;
+
+/**
+ * A daily stretch with no notifications, in the person's own time zone.
+ * What arrives meanwhile is held and sent as one summary per campaign when
+ * it ends. `start` and `end` are "HH:MM"; an end before the start runs past
+ * midnight.
+ */
+export interface QuietHours {
+  start: string;
+  end: string;
+  /** IANA name, e.g. "America/Chicago". */
+  timeZone: string;
+}
+
+export interface NotifySettings {
+  prefs: NotifyPrefs;
+  quiet: QuietHours | null;
+  /** Devices that receive notifications. */
+  devices: number;
+}
+
+/** What a push carries to the service worker. Kept small: push services cap payloads at about 4 KB. */
+export interface PushPayload {
+  title: string;
+  body: string;
+  /** In-app path to open when the notification is tapped. */
+  url: string;
+  /** Notifications with the same tag replace each other instead of piling up. */
+  tag: string;
+  category: NotifyCategory;
+}
+
 // ---------- feedback ----------
 
 export type FeedbackKind = 'bug' | 'idea' | 'feedback';
@@ -643,7 +698,12 @@ export type ClientMessage =
    */
   | { type: 'pass' }
   | { type: 'force' }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  /**
+   * The app went to the background or came back. Someone looking at the table
+   * gets no push notifications for it; a hidden tab or a phone in a pocket does.
+   */
+  | { type: 'visible'; visible: boolean };
 
 export type ServerMessage =
   | { type: 'hello'; you: UserRef; present: UserRef[]; turn: TurnState; dm: DmStatus }

@@ -1152,3 +1152,12 @@ button.play-sub {
   flex-direction: column;
   gap: 10px;
 }
+
+/* The one-time offer of notifications, under the story. */
+.push-nudge {
+  gap: 10px;
+}
+.push-nudge .icon-btn {
+  flex: none;
+  margin-right: -6px;
+}

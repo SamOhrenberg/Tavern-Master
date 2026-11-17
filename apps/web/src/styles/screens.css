@@ -1035,3 +1035,25 @@ button.code-box {
 .homebrew-card p {
   margin: 0;
 }
+
+/* ---------- notifications ---------- */
+.quiet-hours .view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.quiet-times {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.quiet-times label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.quiet-times .input {
+  width: 100%;
+  min-width: 0;
+}

@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useAction, useAuth, useMe, useQuery } from '../app';
 import {
   IconAlert,
+  IconBell,
   IconChevron,
   IconClock,
   IconCrown,
@@ -15,6 +16,7 @@ import {
   IconUsers,
 } from '../icons';
 import { isStandalone, openInstallGuide } from '../install';
+import { pushState } from '../push';
 import { SignInSteps } from '../play/claude';
 import {
   Avatar,
@@ -27,9 +29,11 @@ import {
   formatUsd,
   timeAgo,
 } from '../ui';
+import { NotificationsSheet, pushSummary, usePushState } from './notifications';
 import { TwoFactorSheet } from './twofactor';
 
-type Panel = 'profile' | 'password' | 'twofactor' | 'devices' | 'apikey' | 'connector' | null;
+type Panel =
+  'profile' | 'password' | 'twofactor' | 'devices' | 'apikey' | 'connector' | 'notifications' | null;
 
 function Row({
   icon,
@@ -479,6 +483,7 @@ export function SettingsScreen() {
   const { logout } = useAuth();
   const usage = useQuery(() => api<{ day: UsageTotals; month: UsageTotals }>('/account/usage'), []);
   const [panel, setPanel] = useState<Panel>(null);
+  const [push, setPush] = usePushState();
   const close = () => setPanel(null);
 
   return (
@@ -504,6 +509,18 @@ export function SettingsScreen() {
           <IconChevron className="chev" />
         </button>
       )}
+
+      <div className="section-title">
+        <span>Notifications</span>
+      </div>
+      <div className="list">
+        <Row
+          icon={<IconBell />}
+          title="Notifications"
+          detail={pushSummary(push)}
+          onClick={() => setPanel('notifications')}
+        />
+      </div>
 
       <div className="section-title">
         <span>Security</span>
@@ -576,6 +593,14 @@ export function SettingsScreen() {
       {panel === 'twofactor' && <TwoFactorSheet onClose={close} />}
       {panel === 'devices' && <DevicesSheet onClose={close} />}
       {panel === 'apikey' && <ApiKeySheet onClose={close} />}
+      {panel === 'notifications' && (
+        <NotificationsSheet
+          onClose={() => {
+            close();
+            void pushState().then(setPush);
+          }}
+        />
+      )}
       {panel === 'connector' && (
         <ConnectorSheet
           onClose={() => {

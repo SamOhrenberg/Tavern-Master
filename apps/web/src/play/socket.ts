@@ -159,12 +159,20 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
       if (stopped) return;
       window.clearTimeout(retry);
       const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${scheme}//${window.location.host}/ws/campaigns/${campaignId}`);
+      // The server must know from the start whether anyone is looking: a
+      // reconnect in the background must not count as reading the table.
+      const shown = document.visibilityState === 'visible' ? 1 : 0;
+      const ws = new WebSocket(
+        `${scheme}//${window.location.host}/ws/campaigns/${campaignId}?visible=${shown}`,
+      );
       socket.current = ws;
 
       ws.onopen = () => {
         attempt = 0;
         lastHeard = Date.now();
+        // Visibility may have changed while the socket was opening.
+        const visible = document.visibilityState === 'visible';
+        if (visible !== (shown === 1)) ws.send(JSON.stringify({ type: 'visible', visible }));
         ping = window.setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
         }, 25_000);
@@ -191,8 +199,12 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
 
     /** Back in the foreground: reconnect now, or prove the open socket is still alive. */
     const onVisible = () => {
-      if (document.visibilityState !== 'visible' || stopped) return;
+      if (stopped) return;
       const ws = socket.current;
+      // The server sends push notifications only to people who are not looking at the table.
+      const visible = document.visibilityState === 'visible';
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'visible', visible }));
+      if (!visible) return;
       if (!ws || ws.readyState > WebSocket.OPEN) {
         attempt = 0;
         return connect();

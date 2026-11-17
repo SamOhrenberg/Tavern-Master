@@ -22,6 +22,7 @@ import { authRoutes } from './routes/auth.js';
 import { campaignRoutes } from './routes/campaigns.js';
 import { feedbackRoutes } from './routes/feedback.js';
 import { friendRoutes } from './routes/friends.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { partyRoutes } from './routes/party.js';
 import { rulesRoutes } from './routes/rules.js';
 import { summonRoutes } from './routes/summon.js';
@@ -109,6 +110,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(connectorRoutes);
   await app.register(oauthRoutes);
   await app.register(feedbackRoutes);
+  await app.register(notificationRoutes);
 
   await registerSpa(app);
   return app;

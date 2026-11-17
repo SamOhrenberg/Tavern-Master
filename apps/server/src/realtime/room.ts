@@ -1,4 +1,5 @@
 import type {
+  ChatMessage,
   DmMode,
   DmStatus,
   RollKind,
@@ -36,6 +37,7 @@ import { polishNarration } from '../llm/polish.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { log } from '../log.js';
 import { conflict } from '../errors.js';
+import { notifyMessage, notifyWaiting, seenCampaign, type Holdout } from '../notify/notify.js';
 import { snapshotState } from '../rewind.js';
 import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll } from './rolls.js';
@@ -71,6 +73,8 @@ const SEEN_WRITE_MS = 30_000;
 const COMPANION_TIMEOUT_MS = 45_000;
 /** Longest all of them together may take; companions after that sit the turn out. */
 const COMPANIONS_BUDGET_MS = 120_000;
+/** The app pings every 25 s while on screen; a socket silent for longer is in a pocket. */
+const WATCH_STALE_MS = 70_000;
 
 /** How long after a connector call an outside DM still counts as listening. */
 const listenMs = () => (config().CONNECTOR_MAX_WAIT_SECONDS + 25) * 1000;
@@ -269,6 +273,8 @@ export type OutsideNarration =
 /** One campaign's live table: who is connected, the turn being gathered, and the DM's reply in flight. */
 export class Room {
   readonly sockets = new Map<WebSocket, UserRef>();
+  /** Whether each socket's app is on screen, and when it was last heard from. */
+  private views = new WeakMap<WebSocket, { visible: boolean; heardAt: number }>();
   readonly collector: TurnCollector;
   private turn: ActiveTurn | null = null;
   private chain: Promise<void> = Promise.resolve();
@@ -292,6 +298,12 @@ export class Room {
   private dmFacts: DmFacts = { seenAt: null, openWork: 0, workClaimed: false, needsOpening: false };
   private lastBroadcastStatus = '';
   private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires when a seat has held up the turn PUSH_WAITING_MINUTES, to nudge whoever it is waiting on. */
+  private waitTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current turn started waiting on each seat (epoch ms). */
+  private waitingSince = new Map<string, number>();
+  /** Who has been nudged about the current turn: each person hears about it once. */
+  private nudged = new Set<string>();
   private claimWatch: ReturnType<typeof setInterval> | null = null;
   /** Called when an abandoned claim is released, so the connector can release its own claims too. */
   onClaimsReleased: (() => Promise<void>) | null = null;
@@ -473,6 +485,7 @@ export class Room {
   /** Stop the room's timers; it is being forgotten. */
   dispose(): void {
     if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    if (this.waitTimer) clearTimeout(this.waitTimer);
     this.stopClaimWatch();
   }
 
@@ -566,6 +579,111 @@ export class Room {
     for (const ws of this.sockets.keys()) {
       if (ws.readyState === ws.OPEN) ws.send(data);
     }
+  }
+
+  /** A new message at the table: everyone here sees it, and members who are away get a notification. */
+  private post(message: ChatMessage): void {
+    this.broadcast({ type: 'message', message });
+    void notifyMessage(this.campaignId, message, this.watching());
+  }
+
+  /**
+   * A socket was heard from, and perhaps said whether its app is on screen.
+   * A phone suspends a backgrounded app without closing its socket, so a
+   * socket also stops counting as watching once its pings stop.
+   */
+  heard(ws: WebSocket, visible?: boolean): void {
+    const fresh = !this.views.has(ws);
+    // A new socket says in its URL whether it opened on screen (see join).
+    const view = this.views.get(ws) ?? { visible: visible ?? true, heardAt: 0 };
+    view.heardAt = Date.now();
+    if (visible !== undefined) view.visible = visible;
+    this.views.set(ws, view);
+    // Back at the table: notifications held during quiet hours are old news now.
+    // A socket that opened in the background has not shown anyone anything yet.
+    const user = this.sockets.get(ws);
+    if (user && view.visible && (fresh || visible === true)) void seenCampaign(user.id, this.campaignId);
+  }
+
+  /** Seats the current turn is still waiting on. */
+  private pendingSeats(): string[] {
+    const t = this.turnState();
+    const finished = new Set([...t.done, ...t.passed]);
+    return t.expected.filter((id) => !finished.has(id));
+  }
+
+  /**
+   * Time the next "your move" nudge. Each seat gets PUSH_WAITING_MINUTES from
+   * when the turn started waiting on it, so one that joins late is not nudged
+   * the moment it arrives.
+   */
+  private armNudge(): void {
+    if (this.waitTimer) clearTimeout(this.waitTimer);
+    this.waitTimer = null;
+    const turnId = this.turn?.id;
+    if (!turnId || this.collector.phase !== 'collecting') return;
+    const now = Date.now();
+    const waitMs = config().PUSH_WAITING_MINUTES * 60_000;
+    let due = Infinity;
+    for (const seatId of this.pendingSeats()) {
+      let since = this.waitingSince.get(seatId);
+      if (since === undefined) this.waitingSince.set(seatId, (since = now));
+      const seat = this.known.get(seatId);
+      if (seat && seat.userIds.some((id) => !this.nudged.has(id))) due = Math.min(due, since + waitMs);
+    }
+    if (due === Infinity) return;
+    this.waitTimer = setTimeout(() => this.nudgeHoldouts(turnId), Math.max(0, due - now));
+    this.waitTimer.unref?.();
+  }
+
+  /**
+   * Seats have held the turn up a while: nudge each person it is still waiting
+   * on, once a turn. Someone who acted but has not said they are done is
+   * reminded to.
+   */
+  private nudgeHoldouts(turnId: string): void {
+    this.waitTimer = null;
+    if (this.turn?.id !== turnId || this.collector.phase !== 'collecting') return;
+    const t = this.turnState();
+    const acted = new Set(t.acted);
+    const now = Date.now();
+    const waitMs = config().PUSH_WAITING_MINUTES * 60_000;
+    const byUser = new Map<string, Holdout>();
+    for (const seatId of this.pendingSeats()) {
+      const since = this.waitingSince.get(seatId);
+      if (since === undefined || now - since < waitMs) continue;
+      const seat = this.known.get(seatId);
+      if (!seat) continue;
+      for (const userId of seat.userIds) {
+        if (this.nudged.has(userId)) continue;
+        const h = byUser.get(userId) ?? { userId, names: [], acted: true, othersActed: [] };
+        h.names.push(seat.name);
+        h.acted &&= acted.has(seatId);
+        byUser.set(userId, h);
+      }
+    }
+    // Who has moved, as each holdout sees it: everyone's acted seats but their own.
+    for (const h of byUser.values()) {
+      h.othersActed = t.acted.flatMap((id) => {
+        const seat = this.known.get(id);
+        return seat && !seat.userIds.includes(h.userId) ? [seat.name] : [];
+      });
+    }
+    // Marked even if they are watching and so not sent anything: once a turn, at its time.
+    for (const userId of byUser.keys()) this.nudged.add(userId);
+    void notifyWaiting(this.campaignId, [...byUser.values()], this.watching());
+    this.armNudge();
+  }
+
+  /** Who has this campaign on screen right now, on any device. */
+  watching(): Set<string> {
+    const now = Date.now();
+    const out = new Set<string>();
+    for (const [ws, u] of this.sockets) {
+      const view = this.views.get(ws);
+      if (ws.readyState === ws.OPEN && view?.visible && now - view.heardAt < WATCH_STALE_MS) out.add(u.id);
+    }
+    return out;
   }
 
   /** Send a message to one person's connections only. */
@@ -681,10 +799,14 @@ export class Room {
     this.seats = seats;
     for (const [id, seat] of seats) this.known.set(id, seat);
     this.collector.setPresent(seats.keys());
+    // A seat that arrived mid-turn starts its own wait.
+    this.armNudge();
   }
 
-  join(ws: WebSocket, user: UserRef): Promise<void> {
+  /** `visible`: whether the app was on screen when it opened this socket. */
+  join(ws: WebSocket, user: UserRef, visible = true): Promise<void> {
     this.sockets.set(ws, user);
+    this.heard(ws, visible);
     return this.run(async () => {
       await this.syncSeats();
       if (ws.readyState === ws.OPEN) {
@@ -869,6 +991,9 @@ export class Room {
         [this.campaignId, sessionId],
       );
       this.turn = { id: row!.id, number: row!.number, sessionId };
+      this.waitingSince = new Map();
+      this.nudged = new Set();
+      this.armNudge();
     }
     const turn = where === 'queued' ? null : this.turn;
     if (action.messageId) {
@@ -890,7 +1015,7 @@ export class Room {
         content: action.text,
       });
       action.messageId = message.id;
-      this.broadcast({ type: 'message', message });
+      this.post(message);
     }
     // A line spoken for a companion is finished as soon as it is sent.
     if (where !== 'queued' && action.seat.startsWith(VOICED)) this.collector.finish(action.seat);
@@ -908,7 +1033,7 @@ export class Room {
         userId: user.id,
         content: text,
       });
-      this.broadcast({ type: 'message', message });
+      this.post(message);
     });
   }
 
@@ -1087,7 +1212,7 @@ export class Room {
         content: text,
         meta: { ai: true },
       });
-      this.broadcast({ type: 'message', message });
+      this.post(message);
       out.push({ userId: '', displayName: COMPANION_LABEL, characterName: name, text });
     }
     return out;
@@ -1323,7 +1448,7 @@ export class Room {
         content: text,
         meta: { ai: true },
       });
-      this.broadcast({ type: 'message', message });
+      this.post(message);
       turn.input.actions.push({ userId: '', displayName: COMPANION_LABEL, characterName: name, text });
       return true;
     });
@@ -1445,7 +1570,7 @@ export class Room {
     // The first narration that names an entry records when the party met it.
     if (refs.length)
       await pgStore.markFirstSeen(this.campaignId, [...new Set(refs.map((r) => r.entityId))], message.id);
-    this.broadcast({ type: 'message', message });
+    this.post(message);
     if (ctx.stateChanged) this.broadcast({ type: 'state_changed' });
     return { redacted: safe.redacted };
   }

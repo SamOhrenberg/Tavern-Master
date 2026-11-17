@@ -1,6 +1,7 @@
 import type { CampaignSettings, DmMode } from '@tavern/protocol';
 import { q, q1, tx } from './db/pool.js';
 import { badRequest, conflict } from './errors.js';
+import { notifySession } from './notify/notify.js';
 import { beginSession, endSession, getRoom, openRoom, type Room } from './realtime/room.js';
 import { snapshotState } from './rewind.js';
 
@@ -119,6 +120,7 @@ export async function startCampaign(campaignId: string): Promise<void> {
   await snapshotState(campaignId, null);
   const room = getRoom(campaignId);
   room?.broadcast({ type: 'state_changed' });
+  void notifySession(campaignId, 'The adventure begins. Your table is waiting.', room?.watching());
   // A polling Claude hears about the opening at once.
   await room?.workChanged();
   void room?.maybeOpen();
@@ -192,5 +194,6 @@ export async function resumeSession(campaignId: string, opts: { anyway?: boolean
   }
   const number = await beginSession(campaignId);
   getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+  void notifySession(campaignId, `Session ${number} is starting.`, getRoom(campaignId)?.watching());
   return number;
 }
