@@ -13,6 +13,9 @@ the game you play, start a campaign, and play together in real time with a DM
 that looks rules up instead of guessing, rolls real dice, and keeps track of
 the party in structured state rather than in its memory.
 
+To see it on a phone, from sign-in to a turn at the table, look through the
+screenshots in [portfolio.md](portfolio.md).
+
 - **Self-hosted first.** One `docker compose up -d` on a home server. Only the
   LLM is an external API; the database, vector search, embeddings, uploads and
   job queue all run on your hardware.
