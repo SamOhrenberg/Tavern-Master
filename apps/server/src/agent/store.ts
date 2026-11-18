@@ -4,6 +4,7 @@ import type {
   Citation,
   DiceRoll,
   EntityKind,
+  HpChange,
   InventoryItem,
   RollKind,
   RuleHit,
@@ -33,6 +34,8 @@ export interface TurnContext {
   /** Rules passages retrieved this turn, addressable as R1, R2… */
   citations: Citation[];
   rolls: DiceRoll[];
+  /** Party hit point changes made this turn, shown with the narration. */
+  hp?: HpChange[];
   stateChanged: boolean;
   /** Requests sent to other AIs with ask_ai during this turn. */
   outsideAsks?: number;
@@ -443,8 +446,9 @@ export const pgStore: GameStore = {
       [ctx.campaignId, req.characterId],
     );
     const row = await q1<{ id: string }>(
-      `INSERT INTO roll_requests (campaign_id, character_id, expression, reason, kind, turn_id)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      // Hidden until the narration that asks for it is posted (see Room.publish).
+      `INSERT INTO roll_requests (campaign_id, character_id, expression, reason, kind, turn_id, shown)
+       VALUES ($1, $2, $3, $4, $5, $6, false) RETURNING id`,
       [ctx.campaignId, req.characterId, req.expression, req.reason, req.kind, ctx.turnId],
     );
     return row!.id;

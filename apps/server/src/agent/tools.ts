@@ -219,7 +219,8 @@ export const TOOLS: ToolSpec[] = [
     name: 'update_character',
     description:
       "Change a character's hit points or conditions after damage, healing or an effect. Use negative hp_delta for " +
-      'damage. Names, ability scores and notes cannot be changed by this tool.',
+      'damage. Apply damage or healing that was rolled (with roll_dice, or by the player), never an average ' +
+      'from a stat block. Names, ability scores and notes cannot be changed by this tool.',
     schema: z.object({
       character: name,
       hp_delta: z.number().int().min(-999).max(999).optional(),
@@ -263,6 +264,13 @@ export const TOOLS: ToolSpec[] = [
         summary,
         diff: { before, after: { hp: c.hp, tempHp: c.tempHp, conditions: c.conditions } },
       });
+      if (c.hp !== before.hp) {
+        // Shown with the narration, one line per character from where the turn started.
+        const changes = (ctx.hp ??= []);
+        const seen = changes.find((h) => h.character === c.name);
+        if (seen) Object.assign(seen, { to: c.hp, max: c.maxHp });
+        else changes.push({ character: c.name, from: before.hp, to: c.hp, max: c.maxHp });
+      }
       return summary + note;
     },
   }),

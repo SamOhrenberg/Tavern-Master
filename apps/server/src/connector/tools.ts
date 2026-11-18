@@ -688,6 +688,8 @@ function gmTool(spec: (typeof TOOLS)[number]): ConnectorTool {
             summary: publicSummary(spec.name, input, out.content),
           });
         }
+        // Asked between turns, with no narration on the way to show it after: show it now.
+        if (spec.name === 'request_roll' && !streamId) await t.room.showRollRequests();
         if (STATE_TOOLS.has(spec.name)) t.room.broadcast({ type: 'state_changed' });
         if (HISTORY_TOOLS.has(spec.name)) await t.room.announceCorrection();
       }

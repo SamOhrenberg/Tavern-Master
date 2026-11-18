@@ -589,7 +589,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         }>(
           `SELECT r.id, r.character_id, c.name, r.expression, r.reason, r.kind
              FROM roll_requests r JOIN characters c ON c.id = r.character_id
-            WHERE r.campaign_id = $1 AND r.status = 'pending' ORDER BY r.created_at`,
+            WHERE r.campaign_id = $1 AND r.status = 'pending' AND r.shown ORDER BY r.created_at`,
           [campaignId],
         ),
       ]);

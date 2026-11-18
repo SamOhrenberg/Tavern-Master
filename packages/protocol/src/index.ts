@@ -631,6 +631,19 @@ export interface DiceRoll {
   kind: RollKind;
 }
 
+/**
+ * A party member's hit points changing while the DM resolved a turn, shown
+ * with the narration so damage and healing are on the record even when the
+ * prose does not spell them out. Several changes to one character in a turn
+ * are folded into one, from where it started to where it ended up.
+ */
+export interface HpChange {
+  character: string;
+  from: number;
+  to: number;
+  max: number;
+}
+
 /** A codex entry the DM named in a line of narration, resolved server-side. */
 export interface EntityRef {
   /** The exact text wrapped in the narration, e.g. "the Ashen Crown". */
@@ -650,6 +663,8 @@ export interface ChatMessage {
   content: string;
   citations?: Citation[];
   rolls?: DiceRoll[];
+  /** Hit point changes the DM made in the turn this narration resolves. */
+  hp?: HpChange[];
   /** Codex references the DM marked in `content` with `[[name]]`. */
   refs?: EntityRef[];
   redacted?: boolean;

@@ -1,4 +1,4 @@
-import type { ChatMessage, Citation, DiceRoll, EntityRef } from '@tavern/protocol';
+import type { ChatMessage, Citation, DiceRoll, EntityRef, HpChange } from '@tavern/protocol';
 import { Fragment, memo, type ReactNode } from 'react';
 import { IconAlert, IconD20, IconDots } from '../icons';
 import { Avatar, ruleSource } from '../ui';
@@ -170,6 +170,21 @@ export function RollChip({ roll }: { roll: DiceRoll }) {
   );
 }
 
+/** A party member's hit points over the turn: who, by how much, and where that leaves them. */
+function HpLine({ change: h }: { change: HpChange }) {
+  const delta = h.to - h.from;
+  const tone = delta < 0 ? 'hurt' : 'healed';
+  return (
+    <li className={`hp-change ${tone}`}>
+      <b className="truncate">{h.character}</b>
+      <span className={`hp-delta ${tone}`}>{delta < 0 ? `−${-delta}` : `+${delta}`} HP</span>
+      <span className="hp-now mono">
+        {h.from} → {h.to}/{h.max}
+      </span>
+    </li>
+  );
+}
+
 /** The button that opens what can be done with a message: edit it, or rewind the story to it. */
 function MoreButton({ onClick }: { onClick: () => void }) {
   return (
@@ -311,11 +326,18 @@ export const MessageItem = memo(function MessageItem({
     return (
       <article className="msg dm">
         <DmHead time={clock(m.createdAt)} edited={m.edited} onMore={more} />
-        {m.rolls && m.rolls.length > 0 && (
+        {((m.rolls && m.rolls.length > 0) || (m.hp && m.hp.length > 0)) && (
           <div className="rolls">
-            {m.rolls.map((r) => (
+            {m.rolls?.map((r) => (
               <RollChip key={r.id} roll={r} />
             ))}
+            {m.hp && m.hp.length > 0 && (
+              <ul className="hp-changes" aria-label="Hit points">
+                {m.hp.map((h) => (
+                  <HpLine key={h.character} change={h} />
+                ))}
+              </ul>
+            )}
           </div>
         )}
         <div className="story">

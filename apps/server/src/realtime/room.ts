@@ -1563,6 +1563,7 @@ export class Room {
       meta: {
         citations: usedCitations(safe.text, ctx.citations),
         rolls: ctx.rolls,
+        ...(ctx.hp?.length ? { hp: ctx.hp } : {}),
         ...(refs.length ? { refs } : {}),
         ...(safe.redacted ? { redacted: true } : {}),
       },
@@ -1571,8 +1572,25 @@ export class Room {
     if (refs.length)
       await pgStore.markFirstSeen(this.campaignId, [...new Set(refs.map((r) => r.entityId))], message.id);
     this.post(message);
-    if (ctx.stateChanged) this.broadcast({ type: 'state_changed' });
+    // Rolls asked for while writing this are shown now, after the words that call for them.
+    const shown = await this.showRollRequests();
+    if (ctx.stateChanged || shown) this.broadcast({ type: 'state_changed' });
     return { redacted: safe.redacted };
+  }
+
+  /**
+   * Show the players the rolls the DM has asked for and not yet shown. A
+   * request stays hidden while the DM is still writing the narration that
+   * asks for it, so the dice never come up before the story does. Returns
+   * whether any were shown; the caller tells the table the state changed.
+   */
+  async showRollRequests(): Promise<boolean> {
+    const rows = await q(
+      `UPDATE roll_requests SET shown = true
+        WHERE campaign_id = $1 AND status = 'pending' AND NOT shown RETURNING id`,
+      [this.campaignId],
+    );
+    return rows.length > 0;
   }
 
   /**

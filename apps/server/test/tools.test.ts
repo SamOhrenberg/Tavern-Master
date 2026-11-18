@@ -181,6 +181,8 @@ describe('tool dispatch', () => {
       store,
     );
     expect(store.chars[0]).toMatchObject({ hp: 6, tempHp: 0, conditions: ['Prone'] });
+    // The change is kept for the narration to show.
+    expect(ctx.hp).toEqual([{ character: 'Thorn', from: 8, to: 6, max: 10 }]);
     await dispatchTool(
       'update_character',
       { character: 'Thorn', hp_delta: 50, remove_conditions: ['prone'] },
@@ -188,6 +190,8 @@ describe('tool dispatch', () => {
       store,
     );
     expect(store.chars[0]).toMatchObject({ hp: 10, conditions: [] });
+    // Several changes in one turn fold into one line, from where the turn started.
+    expect(ctx.hp).toEqual([{ character: 'Thorn', from: 8, to: 10, max: 10 }]);
     expect(ctx.stateChanged).toBe(true);
     expect(store.events.map((e) => e.tool)).toEqual(['update_character', 'update_character']);
   });

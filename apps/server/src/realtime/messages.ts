@@ -1,4 +1,4 @@
-import type { ChatMessage, Citation, DiceRoll, EntityRef, MessageKind } from '@tavern/protocol';
+import type { ChatMessage, Citation, DiceRoll, EntityRef, HpChange, MessageKind } from '@tavern/protocol';
 import { resolveRefs } from '../agent/codex.js';
 import { usedCitations } from '../agent/loop.js';
 import type { EntityRow } from '../agent/store.js';
@@ -16,6 +16,7 @@ interface Row {
   meta: {
     citations?: Citation[];
     rolls?: DiceRoll[];
+    hp?: HpChange[];
     refs?: EntityRef[];
     redacted?: boolean;
     ai?: boolean;
@@ -40,6 +41,7 @@ function toChat(r: Row): ChatMessage {
     content: r.content,
     ...(r.meta.citations?.length ? { citations: r.meta.citations } : {}),
     ...(r.meta.rolls?.length ? { rolls: r.meta.rolls } : {}),
+    ...(r.meta.hp?.length ? { hp: r.meta.hp } : {}),
     ...(r.meta.refs?.length ? { refs: r.meta.refs } : {}),
     ...(r.meta.redacted ? { redacted: true } : {}),
     ...(r.meta.ai ? { ai: true } : {}),

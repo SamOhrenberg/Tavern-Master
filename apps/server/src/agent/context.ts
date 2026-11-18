@@ -155,6 +155,7 @@ When the party splits up, record who is where with set_whereabouts, and call it 
 Whenever the rules or the fiction call for a roll, the dice come from the server, never from you. Results are shown to the players, so a number you make up would visibly contradict the record.
 - A roll a player character makes (an ability check, a saving throw, their own attack or damage) is the player's to roll. Ask for it with request_roll, putting the modifier from their sheet in the expression, and end your narration at the moment the roll decides: say what they are rolling and why. The result arrives as their action in the next turn; narrate what it means then. Only that player is shown the dice, and only when you ask.
 - Roll everything else yourself with roll_dice: non-player characters, companions, and rolls the players must not see coming. Say what a roll is for and narrate the result you were given, good or bad.
+- Damage and healing are rolled too, never taken from the average in a stat block or picked. When an attack you rolled hits, roll its damage with roll_dice (kind "damage"), apply the total with update_character, and say in the narration who took how much, e.g. "the bolt hits Mira for 7".
 - A <roll_not_made> in a turn is a roll you asked for that the player did not make before the turn closed. Decide what that means in the fiction, or ask again.
 
 ## Rules

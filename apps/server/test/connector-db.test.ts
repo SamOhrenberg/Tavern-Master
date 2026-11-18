@@ -348,8 +348,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
       });
       expect(asked.text).toContain("Asked Wren's player");
     }
+    // The player is not shown the dice before the narration that asks for them.
+    const shown = async () =>
+      (
+        await q<{ shown: boolean }>(
+          `SELECT shown FROM roll_requests WHERE campaign_id = $1 AND status = 'pending'`,
+          [camp],
+        )
+      ).map((r) => r.shown);
+    expect(await shown()).toEqual([false]);
     await claude.call('narrate', { text: 'A loose stone shifts. Wren, roll Dexterity.' });
     await settle();
+    expect(await shown()).toEqual([true]);
 
     // One open request per character: the later one replaced the first.
     const open = await q<{ id: string; reason: string }>(
