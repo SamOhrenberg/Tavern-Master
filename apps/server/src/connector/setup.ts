@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { savedLine } from '../agent/builder.js';
 import { pgStore, type CharRow } from '../agent/store.js';
@@ -7,6 +8,8 @@ import { HttpError } from '../errors.js';
 import { enforceLimit, rateLimiters } from '../http/security.js';
 import { applyDraft, type Control, type Viewer } from '../party.js';
 import { config } from '../config.js';
+import { sniffImage } from '../rules/parse.js';
+import { uploadPath } from '../storage.js';
 import { setHostSave } from './guide.js';
 import { setTokenCampaign } from './tokens.js';
 import { campaignBrief } from './tools.js';
@@ -226,8 +229,8 @@ export const SETUP_TOOLS: ConnectorTool[] = [
   own({
     name: 'get_character',
     description:
-      'Read one party member’s whole sheet: hit points, fields, inventory, persona and who plays them. In a ' +
-      'guide request, only the character being built.',
+      'Read one party member’s whole sheet: hit points, fields, inventory, persona and who plays them, with ' +
+      'their picture when they have one. In a guide request, only the character being built.',
     schema: z.object({ character: z.string().trim().min(1).max(80).describe('The character’s name') }),
     annotations: { readOnlyHint: true, openWorldHint: false },
     during: ['free', 'guide'],
@@ -248,10 +251,27 @@ export const SETUP_TOOLS: ConnectorTool[] = [
         `SELECT u.id, u.display_name FROM campaign_members m JOIN users u ON u.id = m.user_id WHERE m.campaign_id = $1`,
         [t.id],
       );
-      return describeCharacter(c, new Map(people.map((p) => [p.id, p.display_name])));
+      const text = describeCharacter(c, new Map(people.map((p) => [p.id, p.display_name])));
+      // The picture shows what the players see: how the character looks.
+      const picture = await portraitImage(c.portrait);
+      return picture ? { text, images: [picture] } : text;
     },
   }),
 ];
+
+/** A character's picture as an image for Claude, if it has one that is small enough to send. */
+async function portraitImage(portrait: string | null | undefined) {
+  if (!portrait) return undefined;
+  try {
+    const data = await readFile(uploadPath(portrait));
+    if (data.length > config().CONNECTOR_IMAGE_MAX_BYTES) return undefined;
+    const mimeType = sniffImage(data);
+    return mimeType ? { data: data.toString('base64'), mimeType } : undefined;
+  } catch {
+    // The file is gone: the sheet is still worth reading without it.
+    return undefined;
+  }
+}
 
 addTools(...SETUP_TOOLS);
 

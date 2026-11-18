@@ -478,6 +478,23 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
       (await chat.call('get_character', { character: 'old teo' })).text.split('\n').slice(1).join('\n'),
     );
     expect(teo).toMatchObject({ name: 'Old Teo', kind: 'companion', played_by: 'you, the DM', max_hp: 8 });
+    // With a picture, Claude sees what the players see.
+    const picture = newStorageName();
+    await ensureDataDirs(uploadsDir());
+    await writeFile(
+      uploadPath(picture),
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        'base64',
+      ),
+    );
+    await q(`UPDATE characters SET portrait = $3 WHERE campaign_id = $1 AND name = $2`, [
+      id,
+      'Old Teo',
+      picture,
+    ]);
+    const seen = await chat.call('get_character', { character: 'old teo' });
+    expect(seen.images).toEqual([expect.objectContaining({ type: 'image', mimeType: 'image/png' })]);
     const ash = await q1<{ controller: string; kind: string }>(
       `SELECT c.controller, c.kind FROM characters c JOIN character_players p ON p.character_id = c.id
         WHERE c.campaign_id = $1 AND c.name = 'Ash' AND p.user_id = $2`,
