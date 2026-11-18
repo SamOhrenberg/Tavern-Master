@@ -8,6 +8,7 @@ import { CampaignNotifyToggle } from '../screens/notifications';
 import { Avatar, ConfirmButton, Field, Presence, Sheet, formatTokens, formatUsd } from '../ui';
 import { DmChip } from './claude';
 import { Documents } from './documents';
+import { SheetVersionCard } from './sheet-update';
 import { WishesEditor } from './wishes';
 
 const WINDOWS = [
@@ -248,6 +249,11 @@ export function ManageSheet({
               </ConfirmButton>
             )}
           </div>
+
+          <div className="section-title">
+            <span>Character sheet</span>
+          </div>
+          <SheetVersionCard campaign={c} onChanged={onChanged} />
 
           <div className="section-title">
             <span>Campaign</span>

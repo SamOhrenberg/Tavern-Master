@@ -5,7 +5,7 @@ import type {
   DiceRoll,
   Entity,
   GameState,
-  GameSystem,
+  SheetSchema,
 } from '@tavern/protocol';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -54,7 +54,6 @@ function Table({ id }: { id: string }) {
   useVisualViewport(true);
   const campaign = useQuery(() => api<{ campaign: CampaignDetail }>(`/campaigns/${id}`), [id]);
   const state = useQuery(() => api<{ state: GameState }>(`/campaigns/${id}/state`), [id]);
-  const systems = useQuery(() => api<{ systems: GameSystem[] }>('/systems'), []);
 
   const c = campaign.data?.campaign;
   if (campaign.error) {
@@ -76,7 +75,8 @@ function Table({ id }: { id: string }) {
       </main>
     );
   }
-  const schema = systems.data?.systems.find((s) => s.id === c.systemId)?.sheetSchema;
+  // The version of the system's sheet this campaign is on, not necessarily the latest.
+  const schema = c.sheetSchema;
   const shared = { id, campaign, state, schema };
   // Keyed by phase so beginning the campaign swaps the lobby for a fresh play screen.
   return c.phase === 'prep' ? <Prep key="prep" {...shared} /> : <Play key="play" {...shared} />;
@@ -86,7 +86,7 @@ export interface TableProps {
   id: string;
   campaign: Query<{ campaign: CampaignDetail }>;
   state: Query<{ state: GameState }>;
-  schema: GameSystem['sheetSchema'] | undefined;
+  schema: SheetSchema | undefined;
 }
 
 function Play({ id, campaign, state, schema }: TableProps) {

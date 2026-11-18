@@ -1288,6 +1288,30 @@ button.code-box {
 .proposal-lines li + li {
   margin-top: 2px;
 }
+/* A field the draft replaces: carry its values to the new one. Sits under the "add" card it belongs to. */
+.proposal-carry {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: -4px 0 0 12px;
+  padding: 8px 12px;
+  border-left: 2px solid rgba(230, 185, 101, 0.45);
+  color: var(--muted);
+  cursor: pointer;
+}
+.proposal-carry input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--gold);
+}
+.proposal-carried {
+  color: var(--gold);
+}
+/* In the host's sheet update the changes are a list to read, not choices to tick. */
+div.proposal {
+  cursor: default;
+}
 .draft-state svg {
   flex: none;
   width: 18px;

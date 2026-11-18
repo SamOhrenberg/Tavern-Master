@@ -55,19 +55,27 @@ function EditJson({
       return;
     }
     setProblem('');
+    // "renames": {"old key": "new key"} beside the schema carries values to a field's new name.
+    const { renames: raw, ...schema } = (parsed ?? {}) as { renames?: unknown };
+    const renames =
+      raw && typeof raw === 'object'
+        ? Object.entries(raw as Record<string, unknown>).map(([from, to]) => ({ from, to: String(to) }))
+        : [];
     void run(async () => {
-      await api(`/systems/${systemId}/sheet-schema`, { method: 'PUT', body: { schema: parsed } });
+      await api(`/systems/${systemId}/sheet-schema`, { method: 'PUT', body: { schema, renames } });
       onSaved();
       onClose();
-    }, 'Sheet saved');
+    }, 'Sheet published as a new version');
   };
   return (
     <Sheet title="Edit the sheet" onClose={onClose} tall>
       <div className="stack">
         <p className="small muted">
           Field types: number, text, longtext, select (with options), checkbox, track (current and maximum),
-          list (with itemFields) and derived (with derivedFrom). Characters keep their values when you rename
-          a section; renaming a field&apos;s key moves its old value under &ldquo;More on the sheet&rdquo;.
+          list (with itemFields) and derived (with derivedFrom). Saving publishes a new version: campaigns
+          already playing keep theirs until their host updates. To rename a field&apos;s key and keep its
+          values, add <code>&quot;renames&quot;: &#123;&quot;old key&quot;: &quot;new key&quot;&#125;</code>{' '}
+          beside the sections.
         </p>
         <textarea
           className="textarea json-input"
@@ -111,6 +119,8 @@ export function SheetSchemaPanel({
         {count
           ? `${count} field${count === 1 ? '' : 's'} in ${schema.sections.length} section${schema.sections.length === 1 ? '' : 's'}. ${schema.hp.label} are kept apart from the sheet.`
           : 'No fields yet: players write whatever their sheet needs.'}
+        {system.sheetVersion > 1 &&
+          ` Version ${system.sheetVersion}: new campaigns get it, and campaigns already playing move to it when their host updates.`}
       </p>
       {schema.sections.map((sec) => (
         <div key={sec.id} className="schema-section">

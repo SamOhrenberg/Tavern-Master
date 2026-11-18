@@ -1,5 +1,5 @@
-import type { GameSystem, SheetDraftView, SheetField, SheetProposal } from '@tavern/protocol';
-import { useEffect, useState } from 'react';
+import type { GameSystem, SheetDraftView, SheetField, SheetProposal, SheetRename } from '@tavern/protocol';
+import { Fragment, useEffect, useState } from 'react';
 import { api, errorMessage } from '../api';
 import { useAction, useToast } from '../app';
 import { IconSparkle } from '../icons';
@@ -34,7 +34,7 @@ function FieldSummary({ field }: { field: SheetField }) {
   ) : null;
 }
 
-function ProposalBody({ p }: { p: SheetProposal }) {
+export function ProposalBody({ p }: { p: SheetProposal }) {
   switch (p.kind) {
     case 'add':
       return (
@@ -62,7 +62,8 @@ function ProposalBody({ p }: { p: SheetProposal }) {
         <>
           <b>Remove {p.field.label}</b>
           <span className="small muted">
-            From {p.section}. Values already on sheets stay, under &ldquo;More on the sheet&rdquo;.
+            From {p.section}. Values already on sheets stay, under &ldquo;More on the sheet&rdquo;, unless
+            they move to a new field.
           </span>
         </>
       );
@@ -96,6 +97,9 @@ function ProposalBody({ p }: { p: SheetProposal }) {
 
 /** Removals take something off every sheet, so they start unticked; everything else starts ticked. */
 const startsAccepted = (p: SheetProposal) => p.kind !== 'remove';
+/** Proposal ids as the server makes them. */
+const addId = (key: string) => `add:${key.toLowerCase()}`;
+const removeId = (key: string) => `remove:${key.toLowerCase()}`;
 
 /**
  * Go through a draft change by change: tick what to keep, then apply. Only
@@ -112,6 +116,8 @@ function Review({
 }) {
   const [view, setView] = useState<SheetDraftView | null>(null);
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
+  /** Replaced fields (by their old name) whose values move to the new one. */
+  const [carry, setCarry] = useState<Set<string>>(new Set());
   const [busy, run] = useAction();
   const notify = useToast();
 
@@ -119,7 +125,10 @@ function Review({
     api<SheetDraftView>(`/systems/${systemId}/sheet-draft`)
       .then((v) => {
         setView(v);
-        setAccepted(new Set(v.proposals.filter(startsAccepted).map((p) => p.id)));
+        // A field the draft replaces starts with both halves ticked and its values carried over.
+        const paired = v.renames.flatMap((r) => [addId(r.to), removeId(r.from)]);
+        setAccepted(new Set([...v.proposals.filter(startsAccepted).map((p) => p.id), ...paired]));
+        setCarry(new Set(v.renames.map((r) => r.from)));
       })
       .catch((err) => notify(errorMessage(err), 'error'));
   }, [systemId, notify]);
@@ -133,6 +142,27 @@ function Review({
     });
   const proposals = view?.proposals ?? [];
   const chosen = proposals.filter((p) => accepted.has(p.id)).length;
+  const renameTo = (key: string) => view?.renames.find((r) => r.to.toLowerCase() === key.toLowerCase());
+  const renameFrom = (key: string) => view?.renames.find((r) => r.from.toLowerCase() === key.toLowerCase());
+  const labelOf = (key: string) => {
+    const p = proposals.find((x) => (x.kind === 'add' || x.kind === 'remove') && x.field.key === key);
+    return p && 'field' in p ? p.field.label : key;
+  };
+  /** Pairs that carry values over: both halves ticked, and carrying chosen. */
+  const renames = (view?.renames ?? []).filter(
+    (r) => carry.has(r.from) && accepted.has(addId(r.to)) && accepted.has(removeId(r.from)),
+  );
+  const toggleCarry = (r: SheetRename) => {
+    const on = !carry.has(r.from);
+    setCarry((s) => {
+      const next = new Set(s);
+      if (on) next.add(r.from);
+      else next.delete(r.from);
+      return next;
+    });
+    // Carrying needs the new field added and the old one taken away.
+    if (on) setAccepted((s) => new Set([...s, addId(r.to), removeId(r.from)]));
+  };
 
   return (
     <Sheet title="Review the draft" onClose={onClose} tall>
@@ -171,14 +201,35 @@ function Review({
                   {chosen === proposals.length ? 'Untick all' : 'Tick all'}
                 </button>
               </div>
-              {proposals.map((p) => (
-                <label key={p.id} className={`proposal kind-${p.kind}${accepted.has(p.id) ? ' on' : ''}`}>
-                  <span className="proposal-body">
-                    <ProposalBody p={p} />
-                  </span>
-                  <input type="checkbox" checked={accepted.has(p.id)} onChange={() => toggle(p.id)} />
-                </label>
-              ))}
+              {proposals.map((p) => {
+                const into = p.kind === 'add' ? renameTo(p.field.key) : undefined;
+                const out = p.kind === 'remove' ? renameFrom(p.field.key) : undefined;
+                const carried = (r: SheetRename | undefined) => !!r && renames.includes(r);
+                return (
+                  <Fragment key={p.id}>
+                    <label className={`proposal kind-${p.kind}${accepted.has(p.id) ? ' on' : ''}`}>
+                      <span className="proposal-body">
+                        <ProposalBody p={p} />
+                        {carried(out) && (
+                          <span className="small proposal-carried">
+                            Its values move to {labelOf(out!.to)}.
+                          </span>
+                        )}
+                      </span>
+                      <input type="checkbox" checked={accepted.has(p.id)} onChange={() => toggle(p.id)} />
+                    </label>
+                    {into && (
+                      <label className="proposal-carry small">
+                        <input type="checkbox" checked={carried(into)} onChange={() => toggleCarry(into)} />
+                        <span>
+                          Replaces {labelOf(into.from)}: carry each character&rsquo;s value over when their
+                          campaign updates
+                        </span>
+                      </label>
+                    )}
+                  </Fragment>
+                );
+              })}
             </>
           )}
           <button
@@ -186,14 +237,17 @@ function Review({
             className="btn primary block"
             disabled={busy || chosen === 0}
             onClick={() =>
-              void run(
-                async () => {
-                  await api(`/systems/${systemId}/sheet-draft/apply`, { body: { accept: [...accepted] } });
-                  onDone();
-                  onClose();
-                },
-                `Sheet updated with ${chosen} change${chosen === 1 ? '' : 's'}`,
-              )
+              void run(async () => {
+                const { sheetVersion } = await api<{ sheetVersion: number }>(
+                  `/systems/${systemId}/sheet-draft/apply`,
+                  { body: { accept: [...accepted], renames } },
+                );
+                notify(
+                  `Published as version ${sheetVersion}. Campaigns already playing update when their host chooses.`,
+                );
+                onDone();
+                onClose();
+              })
             }
           >
             {chosen ? `Apply ${chosen} change${chosen === 1 ? '' : 's'}` : 'Tick a change to apply it'}
