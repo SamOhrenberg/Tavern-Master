@@ -31,8 +31,13 @@ export interface GameSystem {
   slug: string;
   name: string;
   description: string;
-  /** What a character sheet holds in this system. */
+  /** What a character sheet holds in this system: its latest version. */
   sheetSchema: SheetSchema;
+  /**
+   * Which version of the sheet that is. Each publish makes a new one; a
+   * campaign stays on the version it has until its host updates it.
+   */
+  sheetVersion: number;
   documentCount: number;
   chunkCount: number;
   /** How many of the system's library documents are setting/flavour material. */
@@ -85,6 +90,12 @@ export interface SheetDraftView {
   /** What the drafter could not settle from the documents. */
   notes: string[];
   proposals: SheetProposal[];
+  /**
+   * Fields the draft seems to replace with a new one (the same label under a
+   * new name). Applied with both changes, a pair carries each character's
+   * value over to the new field when their campaign updates.
+   */
+  renames: SheetRename[];
   draftedAt: string | null;
 }
 
@@ -305,6 +316,11 @@ export interface CampaignDetail extends CampaignSummary {
    * readies up, and the host starts the next session.
    */
   restingSince: string | null;
+  /** The character sheet this campaign uses: the version of its system's sheet it is on. */
+  sheetSchema: SheetSchema;
+  sheetVersion: number;
+  /** For the host: a newer version of the sheet they can update to. Null when there is none. */
+  sheetUpdate: { version: number } | null;
 }
 
 /** The adventure so far, for the recap between sessions. */

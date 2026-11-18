@@ -8,11 +8,13 @@ import type {
   GameState,
   Recap,
   RollKind,
+  SheetUpdate,
 } from '@tavern/protocol';
 import { rm } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { entityMatches, scopeEntity } from '../agent/codex.js';
+import { audit } from '../audit.js';
 import { redactSecrets } from '../agent/loop.js';
 import { pgStore } from '../agent/store.js';
 import {
@@ -44,6 +46,8 @@ import { portraitUrl } from '../party.js';
 import { editMessage, listMessages } from '../realtime/messages.js';
 import { dmStatusOf, getRoom, openRoom } from '../realtime/room.js';
 import { restartSession, rewindTo } from '../rewind.js';
+import { CAMPAIGN_SHEET_SQL, toSchema } from '../sheet-schema.js';
+import { applyUpdate, previewUpdate } from '../sheet-versions.js';
 import { uploadPath } from '../storage.js';
 import { claudeConnected } from './account.js';
 import { areFriends } from './friends.js';
@@ -83,8 +87,13 @@ function settingsOf(raw: Partial<CampaignSettings>): CampaignSettings {
   };
 }
 
-const SUMMARY_SQL = `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, s.homebrew, c.owner_id, c.status,
+/** A campaign as a member sees it. Only the detail carries its sheet, so the list stays light. */
+const summarySql = (
+  detail: boolean,
+) => `SELECT c.id, c.name, c.premise, c.system_id, s.name AS system_name, s.homebrew, c.owner_id, c.status,
                             c.phase, c.settings, c.scene, c.resting_since, m.role, m.wishes,
+                            c.sheet_version, s.sheet_version AS latest_sheet_version,
+                            ${detail ? `${CAMPAIGN_SHEET_SQL} AS sheet_template,` : ''}
                             (SELECT count(*)::int FROM campaign_members x WHERE x.campaign_id = c.id) AS member_count
                        FROM campaigns c
                        JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1
@@ -110,7 +119,7 @@ function toSummary(r: Record<string, unknown>): CampaignSummary {
 export async function campaignRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/campaigns', async (req) => {
     const auth = requireUser(req);
-    const rows = await q(`${SUMMARY_SQL} ORDER BY c.status, c.created_at DESC`, [auth.user.id]);
+    const rows = await q(`${summarySql(false)} ORDER BY c.status, c.created_at DESC`, [auth.user.id]);
     return { campaigns: rows.map(toSummary) };
   });
 
@@ -128,7 +137,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { id: string } }>('/api/campaigns/:id', async (req) => {
     const { auth, role, campaignId } = await requireMember(req);
-    const row = await q1(`${SUMMARY_SQL} WHERE c.id = $2`, [auth.user.id, campaignId]);
+    const row = await q1(`${summarySql(true)} WHERE c.id = $2`, [auth.user.id, campaignId]);
     if (!row) throw notFound();
     const members = await q(
       `SELECT u.id, u.username, u.display_name, m.role, m.ready_at IS NOT NULL AS ready,
@@ -166,8 +175,43 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       myWishes: row.wishes,
       dmStatus: await dmStatusOf(campaignId, dmModeOf(row.settings)),
       restingSince: row.resting_since ? (row.resting_since as Date).toISOString() : null,
+      sheetSchema: toSchema(row.sheet_template),
+      sheetVersion: row.sheet_version,
+      sheetUpdate:
+        role === 'owner' && row.latest_sheet_version > row.sheet_version
+          ? { version: row.latest_sheet_version }
+          : null,
     };
     return { campaign: detail };
+  });
+
+  /** For the host: what updating to the latest version of the system's sheet would change. */
+  app.get<{ Params: { id: string } }>(
+    '/api/campaigns/:id/sheet-update',
+    async (req): Promise<{ update: SheetUpdate | null }> => {
+      const { campaignId } = await requireMember(req, true);
+      return { update: await previewUpdate(campaignId) };
+    },
+  );
+
+  /**
+   * Update the campaign to the latest version of its system's sheet, carrying
+   * every character's values across. `version` is the one the host was shown.
+   */
+  app.post<{ Params: { id: string } }>('/api/campaigns/:id/sheet-update', async (req) => {
+    const { auth, campaignId } = await requireMember(req, true);
+    const { version } = parse(z.object({ version: z.number().int().min(1) }), req.body);
+    const update = await applyUpdate(campaignId, version);
+    await audit('campaign.sheet_updated', {
+      actorId: auth.user.id,
+      targetType: 'campaign',
+      targetId: campaignId,
+      ip: req.ip,
+      meta: { from: update.from, to: update.to },
+    });
+    // The sheet, the GM's notes on it and every character changed: everyone looks again.
+    getRoom(campaignId)?.partyChanged();
+    return { update };
   });
 
   app.patch<{ Params: { id: string } }>('/api/campaigns/:id', async (req) => {

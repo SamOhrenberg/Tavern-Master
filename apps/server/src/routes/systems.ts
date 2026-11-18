@@ -14,14 +14,19 @@ import { enforceLimit, rateLimiters, requireAdmin, requireUser } from '../http/s
 import { enqueue, hasPending } from '../jobs/queue.js';
 import { rulesCorpus } from '../agent/sheet-drafter.js';
 import { builtInAiFor, instanceAiConfigured } from '../llm/index.js';
-import { applyProposals, proposalsFor } from '../sheet-proposals.js';
+import { applyProposals, proposalsFor, suggestRenames } from '../sheet-proposals.js';
 import { editLoreSchema } from '../rules/lore.js';
 import { sniffFile } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
 import { fromTemplate, parseSchema, toSchema } from '../sheet-schema.js';
+import { checkRenames, publishSheet } from '../sheet-versions.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from '../storage.js';
 
 const uuid = z.string().uuid();
+const renamesInput = z
+  .array(z.object({ from: z.string().trim().min(1).max(60), to: z.string().trim().min(1).max(60) }))
+  .max(80)
+  .default([]);
 const systemSchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(600).default(''),
@@ -102,7 +107,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireUser(req);
     const admin = auth.user.role === 'admin';
     const rows = await q(
-      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status, s.homebrew,
+      `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.sheet_version, s.lore, s.lore_status, s.homebrew,
               s.gm_instructions, s.sheet_draft_status,
               (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id AND d.campaign_id IS NULL) AS docs,
               (SELECT count(*)::int FROM documents d
@@ -116,6 +121,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       name: r.name,
       description: r.description,
       sheetSchema: toSchema(r.sheet_template),
+      sheetVersion: r.sheet_version,
       documentCount: r.docs,
       chunkCount: r.chunks,
       settingDocumentCount: r.setting_docs,
@@ -202,27 +208,31 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Replace what a system's character sheets hold. Sheets already written keep
-   * their values: a field that is gone shows under "More on the sheet", and a
-   * value is fitted to its field's new kind the next time the sheet is saved.
+   * Publish a new version of what a system's character sheets hold. New
+   * campaigns get it; campaigns already playing stay on their version until
+   * their host updates, which carries each sheet's values across (`renames`
+   * moves a replaced field's values to its new name).
    */
   app.put<{ Params: { id: string } }>('/api/systems/:id/sheet-schema', async (req) => {
     const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
-    const schema = parseSchema((req.body as { schema?: unknown } | undefined)?.schema);
-    const row = await q1<{ id: string }>(
-      'UPDATE game_systems SET sheet_template = $2 WHERE id = $1 RETURNING id',
-      [id, JSON.stringify(schema)],
+    const body = (req.body ?? {}) as { schema?: unknown; renames?: unknown };
+    const schema = parseSchema(body.schema);
+    const row = await q1<{ sheet_template: unknown }>(
+      'SELECT sheet_template FROM game_systems WHERE id = $1',
+      [id],
     );
     if (!row) throw notFound();
+    const renames = checkRenames(toSchema(row.sheet_template), schema, parse(renamesInput, body.renames));
+    const version = await publishSheet(id, schema, { renames, by: auth.user.id });
     await audit('system.updated', {
       actorId: auth.user.id,
       targetType: 'system',
       targetId: id,
       ip: req.ip,
-      meta: { sheetSchema: true },
+      meta: { sheetSchema: true, sheetVersion: version },
     });
-    return { sheetSchema: schema };
+    return { sheetSchema: schema, sheetVersion: version };
   });
 
   // ---- the AI's draft of a system's sheet ----
@@ -273,41 +283,55 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       const row = await q1<DraftRow>(DRAFT_SQL, [id]);
       if (!row) throw notFound();
       const draft = row.sheet_draft ? toSchema(row.sheet_draft) : null;
+      const proposals = draft ? proposalsFor(toSchema(row.sheet_template), draft) : [];
       return {
         status: row.sheet_draft_status,
         error: row.sheet_draft_error,
         notes: row.sheet_draft_notes,
-        proposals: draft ? proposalsFor(toSchema(row.sheet_template), draft) : [],
+        proposals,
+        renames: suggestRenames(proposals),
         draftedAt: row.sheet_draft_at?.toISOString() ?? null,
       };
     },
   );
 
   /**
-   * Make the changes the admin chose, and only those, then let the draft go.
-   * Ids are the proposals' own; one the draft no longer proposes is ignored.
+   * Make the changes the admin chose, and only those, as a new version of the
+   * sheet, then let the draft go. Ids are the proposals' own; one the draft no
+   * longer proposes is ignored. `renames` pairs a removed field with an added
+   * one whose values it carries over; both changes must be among those chosen.
    */
   app.post<{ Params: { id: string } }>('/api/systems/:id/sheet-draft/apply', async (req) => {
     const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
-    const { accept } = parse(z.object({ accept: z.array(z.string().max(80)).max(200) }), req.body);
+    const { accept, renames: pairs } = parse(
+      z.object({ accept: z.array(z.string().max(80)).max(200), renames: renamesInput }),
+      req.body,
+    );
     const row = await q1<DraftRow>(DRAFT_SQL, [id]);
     if (!row) throw notFound();
     if (!row.sheet_draft) throw conflict('There is no draft to apply.');
-    const schema = applyProposals(toSchema(row.sheet_template), toSchema(row.sheet_draft), accept);
-    await q(
-      `UPDATE game_systems SET sheet_template = $2, sheet_draft = NULL, sheet_draft_notes = '[]',
-              sheet_draft_status = 'none', sheet_draft_error = NULL WHERE id = $1`,
-      [id, JSON.stringify(schema)],
-    );
+    const current = toSchema(row.sheet_template);
+    const schema = applyProposals(current, toSchema(row.sheet_draft), accept);
+    const renames = checkRenames(current, schema, pairs);
+    const version = await tx(async (c) => {
+      const v = await publishSheet(id, schema, { renames, by: auth.user.id }, c);
+      await q(
+        `UPDATE game_systems SET sheet_draft = NULL, sheet_draft_notes = '[]',
+                sheet_draft_status = 'none', sheet_draft_error = NULL WHERE id = $1`,
+        [id],
+        c,
+      );
+      return v;
+    });
     await audit('system.updated', {
       actorId: auth.user.id,
       targetType: 'system',
       targetId: id,
       ip: req.ip,
-      meta: { sheetSchema: true, fromDraft: accept.length },
+      meta: { sheetSchema: true, fromDraft: accept.length, sheetVersion: version },
     });
-    return { sheetSchema: schema };
+    return { sheetSchema: schema, sheetVersion: version };
   });
 
   /** Let a draft (or a failed attempt) go without changing the sheet. */
