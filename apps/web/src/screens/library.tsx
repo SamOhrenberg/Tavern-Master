@@ -600,7 +600,9 @@ export function SystemScreen() {
   const system = systems.data?.systems.find((s) => s.id === id);
   const list = docs.data?.documents ?? [];
   const loreBusy = LORE[system?.loreStatus ?? 'none'].live;
-  const working = list.some((d) => STATUS[d.status].live) || loreBusy;
+  // A sheet draft is written in the background too.
+  const drafting = system?.sheetDraftStatus === 'queued' || system?.sheetDraftStatus === 'drafting';
+  const working = list.some((d) => STATUS[d.status].live) || loreBusy || drafting;
   const reloadDocs = docs.reload;
   const reloadSystems = systems.reload;
 
@@ -738,7 +740,12 @@ export function SystemScreen() {
           title="Character sheet"
           count={system.sheetSchema.sections.reduce((n, s) => n + s.fields.length, 0)}
         >
-          <SheetSchemaPanel system={system} manage={admin && !locked} onSaved={() => void reloadSystems()} />
+          <SheetSchemaPanel
+            system={system}
+            manage={admin && !locked}
+            rulebooks={rulebooks.filter((d) => d.status === 'ready').length}
+            onSaved={() => void reloadSystems()}
+          />
         </Group>
       )}
 

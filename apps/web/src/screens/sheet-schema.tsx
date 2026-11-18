@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api } from '../api';
 import { useAction } from '../app';
 import { initialValues, SheetSections, type FieldInput, type FormValues } from '../play/sheet-fields';
+import { SheetDraftControls } from './sheet-draft';
 import { Sheet } from '../ui';
 
 const TYPE_LABEL: Record<SheetFieldType, string> = {
@@ -92,10 +93,13 @@ function EditJson({
 export function SheetSchemaPanel({
   system,
   manage,
+  rulebooks,
   onSaved,
 }: {
   system: GameSystem;
   manage: boolean;
+  /** Library rulebooks that have finished indexing, which a draft is read from. */
+  rulebooks: number;
   onSaved: () => void;
 }) {
   const [open, setOpen] = useState<'preview' | 'json' | null>(null);
@@ -130,6 +134,7 @@ export function SheetSchemaPanel({
           </ol>
         </details>
       )}
+      {manage && <SheetDraftControls system={system} rulebooks={rulebooks} onChanged={onSaved} />}
       <div className="row wrap">
         {count > 0 && (
           <button type="button" className="btn sm" onClick={() => setOpen('preview')}>

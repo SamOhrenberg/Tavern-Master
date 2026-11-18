@@ -1235,3 +1235,62 @@ button.code-box {
   font-weight: 400;
   color: var(--faint);
 }
+
+/* ---------- the AI's draft of a sheet, and reviewing it ---------- */
+.draft-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.draft-state.ready {
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--gold-wash);
+  border: 1px solid var(--line);
+}
+.proposal {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
+.proposal.on {
+  border-color: rgba(230, 185, 101, 0.45);
+}
+.proposal.kind-remove.on {
+  border-color: rgba(239, 122, 85, 0.55);
+}
+.proposal-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.proposal input {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  accent-color: var(--gold);
+}
+.proposal-lines {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.proposal-lines li + li {
+  margin-top: 2px;
+}
+.draft-state svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--gold);
+}
