@@ -35,8 +35,18 @@ export type CastPanel =
 /** Mirrors the server's rule; the server is what enforces it. */
 export function canEdit(c: Character, meId: string, owner: boolean): boolean {
   if (c.controller === 'player' && c.playerIds.includes(meId)) return true;
-  return owner && (c.controller !== 'player' || c.playerIds.length === 0);
+  const unrun = c.controller !== 'player' || c.playerIds.length === 0;
+  return unrun && (owner || c.createdBy === meId);
 }
+
+/** Who may take a character out of the party: the owners, or a player it is theirs alone. */
+export const canRemove = (c: Character, meId: string, owner: boolean) =>
+  owner ||
+  (c.playerIds.length === 1 && c.playerIds[0] === meId) ||
+  (canEdit(c, meId, owner) && c.playerIds.every((id) => id === meId));
+
+/** The campaign's host: whoever made it, whose AI or Claude runs the table. */
+export const hostOf = (campaign: CampaignDetail) => campaign.members.find((m) => m.id === campaign.ownerId);
 
 export const runsIt = (c: Character, meId: string) => c.controller === 'player' && c.playerIds.includes(meId);
 
@@ -166,16 +176,14 @@ function AddCharacterSheet({
   return (
     <Sheet title="Add to the party" onClose={onClose}>
       <div className="stack">
-        {owner && (
-          <Segmented
-            value={whose}
-            onChange={setWhose}
-            options={[
-              { value: 'mine', label: 'My character' },
-              { value: 'companion', label: 'A companion' },
-            ]}
-          />
-        )}
+        <Segmented
+          value={whose}
+          onChange={setWhose}
+          options={[
+            { value: 'mine', label: 'My character' },
+            { value: 'companion', label: 'A companion' },
+          ]}
+        />
         {whose === 'companion' && (
           <div>
             <span className="label">Who plays them?</span>
@@ -185,7 +193,9 @@ function AddCharacterSheet({
               options={controllerOptions(campaign).filter((c) => c.value !== 'player')}
             />
             <p className="small faint under-field">
-              You can hand a companion to a player later from the party list.
+              {owner
+                ? 'You can hand a companion to a player later from the party list.'
+                : 'You look after them: their sheet and who plays them are yours to change from the party list.'}
             </p>
           </div>
         )}
@@ -234,7 +244,7 @@ function AddCharacterSheet({
             <IconChevron className="chev" />
           </button>
         </div>
-        {claude && owner && (
+        {claude && campaign.ownerId === me.id && (
           <p className="small faint">
             Or do it in your Claude chat: say <i>help me make a character</i>.
           </p>
@@ -253,7 +263,11 @@ function AddCharacterSheet({
   );
 }
 
-/** The owner decides who speaks for a party member. */
+/**
+ * Who speaks for a party member. The owners hand a character to anyone; a
+ * player chooses between themselves, the DM and an AI of its own for a
+ * companion they look after.
+ */
 function ControlSheet({
   campaign,
   character,
@@ -269,6 +283,10 @@ function ControlSheet({
   const [controller, setController] = useState<CharacterController>(character.controller);
   const [players, setPlayers] = useState<string[]>(character.playerIds);
   const [busy, run] = useAction();
+  const me = useMe();
+  const owner = campaign.role === 'owner';
+  // A player can only take a character on themselves, not hand it to someone else.
+  const choosable = owner ? campaign.members : campaign.members.filter((m) => m.id === me.id);
 
   const toggle = (id: string) =>
     setPlayers((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]));
@@ -290,7 +308,7 @@ function ControlSheet({
           <div>
             <span className="label">Players</span>
             <div className="list">
-              {campaign.members.map((m) => (
+              {choosable.map((m) => (
                 <button
                   key={m.id}
                   type="button"
@@ -386,7 +404,7 @@ export function CastPanels({
         draft={panel.draft}
         control={panel.control}
         mine={c ? runsIt(c, me.id) : (panel.control?.controller ?? 'player') === 'player'}
-        canDelete={!!c && (owner || (c.playerIds.length === 1 && c.playerIds[0] === me.id))}
+        canDelete={!!c && canRemove(c, me.id, owner)}
         onClose={() => {
           forget();
           close();
@@ -408,7 +426,7 @@ export function CastPanels({
         control={panel.control}
         claude={campaign.dm === 'claude'}
         dm={dm ?? campaign.dmStatus}
-        hostName={campaign.members.find((m) => m.role === 'owner')?.displayName}
+        hostName={hostOf(campaign)?.displayName}
         guideSignal={guideSignal}
         onClose={close}
         onChanged={onChanged}
@@ -433,7 +451,7 @@ export function CastPanels({
   );
 }
 
-/** One row of buttons for a character: its sheet, the guide, and (for the owner) who plays it. */
+/** One row of buttons for a character: its sheet, the guide, and (for whoever may change it) who plays it. */
 export function CastActions({
   character,
   campaign,
@@ -446,7 +464,9 @@ export function CastActions({
   const me = useMe();
   const owner = campaign.role === 'owner';
   const editable = canEdit(character, me.id, owner);
-  if (!editable && !owner) return null;
+  // A player changes who plays a companion they look after; a character several players share is the owners'.
+  const control = owner || (editable && character.playerIds.length <= 1);
+  if (!editable && !control) return null;
   return (
     <div className="row wrap cast-actions">
       {editable && (
@@ -463,7 +483,7 @@ export function CastActions({
           <IconSparkle /> {campaign.dm === 'claude' ? 'Claude' : 'Guide'}
         </button>
       )}
-      {owner && (
+      {control && (
         <button type="button" className="btn sm ghost" onClick={() => onOpen({ kind: 'control', character })}>
           <IconD20 /> Who plays
         </button>

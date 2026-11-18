@@ -90,14 +90,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('party, documents and records (d
     });
   });
 
-  it('lets a player make their own character and nothing else', async () => {
+  it('lets a player make their own character, but not hand one to anyone else', async () => {
     const viewer = { userId: ann, role: 'player' as const };
     const id = await createCharacter(camp, viewer, body('Thorn'));
     const chars = await pgStore.characters(camp);
     expect(chars).toMatchObject([{ id, name: 'Thorn', kind: 'pc', controller: 'player', playerIds: [ann] }]);
 
+    // A companion the DM plays is fine (see below); a player character the DM plays is not theirs to make.
     await expect(
-      createCharacter(camp, viewer, body('Bram'), { kind: 'npc', controller: 'gm', playerIds: [] }),
+      createCharacter(camp, viewer, body('Bram'), { kind: 'pc', controller: 'gm', playerIds: [] }),
     ).rejects.toMatchObject({ status: 403 });
     await expect(
       createCharacter(camp, viewer, body('Mira'), { kind: 'pc', controller: 'player', playerIds: [bob] }),
@@ -135,6 +136,34 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('party, documents and records (d
       controller: 'gm',
       playerIds: [],
     });
+  });
+
+  it('lets a player add an AI companion and look after it, but not hand it on', async () => {
+    const viewer = { userId: ann, role: 'player' as const };
+    const pip = await createCharacter(camp, viewer, body('Pip'), {
+      kind: 'npc',
+      controller: 'agent',
+      playerIds: [],
+    });
+    expect((await pgStore.characters(camp)).find((c) => c.id === pip)).toMatchObject({
+      controller: 'agent',
+      createdBy: ann,
+    });
+    // Their own companion: they edit it and choose who plays it among themselves, the DM and an AI.
+    await updateCharacter(camp, pip, viewer, { ...body('Pip'), persona: 'Nervous.' });
+    await setControl(camp, pip, { kind: 'npc', controller: 'gm', playerIds: [] }, viewer);
+    await expect(
+      setControl(camp, pip, { kind: 'npc', controller: 'player', playerIds: [bob] }, viewer),
+    ).rejects.toMatchObject({ status: 403 });
+    // Another player may not touch it.
+    const bobs = { userId: bob, role: 'player' as const };
+    await expect(updateCharacter(camp, pip, bobs, body('Pip'))).rejects.toMatchObject({ status: 403 });
+    await expect(
+      setControl(camp, pip, { kind: 'npc', controller: 'agent', playerIds: [] }, bobs),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(deleteCharacter(camp, pip, bobs)).rejects.toMatchObject({ status: 403 });
+    await deleteCharacter(camp, pip, viewer);
+    expect((await pgStore.characters(camp)).some((c) => c.id === pip)).toBe(false);
   });
 
   it('keeps one player out of another player’s sheet, owner included', async () => {

@@ -267,12 +267,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('work handed to Claude (database
       error: 'The photo is one blank pixel.',
     });
     expect(annSocket.sent).toContainEqual({ type: 'sheet', id, status: 'failed' });
-    // Only the owner may upload a sheet for a companion.
-    const companion = await upload(
+    // Only the owners may upload a sheet for a character someone else will play.
+    const theirs = await upload(
       { name: 'pal.txt', type: 'text/plain', data: Buffer.from(SHEET_TEXT) },
-      { kind: 'npc', controller: 'gm', playerIds: [] },
+      { kind: 'pc', controller: 'player', playerIds: [host] },
     );
-    expect(companion.status).toBe(403);
+    expect(theirs.status).toBe(403);
   });
 
   it('has Claude catalogue a new campaign document instead of a model', async () => {

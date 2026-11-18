@@ -22,7 +22,7 @@ import type { ResolvedLlm } from '../src/llm/index.js';
 import { mockProvider } from '../src/llm/mock.js';
 import { ZERO_USAGE } from '../src/llm/pricing.js';
 import type { ChatProvider, ChatRequest, StreamEvent } from '../src/llm/types.js';
-import { canEdit, characterSchema } from '../src/party.js';
+import { canEdit, characterSchema, mayAssign } from '../src/party.js';
 import { parseCatalogue } from '../src/rules/catalogue.js';
 import { sniffImage } from '../src/rules/parse.js';
 import { EMPTY_SCHEMA, fromTemplate } from '../src/sheet-schema.js';
@@ -69,6 +69,25 @@ describe('who runs a character', () => {
     expect(canEdit(host, { controller: 'player', playerIds: [] })).toBe(true);
     expect(canEdit(host, { controller: 'player', playerIds: ['u-ann'] })).toBe(false);
     expect(canEdit(host, { controller: 'player', playerIds: ['u-host'] })).toBe(true);
+  });
+
+  it('lets a player look after a companion they added, while no other player runs it', () => {
+    expect(canEdit(ann, { controller: 'agent', playerIds: [], createdBy: 'u-ann' })).toBe(true);
+    expect(canEdit(ann, { controller: 'gm', playerIds: [], createdBy: 'u-ann' })).toBe(true);
+    expect(canEdit(ann, { controller: 'agent', playerIds: [], createdBy: 'u-bob' })).toBe(false);
+    // Once handed to another player it is theirs.
+    expect(canEdit(ann, { controller: 'player', playerIds: ['u-bob'], createdBy: 'u-ann' })).toBe(false);
+  });
+
+  it('lets a player make companions, but only the owners hand characters to others', () => {
+    const own = { kind: 'pc' as const, controller: 'player' as const, playerIds: ['u-ann'] };
+    expect(mayAssign(ann, own)).toBe(true);
+    expect(mayAssign(ann, { kind: 'npc', controller: 'agent', playerIds: [] })).toBe(true);
+    expect(mayAssign(ann, { kind: 'npc', controller: 'gm', playerIds: [] })).toBe(true);
+    expect(mayAssign(ann, { kind: 'npc', controller: 'player', playerIds: ['u-ann'] })).toBe(true);
+    expect(mayAssign(ann, { kind: 'pc', controller: 'player', playerIds: ['u-bob'] })).toBe(false);
+    expect(mayAssign(ann, { kind: 'pc', controller: 'agent', playerIds: [] })).toBe(false);
+    expect(mayAssign(host, { kind: 'pc', controller: 'player', playerIds: ['u-ann', 'u-bob'] })).toBe(true);
   });
 
   it('tells the DM who speaks for each party member', async () => {

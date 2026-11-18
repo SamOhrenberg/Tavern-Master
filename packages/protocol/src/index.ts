@@ -560,6 +560,11 @@ export interface Character {
   portrait?: string;
   /** Where they are when the party has split; empty when with the party. */
   whereabouts?: string;
+  /**
+   * Who added them to the party. A player who adds a companion run by the DM
+   * or its own AI looks after it, as the owners do.
+   */
+  createdBy?: string;
   /** Only present for the players who run the character. */
   privateNotes?: string;
 }

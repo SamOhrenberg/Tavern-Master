@@ -27,12 +27,14 @@ import { resolveLlm } from '../llm/index.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { log } from '../log.js';
 import {
+  ASSIGN_REFUSED,
   canEdit,
   characterSchema,
   controlSchema,
   createCharacter,
   deleteCharacter,
   loadAccess,
+  mayAssign,
   portraitUrl,
   setControl,
   setPortrait,
@@ -109,11 +111,14 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  /** Who runs a party member: players, the DM, or an AI of its own. The owner decides. */
+  /**
+   * Who runs a party member: players, the DM, or an AI of its own. The owners
+   * decide for anyone; a player for a companion they look after.
+   */
   app.put<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId/control', async (req) => {
-    const { campaignId } = await requireMember(req, true);
+    const { campaignId, viewer } = await requireMember(req);
     const characterId = parse(uuid, req.params.characterId);
-    await setControl(campaignId, characterId, parse(controlSchema, req.body));
+    await setControl(campaignId, characterId, parse(controlSchema, req.body), viewer);
     getRoom(campaignId)?.partyChanged();
     return { ok: true };
   });
@@ -251,12 +256,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
           }
           control = parse(controlSchema, raw);
         }
-        const own =
-          control.kind === 'pc' &&
-          control.controller === 'player' &&
-          control.playerIds.join() === auth.user.id;
-        if (!own && viewer.role !== 'owner')
-          throw forbidden('Only the campaign owner can add companions or assign characters.');
+        if (!mayAssign(viewer, control)) throw forbidden(ASSIGN_REFUSED);
         const payload: SheetPayload = {
           fileName: file.originalName,
           control,
@@ -419,10 +419,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
         controller: 'player',
         playerIds: [auth.user.id],
       };
-      const own =
-        control.kind === 'pc' && control.controller === 'player' && control.playerIds.join() === auth.user.id;
-      if (!own && viewer.role !== 'owner')
-        throw forbidden('Only the campaign owner can add companions or assign characters.');
+      if (!mayAssign(viewer, control)) throw forbidden(ASSIGN_REFUSED);
       // An unfinished chat about the same kind of new character is picked up again.
       row = await q1(
         `SELECT id, character_id FROM builder_threads
