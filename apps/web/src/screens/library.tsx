@@ -14,6 +14,7 @@ import {
   IconUpload,
 } from '../icons';
 import { ConfirmButton, Empty, Field, PageHead, Segmented, Sheet, Skeletons, ruleSource } from '../ui';
+import { SheetSchemaPanel } from './sheet-schema';
 
 const DEFAULT_ABILITIES = 'Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma';
 
@@ -729,6 +730,17 @@ export function SystemScreen() {
           </>
         )}
       </Group>
+
+      {system && (
+        <Group
+          systemId={id}
+          name="sheet"
+          title="Character sheet"
+          count={system.sheetSchema.sections.reduce((n, s) => n + s.fields.length, 0)}
+        >
+          <SheetSchemaPanel system={system} manage={admin && !locked} onSaved={() => void reloadSystems()} />
+        </Group>
+      )}
 
       {system && (
         <Group systemId={id} name="setting" title="Setting & flavour" count={settingDocs.length}>
