@@ -50,7 +50,7 @@ party.ts    who is in a party and who may change what (used by routes and
             by the guide, so both follow the same rules)
 ```
 
-There are five agents, each with its own prompt and its own slice of the data:
+There are several agents, each with its own prompt and its own slice of the data:
 
 | Agent | File | Sees | Can change |
 |---|---|---|---|
@@ -59,6 +59,8 @@ There are five agents, each with its own prompt and its own slice of the data:
 | Guide | `agent/builder.ts` | rules, premise, table-visible documents, one sheet | that one sheet |
 | Sheet reader | `agent/sheets.ts` | one upload | nothing: it returns a draft |
 | Rules desk (homebrew systems) | `agent/rules-desk.ts`, `agent/rulings.ts` | rules, house rulings, recent play, the party; no notebook or DM-only documents | rulings, and hit points, conditions, inventory (and the sheet when the GM keeps sheets) to fix a mistake |
+| Sheet drafter | `agent/sheet-drafter.ts` | one system's rulebooks and its sheet | nothing: it returns a draft sheet for review |
+| Workshop (admins, per system) | `agent/workshop.ts` | one system's rulebooks, sheet, draft and GM guide; no campaign | that system's sheet draft, GM guide and rulings |
 | Claude, in a Claude campaign | `connector/` | per request: a turn as the DM sees it, a guide chat as the guide does, the rules desk as the desk does, one upload, one document, the chronicle | per request: game state, that one sheet, rulings, a draft, a catalogue entry, the chronicle |
 
 Keep them separate. A companion or the guide given the DM's prompt would know
@@ -71,7 +73,9 @@ permission lives in the tools, never in its instructions.
 - **Which campaign.** On a pinned address (`/mcp/c/<id>`) the address decides;
   on `/mcp` it is the connection's last `open_campaign`, rechecked for
   ownership on every call, and every result starts with that campaign's name.
-  No tool takes a campaign as an argument.
+  No tool takes a campaign as an argument. The workshop tools take a game
+  system instead: they belong to no campaign, run only for admins on the
+  account-wide address, and are the built-in workshop's own tools.
 - **Which address.** A connection made by signing in is valid only on the
   address it was approved for; a hand-made token is valid on both.
 - **Which tools, now.** Each connector tool declares when it may run

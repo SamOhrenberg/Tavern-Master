@@ -25,6 +25,13 @@ screenshots in [portfolio.md](portfolio.md).
   table playing it gets a rules desk: a side chat where the players talk
   rules over with the DM, change them, steer the campaign or point out a bad
   call. What they settle becomes a ruling the DM follows from then on.
+- **Sheets shaped by the system.** Each game system defines what its
+  character sheet holds: typed fields, tracks like stress or sanity, lists
+  like spells and attacks, values the rules work out. The AI drafts the sheet
+  from the rulebooks, and admins review it change by change.
+- **A workshop for each system.** Before anyone plays, admins talk a system
+  over with the AI (built-in, or Claude through the connector). It proposes
+  sheet changes and writes a GM guide and rulings that every table follows.
 - **Multiplayer.** Friends, campaign invites, real-time play. Actions from
   several players are gathered into one turn with clear attribution.
 - **A party, not just a player.** Each campaign has its own characters. Fill
@@ -348,6 +355,43 @@ work-queue request like the guide, every turn handed to Claude carries the
 rulings, and the host can record one by telling Claude directly. They live on
 the server rather than in a Claude Code `CLAUDE.md`, so they reach every
 route, survive a compacted conversation and stay the same on every machine.
+
+**Character sheets and the workshop.** A system's `sheet_template` holds a
+typed sheet schema (`sheet-schema.ts`): sections of fields, each a number,
+text, choice, yes/no, track, list of rows, or a value the rules work out. A
+sheet is still a flat map of field name to value, so rewinds and older sheets
+work unchanged; every write (the form, the guide, the sheet reader, the GM)
+goes through `checkSheet`, and fields the GM keeps cannot be changed by a
+player once they hold a value. Sheets made on the original template are read
+as a schema with the same field names. The tools that write a sheet for an AI
+(`edit_sheet`, `save_character`) match a field by its name or its label, and
+tell the AI when a name is not one the system defines (with the field it most
+likely meant) or when a field the GM keeps was left as it was. The sheet drafter
+(`agent/sheet-drafter.ts`) reads a system's rulebooks and writes a whole
+schema; the workshop (`agent/workshop.ts`) changes it in small steps
+(`sheet-ops.ts`). Neither touches the sheet in use: both write the system's
+draft, which an admin reviews as separate proposals (`sheet-proposals.ts`) and
+applies in part or in full. The workshop also writes the system's GM guide
+(`gm-guide.ts`): how to run the game, topic by topic, and rulings that reach
+the GM of every table on the system. Claude can do all of this through the
+connector: `open_workshop` and the `workshop_*` tools, admin-only and on the
+account-wide address, are the built-in workshop's own tools, and
+`workshop_wait` / `workshop_reply` answer the workshop chat in the app when
+the admins hand it to Claude.
+
+**Sheet versions.** Applying a draft (or saving the sheet as JSON) publishes a
+new version of the system's sheet (`sheet-versions.ts`, table
+`sheet_versions`). New campaigns start on the latest; a campaign with a party
+stays on its own version until its host updates from the campaign menu, which
+shows what changes and what happens to each character first. The update
+carries every sheet across: a field the new version replaces moves its value
+to the new name (a rename, paired in the draft review), each value takes its
+field's new kind, and one that cannot (text where a number now goes) is kept
+beside it as "Previous …" rather than lost. Rewinding past an update carries
+the restored sheets forward the same way. Tracks other than hit points
+(stress, sanity, spell slots) move in play with the GM's `adjust_track`, which
+keeps them within their maximum and gives the GM its note on the track when it
+fills or empties.
 
 **Campaign documents.** Any player can upload setting notes, an adventure or
 house rules to a campaign. They go through the same ingestion as rulebooks and
