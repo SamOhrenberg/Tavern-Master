@@ -1,4 +1,4 @@
-import type { CampaignDocKind, CharacterDraft, PendingSheet, RuleHit, SheetTemplate } from '@tavern/protocol';
+import type { CampaignDocKind, CharacterDraft, PendingSheet, RuleHit } from '@tavern/protocol';
 import { readFile, rm } from 'node:fs/promises';
 import { z } from 'zod';
 import {
@@ -13,6 +13,7 @@ import { q, q1 } from '../db/pool.js';
 import { log } from '../log.js';
 import { CATALOGUE_INSTRUCTIONS, CATALOGUE_KINDS, catalogueInput } from '../rules/catalogue.js';
 import { searchRules } from '../rules/retrieve.js';
+import { EMPTY_SCHEMA, toSchema } from '../sheet-schema.js';
 import { uploadPath } from '../storage.js';
 import { heldRequest } from './guide.js';
 import { registerWork } from './handlers.js';
@@ -57,12 +58,13 @@ export function toPendingSheet(
 }
 
 async function template(campaignId: string) {
-  return q1<{ system_id: string; system_name: string; sheet_template: SheetTemplate }>(
+  const row = await q1<{ system_id: string; system_name: string; sheet_template: unknown }>(
     `SELECT s.id AS system_id, s.name AS system_name, s.sheet_template
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id
       WHERE c.id = $1`,
     [campaignId],
   );
+  return row && { ...row, schema: toSchema(row.sheet_template) };
 }
 
 /**
@@ -109,7 +111,7 @@ registerWork('sheet', {
     const p = item.payload as Partial<SheetPayload>;
     const sys = await template(t.id);
     const systemName = sys?.system_name ?? 'the campaign’s';
-    const prompt = sheetReaderPrompt(systemName, sys?.sheet_template, 'submit_sheet');
+    const prompt = sheetReaderPrompt(systemName, sys?.schema ?? EMPTY_SCHEMA, 'submit_sheet');
     const check = sheetCheckNote(systemName);
     const rules = sys?.system_id ? sheetRulesBlock(await sheetRules(sys.system_id, t.id), systemName) : '';
     const ending = `Record it with submit_sheet (work_id ${item.id}). If you cannot read it, skip_work with the reason.`;
@@ -185,7 +187,7 @@ export const UPLOAD_TOOLS: ConnectorTool[] = [
       const item = await heldRequest(t, input.work_id, 'sheet');
       const { work_id: _id, corrections, ...record } = input;
       const sys = await template(t.id);
-      const draft = draftFromRecord(record, sys?.sheet_template);
+      const draft = draftFromRecord(record, sys?.schema ?? EMPTY_SCHEMA);
       if (!draft) throw new ToolError('Nothing was recorded. Fill in what the sheet says, or skip_work.');
       // Corrections the rules call for ride back with the draft for the player to apply or ignore.
       const suggestions = suggestionsFromChanges(corrections ?? [], draft);

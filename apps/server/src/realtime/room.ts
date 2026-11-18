@@ -39,6 +39,7 @@ import { log } from '../log.js';
 import { conflict } from '../errors.js';
 import { notifyMessage, notifyWaiting, seenCampaign, type Holdout } from '../notify/notify.js';
 import { snapshotState } from '../rewind.js';
+import { gmSheetGuide } from '../sheet-schema.js';
 import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll } from './rolls.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
@@ -128,6 +129,7 @@ export interface CampaignRow {
   lore_status: string;
   homebrew: boolean;
   gm_instructions: string;
+  sheet_template: unknown;
   outside_ais: { name: string; note: string }[];
 }
 
@@ -148,7 +150,7 @@ function playerLines(input: TurnInput): string[] {
 export async function loadCampaign(campaignId: string): Promise<CampaignRow> {
   const row = await q1<CampaignRow>(
     `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id,
-            s.name AS system_name, s.lore, s.lore_status, s.homebrew, s.gm_instructions,
+            s.name AS system_name, s.lore, s.lore_status, s.homebrew, s.gm_instructions, s.sheet_template,
             (SELECT coalesce(json_agg(json_build_object('name', a.name, 'note', a.note) ORDER BY lower(a.name)), '[]')
                FROM outside_ais a) AS outside_ais
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
@@ -169,6 +171,7 @@ export const infoOf = (id: string, c: CampaignRow): CampaignInfo => ({
   lore: c.lore_status === 'ready' ? c.lore : null,
   homebrew: c.homebrew,
   gmInstructions: c.gm_instructions,
+  sheetGuide: gmSheetGuide(c.sheet_template),
   outsideAis: c.outside_ais,
   polishWith: c.settings.polishWith?.trim() || undefined,
 });

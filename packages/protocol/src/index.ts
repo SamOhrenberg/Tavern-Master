@@ -510,7 +510,7 @@ export interface SheetSuggestion {
 export interface CharacterDraft {
   name: string;
   maxHp: number;
-  sheet: Record<string, string | number>;
+  sheet: Record<string, SheetValue>;
   inventory: InventoryItem[];
   persona: string;
   /** Changes the rules check proposes, for the player to apply or ignore. */

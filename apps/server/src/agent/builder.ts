@@ -1,4 +1,4 @@
-import type { BuilderMessage, DiceRoll, SheetTemplate } from '@tavern/protocol';
+import type { BuilderMessage, DiceRoll } from '@tavern/protocol';
 import { config } from '../config.js';
 import { q, q1 } from '../db/pool.js';
 import { conflict, HttpError, notFound } from '../errors.js';
@@ -7,7 +7,8 @@ import type { Message } from '../llm/types.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { applyDraft, type Control, type DraftPatch, type Viewer } from '../party.js';
 import { runAgentTurn } from './loop.js';
-import { draftSchema, templateGuide } from './sheets.js';
+import { schemaGuide, toSchema } from '../sheet-schema.js';
+import { draftSchema } from './sheets.js';
 import { pgStore, type TurnContext } from './store.js';
 import { tool, ToolError, TOOLS, type ToolSpec } from './tools.js';
 
@@ -38,7 +39,8 @@ export interface BuilderCampaign {
   owner_id: string;
   system_id: string;
   system_name: string;
-  sheet_template: SheetTemplate;
+  /** As stored: a sheet schema, or the original template. */
+  sheet_template: unknown;
   docs: number;
 }
 
@@ -88,7 +90,7 @@ function builderText(c: BuilderCampaign, control: Control): string {
 - When the sheet has what the rules need to start play, say it is ready and mention what they could still add.
 
 ## The sheet
-${templateGuide(c.sheet_template)}
+${schemaGuide(toSchema(c.sheet_template), { steps: true })}
 Maximum hit points and inventory have their own places in save_character. Persona holds who the character is.
 
 ## This campaign

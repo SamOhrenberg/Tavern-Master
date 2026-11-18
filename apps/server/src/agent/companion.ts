@@ -3,6 +3,7 @@ import type { ResolvedLlm } from '../llm/index.js';
 import type { Usage } from '../llm/pricing.js';
 import { complete, textOf } from '../llm/types.js';
 import { COMPANION_LABEL, escapeXml, renderTurn, type CampaignInfo, type TurnInput } from './context.js';
+import { formatValue } from '../sheet-schema.js';
 import { placeKey } from './places.js';
 import type { CharRow, EntityRow } from './store.js';
 
@@ -57,8 +58,9 @@ function knownBlock(known: KnownEntry[]): string {
 
 function sheetLines(c: CharRow): string {
   const fields = Object.entries(c.sheet)
-    .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
-    .map(([k, v]) => `- ${k}: ${String(v).slice(0, 300)}`);
+    .map(([k, v]) => [k, formatValue(v)] as const)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `- ${k}: ${v.slice(0, 300)}`);
   return fields.length ? fields.join('\n') : '- (nothing recorded yet)';
 }
 

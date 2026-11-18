@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { HttpError } from '../errors.js';
 import { askOutsideAi, OutsideAiError } from '../llm/outside.js';
+import { checkSheet, valueInput } from '../sheet-schema.js';
 import type { ToolDef } from '../llm/types.js';
 import { describeRoll, DiceError, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
@@ -53,7 +55,6 @@ const sheetField = z
   .string()
   .trim()
   .regex(/^[\w ]{1,40}$/, 'letters, digits and spaces only');
-const sheetValue = z.union([z.string().trim().max(1500), z.number().finite()]);
 
 export const TOOLS: ToolSpec[] = [
   tool({
@@ -681,7 +682,7 @@ export const EDIT_SHEET = tool({
   schema: z.object({
     character: name,
     set: z
-      .array(z.object({ field: sheetField, value: sheetValue }))
+      .array(z.object({ field: sheetField, value: valueInput }))
       .max(20)
       .optional()
       .describe('Sheet fields to add or change'),
@@ -697,14 +698,21 @@ export const EDIT_SHEET = tool({
       Object.keys(sheet).find((k) => k.toLowerCase() === field.toLowerCase()) ?? field;
     for (const field of input.remove ?? []) delete sheet[keyFor(field)];
     for (const { field, value } of input.set ?? []) sheet[keyFor(field)] = value;
-    if (Object.keys(sheet).length > 40) throw new ToolError('A sheet holds at most 40 fields.');
+    // The GM may change any field, GM-kept ones included, but each in its own shape.
+    let checked: Record<string, unknown>;
+    try {
+      checked = checkSheet(await store.sheetSchema(ctx.systemId), sheet);
+    } catch (err) {
+      if (err instanceof HttpError) throw new ToolError(err.message);
+      throw err;
+    }
     const changed = [
       ...(input.set ?? []).map((s) => s.field),
       ...(input.remove ?? []).map((f) => `-${f}`),
       ...(input.max_hp && input.max_hp !== c.maxHp ? [`max HP ${c.maxHp}→${input.max_hp}`] : []),
     ];
     if (!changed.length) throw new ToolError('Nothing to change.');
-    c.sheet = sheet;
+    c.sheet = checked;
     if (input.max_hp) {
       c.maxHp = input.max_hp;
       c.hp = Math.min(c.hp, c.maxHp);

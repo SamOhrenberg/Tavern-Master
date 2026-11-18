@@ -3,6 +3,7 @@ import type { CharacterController, CharacterKind, InventoryItem } from '@tavern/
 import { z } from 'zod';
 import { q, q1, tx } from './db/pool.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { campaignSchema, checkSheet, keepGmFields, LIMITS, valueInput } from './sheet-schema.js';
 import { uploadPath } from './storage.js';
 
 /**
@@ -13,14 +14,12 @@ import { uploadPath } from './storage.js';
 export const MAX_PARTY = 12;
 /** How many characters a player may make for themselves. The owner is not limited. */
 const MAX_OWN = 3;
-const MAX_FIELDS = 40;
 
 const uuid = z.string().uuid();
 export const sheetKey = z
   .string()
   .trim()
   .regex(/^[\w ]{1,40}$/, 'letters, digits and spaces only');
-export const sheetValue = z.union([z.string().max(1500), z.number().finite()]);
 export const inventorySchema = z
   .array(
     z.object({
@@ -35,7 +34,10 @@ export const characterSchema = z.object({
   name: z.string().trim().min(1).max(60),
   maxHp: z.number().int().min(1).max(9999),
   hp: z.number().int().min(0).max(9999).optional(),
-  sheet: z.record(sheetKey, sheetValue).refine((s) => Object.keys(s).length <= MAX_FIELDS, 'Too many fields'),
+  // The shape of each value is checked against the system's sheet schema when it is saved.
+  sheet: z
+    .record(sheetKey, valueInput)
+    .refine((s) => Object.keys(s).length <= LIMITS.sheetKeys, 'Too many fields'),
   inventory: inventorySchema.optional(),
   persona: z.string().max(2000).optional(),
   privateNotes: z.string().max(4000).optional(),
@@ -71,7 +73,8 @@ export interface CharacterAccess {
 export interface DraftPatch {
   name?: string;
   max_hp?: number;
-  fields?: { field: string; value: string | number }[];
+  /** Values in whatever shape the model wrote; the sheet schema settles each one. */
+  fields?: { field: string; value: unknown }[];
   remove_fields?: string[];
   inventory?: InventoryItem[];
   persona?: string;
@@ -161,6 +164,7 @@ export async function createCharacter(
   if (viewer.role !== 'owner' && (counts?.own ?? 0) >= MAX_OWN)
     throw conflict(`You already run ${MAX_OWN} characters in this campaign.`);
   await assertNameFree(campaignId, body.name, null);
+  const sheet = checkSheet(await campaignSchema(campaignId), body.sheet);
 
   return tx(async (client) => {
     const row = await q1<{ id: string }>(
@@ -172,7 +176,7 @@ export async function createCharacter(
         body.name,
         control.kind,
         control.controller,
-        JSON.stringify(body.sheet),
+        JSON.stringify(sheet),
         Math.min(body.hp ?? body.maxHp, body.maxHp),
         body.maxHp,
         JSON.stringify(body.inventory ?? []),
@@ -202,6 +206,11 @@ export async function updateCharacter(
   const access = await loadAccess(campaignId, characterId);
   if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
   await assertNameFree(campaignId, body.name, characterId);
+  const schema = await campaignSchema(campaignId);
+  const before = await q1<{ sheet: Record<string, unknown> }>('SELECT sheet FROM characters WHERE id = $1', [
+    characterId,
+  ]);
+  const sheet = keepGmFields(schema, before?.sheet ?? {}, checkSheet(schema, body.sheet));
   // Private notes belong to the players who run the character, so only they can change them.
   const notes = access.playerIds.includes(viewer.userId) ? (body.privateNotes ?? null) : null;
   await q(
@@ -216,7 +225,7 @@ export async function updateCharacter(
       characterId,
       campaignId,
       body.name,
-      JSON.stringify(body.sheet),
+      JSON.stringify(sheet),
       body.maxHp,
       body.hp !== undefined,
       body.hp ?? 0,
@@ -323,17 +332,16 @@ export async function applyDraft(
 
   if (!characterId) {
     if (!patch.name) throw badRequest('A new character needs a name before it can be saved.');
-    const sheet: Record<string, string | number> = {};
+    // createCharacter checks the values against the system's schema.
+    const sheet: Record<string, unknown> = {};
     for (const { field, value } of patch.fields ?? []) sheet[field] = value;
-    if (Object.keys(sheet).length > MAX_FIELDS)
-      throw badRequest(`A sheet holds at most ${MAX_FIELDS} fields.`);
     const id = await createCharacter(
       campaignId,
       viewer,
       {
         name: patch.name,
         maxHp: patch.max_hp ?? 10,
-        sheet,
+        sheet: sheet as CharacterBody['sheet'],
         inventory: patch.inventory,
         persona: patch.persona,
       },
@@ -355,7 +363,8 @@ export async function applyDraft(
     Object.keys(sheet).find((k) => k.toLowerCase() === field.toLowerCase()) ?? field;
   for (const field of patch.remove_fields ?? []) delete sheet[keyFor(field)];
   for (const { field, value } of patch.fields ?? []) sheet[keyFor(field)] = value;
-  if (Object.keys(sheet).length > MAX_FIELDS) throw badRequest(`A sheet holds at most ${MAX_FIELDS} fields.`);
+  const schema = await campaignSchema(campaignId);
+  const checked = keepGmFields(schema, row?.sheet ?? {}, checkSheet(schema, sheet));
   const maxHp = patch.max_hp ?? row?.max_hp ?? 10;
   // Someone at full health stays at full health when their maximum changes.
   const hp = row && row.hp >= row.max_hp ? maxHp : Math.min(row?.hp ?? maxHp, maxHp);
@@ -367,7 +376,7 @@ export async function applyDraft(
     [
       characterId,
       patch.name ?? null,
-      JSON.stringify(sheet),
+      JSON.stringify(checked),
       maxHp,
       hp,
       patch.inventory ? JSON.stringify(patch.inventory) : null,

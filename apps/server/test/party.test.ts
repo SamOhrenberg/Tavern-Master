@@ -25,6 +25,7 @@ import type { ChatProvider, ChatRequest, StreamEvent } from '../src/llm/types.js
 import { canEdit, characterSchema } from '../src/party.js';
 import { parseCatalogue } from '../src/rules/catalogue.js';
 import { sniffImage } from '../src/rules/parse.js';
+import { EMPTY_SCHEMA, fromTemplate } from '../src/sheet-schema.js';
 import { campaignScope, rulesScope } from '../src/rules/retrieve.js';
 import { character, context, FakeStore, hit } from './fake-store.js';
 
@@ -689,7 +690,7 @@ describe('the scripted model on the new paths', () => {
     const draft = await readSheet({
       llm: mock,
       systemName: 'Test Rules',
-      template: { abilities: ['Strength'], fields: [{ key: 'level', label: 'Level' }] },
+      schema: fromTemplate({ abilities: ['Strength'], fields: [{ key: 'level', label: 'Level' }] }),
       source: { text: 'Name: Kara Emberfall\nClass: Wizard\nHit Points: 14' },
     });
     expect(draft).toMatchObject({ name: 'Kara Emberfall', maxHp: 14, sheet: { level: 1 }, inventory: [] });
@@ -715,7 +716,7 @@ describe('the scripted model on the new paths', () => {
           { name: 'Real shuriken', qty: 8.2 },
         ],
       },
-      { abilities: ['Strength'], fields: [{ key: 'level', label: 'Level' }] },
+      fromTemplate({ abilities: ['Strength'], fields: [{ key: 'level', label: 'Level' }] }),
     );
     expect(draft).toMatchObject({
       name: 'Lloyd Bennet',
@@ -738,9 +739,12 @@ describe('the scripted model on the new paths', () => {
   });
 
   it('keeps the fields a system names when a record has more than a sheet holds', () => {
-    const extras = Object.fromEntries(Array.from({ length: 45 }, (_, i) => [`extra ${i}`, i]));
-    const draft = draftFromRecord({ name: 'Kara', ...extras, Wits: 3 }, { abilities: ['Wits'], fields: [] });
-    expect(Object.keys(draft!.sheet)).toHaveLength(40);
+    const extras = Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`extra ${i}`, i]));
+    const draft = draftFromRecord(
+      { name: 'Kara', ...extras, Wits: 3 },
+      fromTemplate({ abilities: ['Wits'], fields: [] }),
+    );
+    expect(Object.keys(draft!.sheet)).toHaveLength(100);
     expect(draft!.sheet.Wits).toBe(3);
   });
 
@@ -749,7 +753,7 @@ describe('the scripted model on the new paths', () => {
       readSheet({
         llm: { ...mock, provider: fixed('Sorry, I cannot read this.') },
         systemName: 'Test Rules',
-        template: undefined,
+        schema: EMPTY_SCHEMA,
         source: { text: 'gibberish' },
       }),
     ).rejects.toMatchObject({ status: 400, code: 'unreadable_sheet' });

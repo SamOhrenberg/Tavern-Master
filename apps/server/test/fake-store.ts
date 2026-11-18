@@ -1,4 +1,5 @@
-import type { RuleHit } from '@tavern/protocol';
+import type { RuleHit, SheetSchema } from '@tavern/protocol';
+import { EMPTY_SCHEMA } from '../src/sheet-schema.js';
 import type {
   CharRow,
   EntityRow,
@@ -60,6 +61,11 @@ export class FakeStore implements GameStore {
   async setWhereabouts(_campaignId: string, places: { id: string; place: string }[]) {
     for (const p of places)
       this.chars = this.chars.map((x) => (x.id === p.id ? { ...x, whereabouts: p.place } : x));
+  }
+  /** Tests that care about field shapes set one; otherwise every value is free-form. */
+  schema: SheetSchema = EMPTY_SCHEMA;
+  async sheetSchema() {
+    return this.schema;
   }
   async saveSheet(c: CharRow) {
     this.chars = this.chars.map((x) =>

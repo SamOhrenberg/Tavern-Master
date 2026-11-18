@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { q, q1 } from '../db/pool.js';
 import type { Message } from '../llm/types.js';
 import { estimateTokens } from '../rules/chunk.js';
+import { formatValue } from '../sheet-schema.js';
 import { changesSince, refreshBrief } from './brief.js';
 import type { CharRow, GameStore, TurnContext } from './store.js';
 
@@ -37,6 +38,8 @@ export interface CampaignInfo {
   homebrew?: boolean;
   /** Standing instructions an admin wrote for the GM of every table on this system. */
   gmInstructions?: string;
+  /** What this system's character sheets hold, with the notes written for the GM. Empty for a free-form sheet. */
+  sheetGuide?: string;
   /** Other AIs the GM can ask with ask_ai, and what each is good for. */
   outsideAis?: { name: string; note: string }[];
   /** The outside AI that rewrites the GM's narration for style before players see it, if any. */
@@ -56,6 +59,11 @@ ${list}`);
   if (c.polishWith?.trim()) {
     parts.push(`## Your narration is polished
 Before the players see it, each piece of narration you write is rewritten for style by another writer (${c.polishWith.trim()}), who keeps every event and fact you wrote. Write the substance well and leave the flourishes to them. When a player character speaks in your narration, quote the player's words exactly as they wrote them, in quotation marks: those quotes, codex links and rule citations reach the table untouched.`);
+  }
+  if (c.sheetGuide?.trim()) {
+    parts.push(`## Character sheets in ${c.systemName}
+What the party's sheets hold, and how each part comes into play. Read a character's values from get_state.
+${c.sheetGuide.trim()}`);
   }
   if (c.gmInstructions?.trim()) {
     parts.push(`## Instructions for this game system
@@ -379,8 +387,9 @@ function partyMember(c: CharRow, players: Map<string, string>): string {
       ? `run="player" players="${escapeXml(c.playerIds.map((id) => players.get(id) ?? 'someone').join(', ') || 'nobody yet')}"`
       : `run="${RUN_BY[c.controller]}"`;
   const sheet = Object.entries(c.sheet)
-    .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
-    .map(([k, v]) => `${k}: ${clip(String(v), 300)}`)
+    .map(([k, v]) => [k, formatValue(v)] as const)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}: ${clip(v, 300)}`)
     .join('; ');
   const pack = c.inventory.map((i) => (i.qty > 1 ? `${i.name} ×${i.qty}` : i.name)).join(', ');
   return [

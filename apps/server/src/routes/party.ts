@@ -7,7 +7,6 @@ import type {
   CampaignDocument,
   CharacterDraft,
   DocumentStatus,
-  SheetTemplate,
 } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -43,6 +42,7 @@ import {
 import { getRoom } from '../realtime/room.js';
 import { parseDocument, sniff, sniffImage } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
+import { toSchema } from '../sheet-schema.js';
 import { uploadPath } from '../storage.js';
 
 const uuid = z.string().uuid();
@@ -278,7 +278,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
         owner_id: string;
         system_id: string;
         system_name: string;
-        sheet_template: SheetTemplate;
+        sheet_template: unknown;
       }>(
         `SELECT c.owner_id, c.system_id, s.name AS system_name, s.sheet_template
            FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
@@ -291,7 +291,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
         draft = await readSheet({
           llm,
           systemName: campaign.system_name,
-          template: campaign.sheet_template,
+          schema: toSchema(campaign.sheet_template),
           source,
           signal: AbortSignal.timeout(120_000),
           onUsage: (usage, model) =>
