@@ -518,3 +518,115 @@ export function gmSheetGuide(raw: unknown): string {
   const schema = toSchema(raw);
   return schemaFields(schema).length ? schemaGuide(schema, { forGm: true }) : '';
 }
+
+// ---- tidying what a model wrote ----
+
+const cleanKey = (v: unknown) =>
+  String(v ?? '')
+    .replace(/[^\w ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40)
+    .trim();
+const slug = (v: unknown) =>
+  String(v ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? clip(v, max) : undefined);
+const finite = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const oneOf = <T extends string>(v: unknown, all: readonly T[]) =>
+  all.includes(v as T) ? (v as T) : undefined;
+
+function tidyField(raw: unknown, inList: boolean, seen: Set<string>): SheetField | undefined {
+  if (!isObject(raw)) return undefined;
+  const base = cleanKey(raw.key ?? raw.name ?? raw.label);
+  if (!base) return undefined;
+  // Two fields under one name would collide on the sheet: number the later one.
+  let key = base;
+  for (let n = 2; seen.has(key.toLowerCase()); n++) key = `${base.slice(0, 36)} ${n}`;
+  seen.add(key.toLowerCase());
+
+  let type = oneOf(raw.type, ALL_TYPES) ?? 'text';
+  if (inList && (type === 'list' || type === 'track')) type = 'text';
+  const options = Array.isArray(raw.options)
+    ? [...new Set(raw.options.map((o) => text(o, 60)).filter((o): o is string => !!o))].slice(
+        0,
+        LIMITS.options,
+      )
+    : [];
+  if (type === 'select' && !options.length) type = 'text';
+  let itemFields: SheetField[] | undefined;
+  if (type === 'list') {
+    const rows = raw.itemFields ?? raw.item_fields;
+    const seenItems = new Set<string>();
+    itemFields = (Array.isArray(rows) ? rows : [])
+      .map((f) => tidyField(f, true, seenItems))
+      .filter((f): f is SheetField => !!f)
+      .slice(0, LIMITS.itemFields);
+    // A list with nothing in its rows is just text.
+    if (!itemFields.length) {
+      type = 'longtext';
+      itemFields = undefined;
+    }
+  }
+  const field: SheetField = {
+    key,
+    label: text(raw.label, 60) ?? key,
+    type,
+    help: text(raw.help, 300),
+    options: type === 'select' ? options : undefined,
+    min: finite(raw.min),
+    max: finite(raw.max),
+    itemFields,
+    derivedFrom: type === 'derived' ? text(raw.derivedFrom ?? raw.derived_from, 300) : undefined,
+    setAt: oneOf(raw.setAt ?? raw.set_at, ['creation', 'play'] as const),
+    editableBy: oneOf(raw.editableBy ?? raw.editable_by, ['player', 'gm', 'both'] as const),
+    showOnCard: raw.showOnCard === true || raw.show_on_card === true || undefined,
+    gmNote: text(raw.gmNote ?? raw.gm_note, 400),
+  };
+  // Leave out what is not set, so the schema reads cleanly and compares by content.
+  return JSON.parse(JSON.stringify(field)) as SheetField;
+}
+
+/**
+ * A schema a model wrote, with the slips models make put right before it is
+ * checked: names with punctuation, a choice with no options, a list with no
+ * row fields, text over the limits, snake_case properties, repeated names.
+ * What comes back still goes through {@link parseSchema}.
+ */
+export function tidySchema(raw: unknown): unknown {
+  const r = isObject(raw) ? raw : {};
+  const hp = isObject(r.hp) ? r.hp.label : (r.hp_label ?? r.hpLabel);
+  const seenFields = new Set<string>();
+  const seenSections = new Set<string>();
+  let total = 0;
+  const sections = (Array.isArray(r.sections) ? r.sections : [])
+    .filter(isObject)
+    .map((s) => {
+      const label = text(s.label, 60) ?? 'Details';
+      let id = slug(s.id) || slug(label) || 'section';
+      for (let n = 2; seenSections.has(id); n++)
+        id = `${slug(s.id) || slug(label) || 'section'}-${n}`.slice(-40);
+      seenSections.add(id);
+      const fields = (Array.isArray(s.fields) ? s.fields : [])
+        .map((f) => tidyField(f, false, seenFields))
+        .filter((f): f is SheetField => !!f)
+        .slice(0, Math.max(0, LIMITS.fields - total));
+      total += fields.length;
+      return { id, label, fields };
+    })
+    .filter((s) => s.fields.length)
+    .slice(0, LIMITS.sections);
+  const steps = r.createSteps ?? r.create_steps;
+  return {
+    version: 2,
+    hp: { label: text(hp, 40) ?? 'Hit points' },
+    sections,
+    createSteps: (Array.isArray(steps) ? steps : [])
+      .map((s) => text(s, 300))
+      .filter((s): s is string => !!s)
+      .slice(0, LIMITS.steps),
+  };
+}
