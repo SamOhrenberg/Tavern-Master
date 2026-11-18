@@ -13,7 +13,7 @@ import {
   withRuling,
   withTopic,
 } from '../gm-guide.js';
-import { resolveLlm } from '../llm/index.js';
+import { builtInAiFor, instanceAiConfigured, resolveLlm } from '../llm/index.js';
 import type { Message } from '../llm/types.js';
 import { recordUsage } from '../llm/usage.js';
 import { searchRules } from '../rules/retrieve.js';
@@ -33,7 +33,7 @@ import { tool, ToolError, type ToolSpec } from './tools.js';
  * GM guide: how to run the game, and rulings every table on it follows.
  */
 
-interface WorkshopSystem {
+export interface WorkshopSystem {
   id: string;
   name: string;
   homebrew: boolean;
@@ -41,11 +41,12 @@ interface WorkshopSystem {
   sheet_template: unknown;
   sheet_draft: unknown;
   sheet_draft_status: string;
+  workshop_ai: 'server' | 'claude';
 }
 
-async function loadSystem(systemId: string): Promise<WorkshopSystem | undefined> {
+export async function loadSystem(systemId: string): Promise<WorkshopSystem | undefined> {
   return q1<WorkshopSystem>(
-    `SELECT id, name, homebrew, created_by, sheet_template, sheet_draft, sheet_draft_status
+    `SELECT id, name, homebrew, created_by, sheet_template, sheet_draft, sheet_draft_status, workshop_ai
        FROM game_systems WHERE id = $1`,
     [systemId],
   );
@@ -107,7 +108,7 @@ function sheetOutline(schema: SheetSchema): string {
     .join('\n');
 }
 
-async function stateBlock(sys: WorkshopSystem): Promise<string> {
+export async function stateBlock(sys: WorkshopSystem): Promise<string> {
   const current = toSchema(sys.sheet_template);
   const draft = sys.sheet_draft ? toSchema(sys.sheet_draft) : null;
   const pending = draft ? proposalsFor(current, draft).length : 0;
@@ -138,7 +139,7 @@ ${rulings}
 
 // ---------- the workshop's tools ----------
 
-function workshopTools(systemId: string): ToolSpec[] {
+export function workshopTools(systemId: string): ToolSpec[] {
   const lookup = tool({
     name: 'lookup_rules',
     description: 'Search this system’s rulebooks. Returns passages with where they come from.',
@@ -239,7 +240,8 @@ function workshopTools(systemId: string): ToolSpec[] {
   return [lookup, readSheet, changeSheet, writeGuide, addRuling, retireRuling];
 }
 
-const SYSTEM = (sys: WorkshopSystem) =>
+/** The workshop's instructions. Shared with Claude, which gets them from open_workshop. */
+export const workshopInstructions = (sys: WorkshopSystem) =>
   `You are the workshop for ${sys.name}, a tabletop role-playing system on this server${sys.homebrew ? ' (a homebrew system, still being shaped by the people who play it)' : ''}. You talk with the server's admins, out of character and before anyone plays, to get two things right.
 
 1. The character sheet: every field the rules need, in the right shape, so that players can fill it in and the AI Game Master can run play from it. Change it with change_sheet. Your changes are proposals: they collect in a draft that an admin reviews and applies one change at a time from the system's Character sheet panel. Say so when you make them.
@@ -272,10 +274,7 @@ export async function workshopTurn(
     const sys = await loadSystem(systemId);
     if (!sys) throw notFound('System not found');
     const earlier = await rows(systemId);
-    await q(
-      `INSERT INTO system_workshop_messages (system_id, user_id, role, content) VALUES ($1, $2, 'user', $3)`,
-      [systemId, userId, text],
-    );
+    await postQuestion(systemId, userId, text);
     const me = await q1<{ display_name: string }>('SELECT display_name FROM users WHERE id = $1', [userId]);
 
     // Several admins may share the workshop, so each line says who wrote it.
@@ -312,7 +311,7 @@ export async function workshopTurn(
       llm,
       task: 'workshop',
       tools: workshopTools(systemId),
-      system: [{ text: SYSTEM(sys), cache: true }],
+      system: [{ text: workshopInstructions(sys), cache: true }],
       messages,
       ctx,
       store: pgStore,
@@ -332,14 +331,97 @@ export async function workshopTurn(
           usage,
         }),
     });
-    const row = await q1<Row>(
-      `WITH m AS (INSERT INTO system_workshop_messages (system_id, role, content) VALUES ($1, 'assistant', $2)
-                  RETURNING id, role, content, user_id, created_at)
-       SELECT m.*, NULL::text AS username, NULL::text AS display_name FROM m`,
-      [systemId, result.text || '…'],
-    );
-    return { message: toMessage(row!) };
+    return { message: await postReply(systemId, result.text || '…') };
   } finally {
     busy.delete(systemId);
   }
+}
+
+/** Per system, the id of the last admin message the AI has answered. */
+const ANSWERED_SQL = `SELECT system_id, MAX(COALESCE(answers_through, id)) AS through
+                        FROM system_workshop_messages
+                       WHERE role = 'assistant' AND system_id = ANY($1::uuid[])
+                       GROUP BY system_id`;
+
+/**
+ * The admins' messages the AI has not answered yet: what an answer is owed
+ * for. Empty when the conversation is answered.
+ */
+export async function unanswered(systemId: string): Promise<WorkshopMessage[]> {
+  const found = await q<Row>(
+    `SELECT m.id, m.role, m.content, m.user_id, u.username, u.display_name, m.created_at
+       FROM system_workshop_messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.system_id = ANY($1::uuid[]) AND m.role = 'user'
+        AND m.id > COALESCE((SELECT a.through FROM (${ANSWERED_SQL}) a), 0)
+      ORDER BY m.id`,
+    [[systemId]],
+  );
+  return found.map(toMessage);
+}
+
+/** How many admin messages wait for an answer, for each of these systems (missing when none do). */
+export async function unansweredCounts(systemIds: string[]): Promise<Map<string, number>> {
+  if (!systemIds.length) return new Map();
+  const found = await q<{ system_id: string; n: number }>(
+    `SELECT m.system_id, COUNT(*)::int AS n
+       FROM system_workshop_messages m LEFT JOIN (${ANSWERED_SQL}) a ON a.system_id = m.system_id
+      WHERE m.system_id = ANY($1::uuid[]) AND m.role = 'user' AND m.id > COALESCE(a.through, 0)
+      GROUP BY m.system_id`,
+    [systemIds],
+  );
+  return new Map(found.map((r) => [r.system_id, r.n]));
+}
+
+/**
+ * Store an answer. `through` is the last admin message it answers, for an
+ * answer written outside the server (Claude) while admins may still be
+ * writing; left out, it answers every message before it.
+ */
+export async function postReply(systemId: string, text: string, through?: number): Promise<WorkshopMessage> {
+  const row = await q1<Row>(
+    `WITH m AS (INSERT INTO system_workshop_messages (system_id, role, content, answers_through)
+                VALUES ($1, 'assistant', $2, $3)
+                RETURNING id, role, content, user_id, created_at)
+     SELECT m.*, NULL::text AS username, NULL::text AS display_name FROM m`,
+    [systemId, text, through ?? null],
+  );
+  return toMessage(row!);
+}
+
+const listeners = new Map<string, Set<() => void>>();
+
+/** Store an admin's message, and wake whoever waits for one in this system's workshop. */
+export async function postQuestion(systemId: string, userId: string, text: string): Promise<void> {
+  await q(
+    `INSERT INTO system_workshop_messages (system_id, user_id, role, content) VALUES ($1, $2, 'user', $3)`,
+    [systemId, userId, text],
+  );
+  for (const wake of listeners.get(systemId) ?? []) wake();
+}
+
+/** Resolves when an admin writes in this system's workshop, after `ms`, or when `signal` aborts. */
+export function questionPosted(systemId: string, ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const set = listeners.get(systemId) ?? new Set();
+    listeners.set(systemId, set);
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      set.delete(done);
+      if (!set.size) listeners.delete(systemId);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+    set.add(done);
+  });
+}
+
+/** Who answers this system's workshop: Claude when chosen, or when there is no built-in AI to answer. */
+export async function workshopAnswerer(
+  sys: { created_by: string | null; workshop_ai: 'server' | 'claude' },
+  userId: string,
+): Promise<{ answeredBy: 'server' | 'claude'; builtIn: boolean }> {
+  const builtIn = instanceAiConfigured() || (await builtInAiFor(sys.created_by ?? userId));
+  return { answeredBy: builtIn ? sys.workshop_ai : 'claude', builtIn };
 }

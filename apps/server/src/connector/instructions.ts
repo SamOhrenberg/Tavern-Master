@@ -6,7 +6,8 @@ export const SERVER_INSTRUCTIONS =
   'its Dungeon Master, the voice of its companions, the guide who helps players build characters and the ' +
   'keeper of its chronicle. The party, the world, the rules and the whole history of play live on the server. ' +
   'Start every conversation by calling open_campaign and follow the instructions it returns. To start a new ' +
-  'campaign, call list_systems, then create_campaign.';
+  'campaign, call list_systems, then create_campaign. An admin can shape a game system before anyone plays it ' +
+  '(what its character sheet holds, how its GM runs it) in the workshop: call open_workshop.';
 
 /**
  * How running the table from Claude differs from the built-in DM. Appended to

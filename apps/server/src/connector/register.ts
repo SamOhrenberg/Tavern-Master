@@ -7,6 +7,7 @@ import './chronicle.js';
 import './companions.js';
 import './setup.js';
 import './uploads.js';
+import './workshop.js';
 import { releaseClaims } from './work.js';
 
 // A turn or request left alone past the claim timeout goes back to waiting.

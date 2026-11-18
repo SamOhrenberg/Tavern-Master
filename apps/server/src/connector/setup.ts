@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { savedLine } from '../agent/builder.js';
 import { pgStore, type CharRow } from '../agent/store.js';
+import { unansweredCounts } from '../agent/workshop.js';
 import { endCurrentSession, insertCampaign, startCampaign, updateCampaign } from '../campaign.js';
 import { q, q1 } from '../db/pool.js';
 import { HttpError } from '../errors.js';
@@ -9,6 +10,8 @@ import { enforceLimit, rateLimiters } from '../http/security.js';
 import { applyDraft, type Control, type Viewer } from '../party.js';
 import { config } from '../config.js';
 import { sniffImage } from '../rules/parse.js';
+import { proposalsFor } from '../sheet-proposals.js';
+import { schemaFields, toSchema } from '../sheet-schema.js';
 import { uploadPath } from '../storage.js';
 import { setHostSave } from './guide.js';
 import { setTokenCampaign } from './tokens.js';
@@ -102,16 +105,26 @@ function describeCharacter(c: CharRow, names: Map<string, string>): string {
 export const SETUP_TOOLS: ConnectorTool[] = [
   own({
     name: 'list_systems',
-    description: 'List the game systems (rulebooks) this server has, for create_campaign.',
+    description:
+      'List the game systems (rulebooks) this server has, for create_campaign. For an admin, also where each ' +
+      'stands in the workshop (open_workshop).',
     schema: z.object({}),
     annotations: { readOnlyHint: true, openWorldHint: false },
     during: ['any'],
-    async run() {
-      const rows = await q<{ name: string; description: string }>(
-        'SELECT name, description FROM game_systems ORDER BY name',
+    async run(_input, { user }) {
+      const rows = await q<SystemListRow>(
+        'SELECT id, name, description, sheet_template, sheet_draft FROM game_systems ORDER BY name',
       );
       if (!rows.length) return 'This server has no game systems yet. The admin adds them in the app.';
-      return rows.map((r) => `- ${r.name}: ${r.description || 'no description'}`).join('\n');
+      const admin =
+        (await q1<{ role: string }>('SELECT role FROM users WHERE id = $1', [user.userId]))?.role === 'admin';
+      const waiting = admin ? await unansweredCounts(rows.map((r) => r.id)) : new Map<string, number>();
+      return rows
+        .map((r) => {
+          const line = `- ${r.name}: ${r.description || 'no description'}`;
+          return admin ? `${line}\n  Workshop: ${workshopLine(r, waiting.get(r.id) ?? 0)}` : line;
+        })
+        .join('\n');
     },
   }),
 
@@ -259,6 +272,28 @@ export const SETUP_TOOLS: ConnectorTool[] = [
     },
   }),
 ];
+
+interface SystemListRow {
+  id: string;
+  name: string;
+  description: string;
+  sheet_template: unknown;
+  sheet_draft: unknown;
+}
+
+/** Where a system stands in the workshop, in a line: what its sheet holds and what is waiting. */
+function workshopLine(r: SystemListRow, waiting: number): string {
+  const current = toSchema(r.sheet_template);
+  const fields = schemaFields(current).length;
+  const pending = r.sheet_draft ? proposalsFor(current, toSchema(r.sheet_draft)).length : 0;
+  return [
+    fields ? `the sheet has ${fields} field${fields === 1 ? '' : 's'}` : 'the sheet is free-form',
+    pending ? `${pending} proposed change${pending === 1 ? '' : 's'} waiting for review` : '',
+    waiting ? `${waiting} message${waiting === 1 ? '' : 's'} unanswered in the app’s workshop chat` : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+}
 
 /** A character's picture as an image for Claude, if it has one that is small enough to send. */
 async function portraitImage(portrait: string | null | undefined) {

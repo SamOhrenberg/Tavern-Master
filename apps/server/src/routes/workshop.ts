@@ -1,22 +1,31 @@
 import type { GmGuide, GuideTopicId, Workshop, WorkshopEvent } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { workshopBusy, workshopMessages, workshopTurn } from '../agent/workshop.js';
+import {
+  postQuestion,
+  unanswered,
+  workshopAnswerer as answererOf,
+  workshopBusy,
+  workshopMessages,
+  workshopTurn,
+} from '../agent/workshop.js';
 import { audit } from '../audit.js';
 import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { GUIDE_LIMITS, loadGuide, saveGuide, TOPIC_IDS, withoutRuling, withTopic } from '../gm-guide.js';
 import { enforceLimit, rateLimiters, requireAdmin } from '../http/security.js';
-import { builtInAiFor, instanceAiConfigured } from '../llm/index.js';
 import { log } from '../log.js';
 
 const uuid = z.string().uuid();
 type Params = { id: string };
 
-async function systemOrNotFound(id: string): Promise<{ created_by: string | null }> {
-  const row = await q1<{ created_by: string | null }>('SELECT created_by FROM game_systems WHERE id = $1', [
-    id,
-  ]);
+interface SystemRow {
+  created_by: string | null;
+  workshop_ai: 'server' | 'claude';
+}
+
+async function systemOrNotFound(id: string): Promise<SystemRow> {
+  const row = await q1<SystemRow>('SELECT created_by, workshop_ai FROM game_systems WHERE id = $1', [id]);
   if (!row) throw notFound();
   return row;
 }
@@ -28,16 +37,30 @@ async function systemOrNotFound(id: string): Promise<{ created_by: string | null
  */
 export async function workshopRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: Params }>('/api/systems/:id/workshop', async (req): Promise<{ workshop: Workshop }> => {
-    requireAdmin(req);
+    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
-    await systemOrNotFound(id);
+    const who = await answererOf(await systemOrNotFound(id), auth.user.id);
     return {
       workshop: {
         messages: await workshopMessages(id),
         guide: await loadGuide(id),
         answering: workshopBusy(id),
+        ...who,
+        waiting: who.answeredBy === 'claude' && (await unanswered(id)).length > 0,
       },
     };
+  });
+
+  /** Choose who answers the workshop in the app: the built-in AI, or Claude through the connector. */
+  app.patch<{ Params: Params }>('/api/systems/:id/workshop', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const { answeredBy } = parse(z.object({ answeredBy: z.enum(['server', 'claude']) }), req.body);
+    const sys = await systemOrNotFound(id);
+    if (answeredBy === 'server' && !(await answererOf(sys, auth.user.id)).builtIn)
+      throw badRequest('This server has no built-in AI, so Claude answers the workshop.', 'no_built_in');
+    await q('UPDATE game_systems SET workshop_ai = $2 WHERE id = $1', [id, answeredBy]);
+    return { ok: true };
   });
 
   /**
@@ -50,8 +73,12 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
     const id = parse(uuid, req.params.id);
     const { text } = parse(z.object({ text: z.string().trim().min(1).max(4000) }), req.body);
     const sys = await systemOrNotFound(id);
-    if (!(instanceAiConfigured() || (await builtInAiFor(sys.created_by ?? auth.user.id))))
-      throw badRequest('The workshop needs the built-in AI, and this server has none set up.', 'no_built_in');
+    if ((await answererOf(sys, auth.user.id)).answeredBy === 'claude') {
+      // Claude answers through the connector: keep the message for it, and say so.
+      await postQuestion(id, auth.user.id, text);
+      reply.header('content-type', 'application/x-ndjson; charset=utf-8').header('cache-control', 'no-store');
+      return `${JSON.stringify({ type: 'queued' } satisfies WorkshopEvent)}\n`;
+    }
     if (workshopBusy(id)) throw conflict('The workshop is still answering the last message.');
     enforceLimit(rateLimiters().llm, `user:${auth.user.id}`);
 

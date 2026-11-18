@@ -723,14 +723,25 @@ export interface WorkshopMessage {
 export interface Workshop {
   messages: WorkshopMessage[];
   guide: GmGuide;
-  /** The AI is answering someone's message right now. */
+  /** The built-in AI is answering someone's message right now. */
   answering: boolean;
+  /**
+   * Who answers in the app: the built-in AI, or an admin's Claude through the
+   * connector (open_workshop, then workshop_wait and workshop_reply).
+   */
+  answeredBy: 'server' | 'claude';
+  /** The server has a built-in AI to answer with. Without one, Claude answers. */
+  builtIn: boolean;
+  /** Claude answers, and an admin's message is waiting for it. */
+  waiting: boolean;
 }
 
 export type WorkshopEvent =
   | { type: 'delta'; text: string }
   | { type: 'tool'; tool: string; summary: string }
   | { type: 'done'; message: WorkshopMessage }
+  /** The message was stored for Claude to answer; the reply arrives later. */
+  | { type: 'queued' }
   | { type: 'error'; message: string };
 
 export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
