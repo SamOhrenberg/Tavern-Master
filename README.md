@@ -185,6 +185,13 @@ Claude silent while players wait, for 15 minutes. It signs in with a
 hand-made token, so there is no browser step. It needs Node 20 or later and
 nothing else.
 
+When the token belongs to an admin, the launcher answers the game system
+workshop too. When a message waits in a workshop that Claude answers, it
+starts `claude -p /workshop` in a `workshop-<system>` folder, on the
+account-wide connector address. That run answers, then leaves once nothing
+is waiting. The workshop in the app says Claude is on its way while a
+launcher is running.
+
 ```bash
 node scripts/dm-launcher.mjs setup --server https://tavern.example.com --token tmc_...
 node scripts/dm-launcher.mjs              # keep tables staffed; Ctrl+C stops every run

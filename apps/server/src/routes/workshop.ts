@@ -15,6 +15,7 @@ import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { GUIDE_LIMITS, loadGuide, saveGuide, TOPIC_IDS, withoutRuling, withTopic } from '../gm-guide.js';
 import { enforceLimit, rateLimiters, requireAdmin } from '../http/security.js';
 import { log } from '../log.js';
+import { workshopLauncherLive } from './summon.js';
 
 const uuid = z.string().uuid();
 type Params = { id: string };
@@ -47,6 +48,7 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
         answering: workshopBusy(id),
         ...who,
         waiting: who.answeredBy === 'claude' && (await unanswered(id)).length > 0,
+        launcher: who.answeredBy === 'claude' && workshopLauncherLive(),
       },
     };
   });

@@ -35,6 +35,31 @@ export function maxHpField(schema: SheetSchema | undefined): SheetField | undefi
   });
 }
 
+const INVENTORY_NAMES = [
+  'inventory',
+  'invlist',
+  'inventorylist',
+  'items',
+  'itemlist',
+  'backpack',
+  'pack',
+  'belongings',
+];
+
+/**
+ * The list a system's sheet keeps belongings in, if it has one. The built-in
+ * inventory steps aside for it, and the GM's inventory changes land on its
+ * rows. Matches the server's rule.
+ */
+export function inventoryListField(schema: SheetSchema | undefined): SheetField | undefined {
+  return fieldsOf(schema).find(
+    (f) =>
+      f.type === 'list' &&
+      !!f.itemFields?.length &&
+      (INVENTORY_NAMES.includes(squash(f.key)) || INVENTORY_NAMES.includes(squash(f.label))),
+  );
+}
+
 /** The whole number a max-HP value reads as ("27.5" and "27 (10 + ...)" are 27), if it is one. */
 export function readMaxHp(v: unknown): number | undefined {
   const m = /^\s*([+-]?\d+(?:\.\d+)?)/.exec(String(v ?? '').replace(/[−–]/g, '-'));

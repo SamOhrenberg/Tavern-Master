@@ -16,6 +16,7 @@ import {
   fieldsOf,
   formatValue,
   initialValues,
+  inventoryListField,
   maxHpField,
   readMaxHp,
   SheetSections,
@@ -23,6 +24,7 @@ import {
   type FieldInput,
   type FormValues,
 } from './sheet-fields';
+import { PortraitCropper, type Crop } from './portrait-crop';
 
 /** Who will run a character that does not exist yet. */
 export interface Control {
@@ -41,48 +43,6 @@ const int = (s: string, fallback: number) => {
   const n = Number.parseInt(s, 10);
   return Number.isFinite(n) ? n : fallback;
 };
-
-/** Pictures are stored this many pixels square: sharp on a phone, small to send. */
-const PORTRAIT_PX = 512;
-
-/**
- * Cut the middle square out of a picture (a little above centre on a tall one,
- * where a face usually is), shrink it and encode it as JPEG, so a phone photo
- * of several megabytes uploads as a few dozen kilobytes.
- */
-async function squarePortrait(file: File): Promise<Blob> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const i = new Image();
-      i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error('That picture could not be read. Try a PNG or JPEG.'));
-      i.src = url;
-    });
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    const side = Math.min(w, h);
-    const out = Math.min(PORTRAIT_PX, side);
-    const canvas = document.createElement('canvas');
-    canvas.width = out;
-    canvas.height = out;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('This browser cannot prepare pictures.');
-    // JPEG has no transparency: give cut-out art a dark backdrop instead of black.
-    ctx.fillStyle = '#26222e';
-    ctx.fillRect(0, 0, out, out);
-    ctx.drawImage(img, (w - side) / 2, (h - side) / 4, side, side, 0, 0, out, out);
-    return await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error('That picture could not be prepared.'))),
-        'image/jpeg',
-        0.86,
-      ),
-    );
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
 
 interface Row extends InventoryItem {
   id: number;
@@ -128,6 +88,8 @@ export function CharacterSheet({
   const hpLabel = schema?.hp.label ?? 'Hit points';
   // A sheet with its own Max HP field (worked out by the rules) holds the maximum there, not in the box.
   const ownMax = maxHpField(schema);
+  // Likewise a sheet with its own inventory list holds the belongings there.
+  const ownInventory = !!inventoryListField(schema);
   const source: Record<string, unknown> = character?.sheet ?? draft?.sheet ?? {};
   // Names the schema does not know (fields the DM, the guide or an upload added) are listed underneath.
   const known = new Set(fields.map((f) => f.key.toLowerCase()));
@@ -148,9 +110,11 @@ export function CharacterSheet({
   const [notes, setNotes] = useState(character?.privateNotes ?? '');
   // Changes the rules check proposed on an uploaded draft, until applied or waved off.
   const [suggestions, setSuggestions] = useState<SheetSuggestion[]>(draft?.suggestions ?? []);
-  // A picture chosen here goes up with the sheet; until then it is only previewed.
-  const [picture, setPicture] = useState<{ blob: Blob; url: string } | null>(null);
+  // A picture chosen here goes up with the sheet; until then it is only previewed. The original
+  // and the crop are kept so it can be cropped again.
+  const [picture, setPicture] = useState<{ blob: Blob; url: string; file: File; crop: Crop } | null>(null);
   const [dropPicture, setDropPicture] = useState(false);
+  const [cropping, setCropping] = useState<{ file: File; crop?: Crop } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const notify = useToast();
   const [busy, run] = useAction();
@@ -162,16 +126,15 @@ export function CharacterSheet({
   );
   const shownPicture = picture?.url ?? (dropPicture ? undefined : character?.portrait);
 
-  const choosePicture = async (file: File | undefined) => {
+  const choosePicture = (file: File | undefined) => {
     if (picker.current) picker.current.value = '';
-    if (!file) return;
-    try {
-      const blob = await squarePortrait(file);
-      setPicture({ blob, url: URL.createObjectURL(blob) });
-      setDropPicture(false);
-    } catch (err) {
-      notify(errorMessage(err), 'error');
-    }
+    if (file) setCropping({ file });
+  };
+
+  const cropped = (blob: Blob, crop: Crop) => {
+    if (cropping) setPicture({ blob, url: URL.createObjectURL(blob), file: cropping.file, crop });
+    setDropPicture(false);
+    setCropping(null);
   };
 
   /** Send the picture change, if any, once the character exists. */
@@ -239,13 +202,17 @@ export function CharacterSheet({
       ...(ownMax ? {} : { maxHp: max }),
       ...(character && hp.trim() !== '' ? { hp: Math.max(0, Math.min(max, int(hp, max))) } : {}),
       sheet: out,
-      inventory: items
-        .filter((item) => item.name.trim())
-        .map((item) => ({
-          name: item.name.trim(),
-          qty: Math.max(1, item.qty || 1),
-          ...(item.notes ? { notes: item.notes } : {}),
-        })),
+      ...(ownInventory
+        ? {}
+        : {
+            inventory: items
+              .filter((item) => item.name.trim())
+              .map((item) => ({
+                name: item.name.trim(),
+                qty: Math.max(1, item.qty || 1),
+                ...(item.notes ? { notes: item.notes } : {}),
+              })),
+          }),
       persona,
       ...(mine ? { privateNotes: notes } : {}),
     };
@@ -343,6 +310,15 @@ export function CharacterSheet({
             <button type="button" className="btn sm ghost" onClick={() => picker.current?.click()}>
               {shownPicture ? 'Change picture' : 'Add a picture'}
             </button>
+            {picture && (
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => setCropping({ file: picture.file, crop: picture.crop })}
+              >
+                Crop again
+              </button>
+            )}
             {shownPicture && (
               <button
                 type="button"
@@ -361,10 +337,18 @@ export function CharacterSheet({
             type="file"
             className="sr-only"
             accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
-            onChange={(e) => void choosePicture(e.target.files?.[0])}
+            onChange={(e) => choosePicture(e.target.files?.[0])}
             tabIndex={-1}
             aria-hidden="true"
           />
+          {cropping && (
+            <PortraitCropper
+              file={cropping.file}
+              initial={cropping.crop}
+              onCancel={() => setCropping(null)}
+              onDone={cropped}
+            />
+          )}
         </div>
 
         <Field label="Name">
@@ -456,51 +440,53 @@ export function CharacterSheet({
           </div>
         </div>
 
-        <div>
-          <span className="label">Inventory</span>
-          <div className="stack tight item-rows">
-            {items.map((item) => (
-              <div key={item.id} className="row item-row">
-                <input
-                  className="input grow"
-                  value={item.name}
-                  onChange={(e) => setItem(item.id, { name: e.target.value })}
-                  placeholder="Item"
-                  maxLength={80}
-                  aria-label="Item name"
-                />
-                <input
-                  className="input qty-input"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={item.qty || ''}
-                  onChange={(e) => setItem(item.id, { qty: int(e.target.value, 0) })}
-                  aria-label="Quantity"
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setItems((list) => list.filter((x) => x.id !== item.id))}
-                  aria-label={`Remove ${item.name || 'item'}`}
-                >
-                  <IconTrash />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="btn sm ghost add-item"
-              onClick={() =>
-                setItems((list) => [
-                  ...list,
-                  { id: Math.max(-1, ...list.map((x) => x.id)) + 1, name: '', qty: 1 },
-                ])
-              }
-            >
-              <IconPlus /> Add an item
-            </button>
+        {!ownInventory && (
+          <div>
+            <span className="label">Inventory</span>
+            <div className="stack tight item-rows">
+              {items.map((item) => (
+                <div key={item.id} className="row item-row">
+                  <input
+                    className="input grow"
+                    value={item.name}
+                    onChange={(e) => setItem(item.id, { name: e.target.value })}
+                    placeholder="Item"
+                    maxLength={80}
+                    aria-label="Item name"
+                  />
+                  <input
+                    className="input qty-input"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={item.qty || ''}
+                    onChange={(e) => setItem(item.id, { qty: int(e.target.value, 0) })}
+                    aria-label="Quantity"
+                  />
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setItems((list) => list.filter((x) => x.id !== item.id))}
+                    aria-label={`Remove ${item.name || 'item'}`}
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="btn sm ghost add-item"
+                onClick={() =>
+                  setItems((list) => [
+                    ...list,
+                    { id: Math.max(-1, ...list.map((x) => x.id)) + 1, name: '', qty: 1 },
+                  ])
+                }
+              >
+                <IconPlus /> Add an item
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         <Field
           label="Who they are"

@@ -734,6 +734,8 @@ export interface Workshop {
   builtIn: boolean;
   /** Claude answers, and an admin's message is waiting for it. */
   waiting: boolean;
+  /** Claude answers, and an admin's DM launcher is running: it starts Claude when a message waits. */
+  launcher: boolean;
 }
 
 export type WorkshopEvent =

@@ -1,4 +1,5 @@
 import type {
+  InventoryItem,
   SheetField,
   SheetFieldType,
   SheetScalar,
@@ -271,6 +272,124 @@ export function writesMaxHp(schema: SheetSchema, names: string[]): boolean {
   const field = maxHpField(schema);
   if (!field) return false;
   const want = [field.key.toLowerCase(), field.label.toLowerCase()];
+  return names.some((n) => want.includes(n.trim().toLowerCase()));
+}
+
+// ---- inventory ----
+
+const INVENTORY_NAMES = [
+  'inventory',
+  'invlist',
+  'inventorylist',
+  'items',
+  'itemlist',
+  'backpack',
+  'pack',
+  'belongings',
+];
+const named = (f: SheetField, names: string[]) =>
+  names.includes(squash(f.key)) || names.includes(squash(f.label));
+
+/** Where a sheet's own inventory list keeps an item's name, quantity and notes. */
+export interface InventoryList {
+  field: SheetField;
+  name: string;
+  qty?: string;
+  notes?: string;
+}
+
+/**
+ * The list a system's sheet keeps belongings in, if it has one ("Inventory",
+ * with columns of its own such as rarity). Such a sheet holds the inventory
+ * itself: the built-in one steps aside, and the GM's inventory changes land on
+ * its rows. Equipped gear and other lists are not it.
+ */
+export function inventoryList(schema: SheetSchema): InventoryList | undefined {
+  const field = schemaFields(schema).find(
+    (f) => f.type === 'list' && !!f.itemFields?.length && named(f, INVENTORY_NAMES),
+  );
+  if (!field) return undefined;
+  const cols = field.itemFields!;
+  const name = cols.find((c) => named(c, ['name', 'item', 'itemname'])) ?? cols[0]!;
+  const qty = cols.find(
+    (c) => c !== name && c.type === 'number' && named(c, ['qty', 'quantity', 'count', 'amount', 'number']),
+  );
+  const notes = cols.find(
+    (c) =>
+      c !== name &&
+      (c.type === 'text' || c.type === 'longtext') &&
+      named(c, ['notes', 'note', 'description', 'details']),
+  );
+  return { field, name: name.key, qty: qty?.key, notes: notes?.key };
+}
+
+const keyIn = (sheet: Record<string, unknown>, key: string) =>
+  Object.keys(sheet).find((k) => k.trim().toLowerCase() === key.toLowerCase());
+
+/**
+ * A character's inventory: the rows of the sheet's own inventory list when it
+ * has one, else what is `stored` in the built-in one.
+ */
+export function inventoryOf(
+  schema: SheetSchema,
+  sheet: Record<string, unknown>,
+  stored: InventoryItem[],
+): InventoryItem[] {
+  const inv = inventoryList(schema);
+  if (!inv) return stored;
+  const key = keyIn(sheet, inv.field.key);
+  const rows = key !== undefined && Array.isArray(sheet[key]) ? (sheet[key] as unknown[]) : [];
+  return rows
+    .flatMap((row): InventoryItem[] => {
+      if (!isObject(row)) return [];
+      const name = clip(formatValue(row[inv.name]), 80);
+      if (!name) return [];
+      const count = inv.qty ? num(row[inv.qty]) : undefined;
+      const notes = inv.notes ? clip(formatValue(row[inv.notes]), 200) : '';
+      return [
+        {
+          name,
+          qty: count !== undefined && count >= 1 ? Math.min(Math.round(count), 9999) : 1,
+          ...(notes ? { notes } : {}),
+        },
+      ];
+    })
+    .slice(0, 100);
+}
+
+/**
+ * Write an inventory onto a sheet's own inventory list, in place: one row per
+ * item, keeping the other columns (rarity, say) of a row already there for
+ * that item. False, and nothing changed, when the sheet has no such list.
+ */
+export function putInventory(
+  schema: SheetSchema,
+  sheet: Record<string, unknown>,
+  items: InventoryItem[],
+): boolean {
+  const inv = inventoryList(schema);
+  if (!inv) return false;
+  const key = keyIn(sheet, inv.field.key) ?? inv.field.key;
+  const before = (Array.isArray(sheet[key]) ? (sheet[key] as unknown[]) : []).filter(isObject);
+  const used = new Set<number>();
+  sheet[key] = items.slice(0, LIMITS.rows).map((item) => {
+    const at = before.findIndex(
+      (r, i) => !used.has(i) && formatValue(r[inv.name]).trim().toLowerCase() === item.name.toLowerCase(),
+    );
+    if (at >= 0) used.add(at);
+    const row: Record<string, unknown> = { ...(at >= 0 ? before[at] : {}), [inv.name]: item.name };
+    if (inv.qty) row[inv.qty] = item.qty;
+    if (inv.notes && item.notes) row[inv.notes] = item.notes;
+    return row;
+  });
+  return true;
+}
+
+/** Whether a list of written names includes the sheet's own inventory list, by name or label. */
+export function writesInventory(schema: SheetSchema, names: string[]): boolean {
+  const inv = inventoryList(schema);
+  if (!inv) return false;
+  const want = [inv.field.key.toLowerCase(), inv.field.label.toLowerCase()];
   return names.some((n) => want.includes(n.trim().toLowerCase()));
 }
 
@@ -671,6 +790,11 @@ export function schemaGuide(schema: SheetSchema, opts: { forGm?: boolean; steps?
     }
   }
   const maxField = maxHpField(schema);
+  const inv = inventoryList(schema);
+  if (inv)
+    lines.push(
+      `Belongings are the "${inv.field.key}" list, one row per item. Write them there and leave inventory out.`,
+    );
   lines.push(
     maxField
       ? `${schema.hp.label} are this system's hit points: their maximum is the "${maxField.key}" field. Write it there and leave max_hp out.`

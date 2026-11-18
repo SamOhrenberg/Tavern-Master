@@ -1,4 +1,4 @@
-import type { BuilderMessage, DiceRoll } from '@tavern/protocol';
+import type { BuilderMessage, DiceRoll, SheetSchema } from '@tavern/protocol';
 import { config } from '../config.js';
 import { q, q1 } from '../db/pool.js';
 import { conflict, HttpError, notFound } from '../errors.js';
@@ -7,7 +7,14 @@ import type { Message } from '../llm/types.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { applyDraft, type Control, type DraftPatch, type DraftResult, type Viewer } from '../party.js';
 import { runAgentTurn } from './loop.js';
-import { CAMPAIGN_SHEET_SQL, schemaGuide, toSchema } from '../sheet-schema.js';
+import {
+  CAMPAIGN_SHEET_SQL,
+  campaignSchema,
+  inventoryList,
+  maxHpField,
+  schemaGuide,
+  toSchema,
+} from '../sheet-schema.js';
 import { draftSchema } from './sheets.js';
 import { pgStore, type TurnContext } from './store.js';
 import { tool, ToolError, TOOLS, type ToolSpec } from './tools.js';
@@ -91,7 +98,7 @@ function builderText(c: BuilderCampaign, control: Control): string {
 
 ## The sheet
 ${schemaGuide(toSchema(c.sheet_template), { steps: true })}
-Maximum hit points and inventory have their own places in save_character. Persona holds who the character is.
+${ownPlaces(toSchema(c.sheet_template))}Persona holds who the character is.
 
 ## This campaign
 ${c.premise || 'No premise has been written; the Dungeon Master will shape the story.'}${c.settings.tone ? `\nTone: ${c.settings.tone}` : ''}${c.docs ? '\nThe players have uploaded documents about this campaign. Use search_documents when the character should tie into the world they describe.' : ''}
@@ -198,15 +205,29 @@ export async function sheetBlock(characterId: string | null): Promise<string> {
     sheet: Record<string, unknown>;
     inventory: unknown[];
     persona: string;
-  }>('SELECT name, max_hp, sheet, inventory, persona FROM characters WHERE id = $1', [characterId]);
+    campaign_id: string;
+  }>('SELECT name, max_hp, sheet, inventory, persona, campaign_id FROM characters WHERE id = $1', [
+    characterId,
+  ]);
   if (!row) return '<sheet>The character was removed. A new save will create it again.</sheet>';
+  // What the sheet holds in its own fields is shown there, not a second time beside them.
+  const schema = await campaignSchema(row.campaign_id);
   return `<sheet>\n${JSON.stringify({
     name: row.name,
-    max_hp: row.max_hp,
+    ...(maxHpField(schema) ? {} : { max_hp: row.max_hp }),
     fields: row.sheet,
-    inventory: row.inventory,
+    ...(inventoryList(schema) ? {} : { inventory: row.inventory }),
     persona: row.persona,
   })}\n</sheet>`;
+}
+
+/** Which of maximum hit points and inventory save_character holds apart from the sheet's fields. */
+function ownPlaces(schema: SheetSchema): string {
+  const apart = [maxHpField(schema) ? '' : 'maximum hit points', inventoryList(schema) ? '' : 'inventory'];
+  const said = apart.filter(Boolean).join(' and ');
+  if (!said) return '';
+  const verb = said.includes(' and ') ? 'have their own places' : 'has its own place';
+  return `${said[0]!.toUpperCase()}${said.slice(1)} ${verb} in save_character. `;
 }
 
 interface Stored {

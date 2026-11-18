@@ -440,11 +440,18 @@ export function WorkshopSheet({
             <article className="msg guide-msg live" aria-live="polite">
               <div className="dm-tool">
                 <span className="live-dot" />
-                <span>Waiting for Claude…</span>
+                <span>{workshop.launcher ? 'Claude is on its way…' : 'Waiting for Claude…'}</span>
               </div>
               <p className="small faint workshop-claude-hint">
-                Claude answers when an admin has it running. In Claude, with the Tavern Master connector, say:
-                &ldquo;Open the Tavern Master workshop for {systemName} and answer it.&rdquo;
+                {workshop.launcher ? (
+                  'The DM launcher starts Claude for the workshop. Its answer shows up here in a minute or so.'
+                ) : (
+                  <>
+                    Claude answers when an admin has it running: the DM launcher does it on its own. Or in
+                    Claude, with the Tavern Master connector, say: &ldquo;Open the Tavern Master workshop for{' '}
+                    {systemName} and answer it.&rdquo;
+                  </>
+                )}
               </p>
             </article>
           )}

@@ -25,6 +25,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the workshop from Claude (datab
   let asAdmin: SignedIn;
   let claude: ReturnType<typeof mcpClient>;
   let playerClaude: ReturnType<typeof mcpClient>;
+  let adminToken = '';
+  let playerToken = '';
   const name = () => `Crow Rules ${tag}`;
 
   beforeAll(async () => {
@@ -49,8 +51,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the workshop from Claude (datab
     ))!.id;
     app = await buildApp();
     asAdmin = await signedIn(app, admin);
-    claude = mcpClient(app, (await createToken(admin, 'workshop'))!.token);
-    playerClaude = mcpClient(app, (await createToken(player, 'workshop'))!.token);
+    adminToken = (await createToken(admin, 'workshop'))!.token;
+    playerToken = (await createToken(player, 'workshop'))!.token;
+    claude = mcpClient(app, adminToken);
+    playerClaude = mcpClient(app, playerToken);
   });
 
   afterAll(async () => {
@@ -177,5 +181,38 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the workshop from Claude (datab
     await asAdmin.send('POST', `/api/systems/${system}/workshop/messages`, { text: 'What about helmets?' });
     expect((await waiting).text).toContain('What about helmets?');
     expect(Date.now() - started).toBeLessThan(5_000);
+    await claude.call('workshop_reply', { system: name(), text: 'Helmets count as armor.' });
+  });
+
+  it('tells an admin’s DM launcher when the workshop waits for Claude', async () => {
+    type Listed = { id: string; name: string; folder: string; waiting: number };
+    const summon = async (token: string) =>
+      (
+        await app.inject({ method: 'GET', url: '/api/summon', headers: { authorization: `Bearer ${token}` } })
+      ).json<{ workshops: Listed[] }>().workshops;
+    const view = async () =>
+      (await asAdmin.get<{ workshop: Workshop }>(`/api/systems/${system}/workshop`)).body.workshop;
+
+    // No launcher has asked yet: the app says how to bring Claude by hand.
+    expect((await view()).launcher).toBe(false);
+    // A player's launcher is never handed the workshop: its tools would refuse it.
+    expect(await summon(playerToken)).toEqual([]);
+
+    expect((await summon(adminToken)).find((w) => w.id === system)).toEqual({
+      id: system,
+      name: name(),
+      folder: `workshop-sys-${tag}`,
+      waiting: 0,
+    });
+    expect((await view()).launcher).toBe(true);
+
+    await asAdmin.send('POST', `/api/systems/${system}/workshop/messages`, { text: 'And gauntlets?' });
+    expect((await summon(adminToken)).find((w) => w.id === system)?.waiting).toBe(1);
+    await claude.call('workshop_reply', { system: name(), text: 'Gauntlets too.' });
+
+    // Handed back to the built-in AI: the launcher has nothing to answer there.
+    await asAdmin.patch(`/api/systems/${system}/workshop`, { answeredBy: 'server' });
+    expect((await summon(adminToken)).some((w) => w.id === system)).toBe(false);
+    expect((await view()).launcher).toBe(false);
   });
 });

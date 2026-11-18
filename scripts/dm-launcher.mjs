@@ -7,9 +7,13 @@
  * while players wait, it stops that run. The next player to sit down starts a
  * new one.
  *
+ * For an admin's token it answers the game system workshop too: when an admin
+ * writes in a workshop that Claude answers, it starts a run (`claude -p
+ * /workshop`) that answers and leaves once nothing is waiting.
+ *
  *   node scripts/dm-launcher.mjs setup --server https://tavern.example --token tmc_...
  *   node scripts/dm-launcher.mjs              keep tables staffed (Ctrl+C to stop)
- *   node scripts/dm-launcher.mjs watch [name] follow what Claude is doing at a table
+ *   node scripts/dm-launcher.mjs watch [name] follow what Claude is doing at a table or workshop
  *   node scripts/dm-launcher.mjs status       what the server says about each table
  *
  * Make the token in the app under You → Claude → Use a token instead. Settings
@@ -141,16 +145,53 @@ async function ensureFolder(s, c) {
 }
 
 /**
+ * The folder a workshop run works in: no campaign, only the skill that says
+ * how to answer this system's workshop. The launcher owns it and rewrites it,
+ * so a renamed system is picked up.
+ */
+function workshopFolder(s, w) {
+  const root = join(s.dir, w.folder);
+  const skill = `---
+name: workshop
+description: Answer the Tavern Master workshop for ${w.system} in the app until nothing is waiting.
+---
+Answer the admins' messages in the Tavern Master workshop for the game system ${w.system}.
+Every workshop tool takes the system's name: ${w.system}
+
+1. Call \`open_workshop\` with the system and follow the instructions it returns.
+2. Call \`workshop_wait\` with the system. Do what the messages ask with the workshop tools, then
+   answer with \`workshop_reply\`, giving the number of the last message you answer.
+3. Call \`workshop_wait\` again. Repeat.
+4. Write nothing between calls. No status lines, no summaries.
+5. Stop when \`workshop_wait\` says nothing is waiting twice in a row. End with one line: why you stopped.
+`;
+  const claudeMd = `# The ${w.system} workshop
+
+The DM launcher runs Claude here to answer the Tavern Master workshop for ${w.system}, through
+the \`tavern-master\` tools only. \`/workshop\` answers it. Do not create or edit files here.
+`;
+  const files = { 'CLAUDE.md': claudeMd, '.claude/skills/workshop/SKILL.md': skill };
+  for (const [path, text] of Object.entries(files)) {
+    const target = join(root, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, text);
+  }
+  return root;
+}
+
+/**
  * The connector for one run, signed in with the launcher's token, so a
  * background run needs no browser sign-in. It sits beside the config, which
- * already holds the token, rather than in the campaign folder.
+ * already holds the token, rather than in the campaign folder. A campaign's
+ * run gets that campaign's address; a workshop's the account-wide one, as the
+ * workshop tools refuse a connection for one campaign.
  */
 function mcpConfig(s, c) {
   mkdirSync(MCP, { recursive: true });
   const path = join(MCP, `${c.folder}.json`);
   const server = {
     type: 'http',
-    url: `${s.server}/mcp/c/${c.id}`,
+    url: c.kind === 'workshop' ? `${s.server}/mcp` : `${s.server}/mcp/c/${c.id}`,
     headers: { Authorization: `Bearer ${s.token}` },
   };
   writeFileSync(path, JSON.stringify({ mcpServers: { [SERVER_NAME]: server } }, null, 2), { mode: 0o600 });
@@ -179,10 +220,10 @@ function findClaude(s) {
   return (claudeCmd = { file: 'claude', shell: false });
 }
 
-function spawnClaude(s, cwd, mcpPath, signIn) {
+function spawnClaude(s, cwd, mcpPath, signIn, command) {
   const args = [
     '-p',
-    '/dm',
+    command,
     '--output-format',
     'stream-json',
     '--verbose',
@@ -354,12 +395,13 @@ function readEvent(c, raw) {
 const tables = new Map();
 
 function startRun(s, c, t) {
-  ensureFolder(s, c)
+  const workshop = c.kind === 'workshop';
+  (workshop ? Promise.resolve().then(() => workshopFolder(s, c)) : ensureFolder(s, c))
     .then((cwd) => {
       t.preparing = false;
       if (t.proc || stopping) return;
       const signIn = pickSignIn();
-      const proc = spawnClaude(s, cwd, mcpConfig(s, c), signIn);
+      const proc = spawnClaude(s, cwd, mcpConfig(s, c), signIn, workshop ? '/workshop' : '/dm');
       Object.assign(t, {
         proc,
         signIn,
@@ -371,7 +413,12 @@ function startRun(s, c, t) {
         claudeError: null,
       });
       const on = signIns.length > 1 ? `, on the ${signIn.name}` : '';
-      log(c, `Claude is coming to the table (${c.players} player${c.players === 1 ? '' : 's'} there${on}).`);
+      log(
+        c,
+        workshop
+          ? `Claude is coming to the workshop (${c.waiting} message${c.waiting === 1 ? '' : 's'} waiting${on}).`
+          : `Claude is coming to the table (${c.players} player${c.players === 1 ? '' : 's'} there${on}).`,
+      );
       createInterface({ input: proc.stdout }).on('line', (line) => {
         const r = readEvent(c, line);
         if (r?.error) t.claudeError = r.error;
@@ -420,7 +467,7 @@ function runEnded(c, t, code) {
   const why = t.stopReason
     ? 'stopped'
     : code === 0
-      ? 'Claude left the table'
+      ? `Claude left the ${c.kind === 'workshop' ? 'workshop' : 'table'}`
       : `Claude exited with code ${code}`;
   t.proc = null;
   // The sign-in itself failing (out of usage, signed out): sit it out and use
@@ -466,10 +513,40 @@ function runEnded(c, t, code) {
 let stopping = false;
 let lastError = '';
 
+/** A workshop as the launcher keeps it: beside the campaigns, under its own key. */
+const asWorkshop = (w) => ({
+  ...w,
+  kind: 'workshop',
+  key: `workshop:${w.id}`,
+  system: w.name,
+  name: `${w.name} workshop`,
+});
+
+/** Start or stop the run for one game system's workshop. */
+function tendWorkshop(s, w, now, idleMs) {
+  const t = tables.get(w.key) ?? { holdUntil: 0 };
+  tables.set(w.key, t);
+  t.c = w;
+  const wanted = w.waiting > 0;
+  if (t.proc) {
+    t.preparing = false;
+    // The run leaves on its own once nothing waits; these catch one that does not.
+    t.unwantedSince = wanted ? null : (t.unwantedSince ?? now);
+    t.quietSince = wanted ? (t.quietSince ?? now) : null;
+    if (t.unwantedSince && now - t.unwantedSince > idleMs)
+      stopRun(w, t, `nothing waiting in the workshop for ${s.idleMinutes} min`);
+    else if (t.quietSince && now - t.quietSince > idleMs)
+      stopRun(w, t, `no answer from Claude for ${s.idleMinutes} min while an admin waits`);
+  } else if (wanted && !t.preparing && now >= t.holdUntil) {
+    startRun(s, w, t);
+  }
+}
+
 async function tick(s) {
   let campaigns;
+  let workshops;
   try {
-    ({ campaigns } = await api(s, '/api/summon'));
+    ({ campaigns, workshops = [] } = await api(s, '/api/summon'));
     if (lastError) console.log('Server reachable again.');
     lastError = '';
   } catch (err) {
@@ -500,9 +577,21 @@ async function tick(s) {
       t.preparing = false;
     }
   }
+  for (const raw of workshops) {
+    const w = asWorkshop(raw);
+    seen.add(w.key);
+    tendWorkshop(s, w, now, idleMs);
+  }
   // Switched back to the built-in AI, archived or deleted: no reason to stay.
   for (const [id, t] of tables)
-    if (!seen.has(id) && t.proc) stopRun(t.c, t, 'the campaign is no longer run by Claude');
+    if (!seen.has(id) && t.proc)
+      stopRun(
+        t.c,
+        t,
+        t.c.kind === 'workshop'
+          ? 'the workshop is no longer answered by Claude'
+          : 'the campaign is no longer run by Claude',
+      );
 }
 
 async function run(s) {
@@ -551,14 +640,16 @@ function setup(f) {
 
 async function status(s) {
   requireServer(s);
-  const { campaigns } = await api(s, '/api/summon');
-  if (!campaigns.length) return console.log('No active campaigns of yours are run by Claude.');
+  const { campaigns, workshops = [] } = await api(s, '/api/summon');
+  if (!campaigns.length) console.log('No active campaigns of yours are run by Claude.');
   for (const c of campaigns) {
     const seen = c.dm.lastSeenAt ? `, last seen ${new Date(c.dm.lastSeenAt).toLocaleString()}` : '';
     console.log(
       `${c.name}  [${c.folder}]  players: ${c.players}  Claude: ${c.dm.state}${seen}${c.wanted ? '  ← wanted' : ''}`,
     );
   }
+  for (const w of workshops)
+    console.log(`${w.name} workshop  [${w.folder}]  waiting: ${w.waiting}${w.waiting ? '  ← wanted' : ''}`);
 }
 
 /** Follow a campaign's log: the last lines, then everything new as it is written. */

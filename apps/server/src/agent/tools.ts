@@ -6,6 +6,9 @@ import {
   checkSheet,
   coerce,
   fieldName,
+  inventoryList,
+  LIMITS,
+  putInventory,
   removeEntry,
   schemaFields,
   settleMaxHp,
@@ -401,6 +404,9 @@ export const TOOLS: ToolSpec[] = [
           `${c.name}'s player is not part of this turn, so nothing can be taken from them.`,
         );
       }
+      const schema = await store.sheetSchema(ctx.campaignId);
+      // A sheet with its own inventory list holds fewer rows than the built-in inventory.
+      const most = inventoryList(schema) ? LIMITS.rows : 100;
       const inv = c.inventory.map((i) => ({ ...i }));
       const changes: string[] = [];
       for (const r of input.remove ?? []) {
@@ -412,12 +418,23 @@ export const TOOLS: ToolSpec[] = [
       for (const a of input.add ?? []) {
         const item = inv.find((i) => i.name.toLowerCase() === a.name.toLowerCase());
         if (item) item.qty += a.qty;
-        else if (inv.length < 100)
+        else if (inv.length < most)
           inv.push({ name: a.name, qty: a.qty, ...(a.notes ? { notes: a.notes } : {}) });
         changes.push(`+${a.qty} ${a.name}`);
       }
       if (!changes.length) throw new ToolError('Nothing to add or remove.');
       c.inventory = inv.filter((i) => i.qty > 0);
+      // On a sheet with its own inventory list, the rows change too, keeping their other columns.
+      const sheet = { ...c.sheet };
+      if (putInventory(schema, sheet, c.inventory)) {
+        try {
+          c.sheet = checkSheet(schema, sheet);
+        } catch (err) {
+          if (err instanceof HttpError) throw new ToolError(err.message);
+          throw err;
+        }
+        await store.saveSheet(c);
+      }
       await store.saveCharacter(c);
       ctx.stateChanged = true;
       const summary = `${c.name}: ${changes.join(', ')}`;

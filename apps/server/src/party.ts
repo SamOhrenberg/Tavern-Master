@@ -10,10 +10,12 @@ import {
   gmKeptNames,
   keepGmFields,
   LIMITS,
+  putInventory,
   removeEntry,
   settleMaxHp,
   unknownNamesNote,
   valueInput,
+  writesInventory,
   writesMaxHp,
 } from './sheet-schema.js';
 import { uploadPath } from './storage.js';
@@ -183,6 +185,9 @@ export async function createCharacter(
     settleMaxHp(schema, written, body.maxHp, writesMaxHp(schema, Object.keys(body.sheet))) ??
     body.maxHp ??
     10;
+  // A sheet with its own inventory list takes the items given, unless its list was written too.
+  if (body.inventory && !writesInventory(schema, Object.keys(body.sheet)))
+    putInventory(schema, written, body.inventory);
   const sheet = checkSheet(schema, written);
 
   return tx(async (client) => {
@@ -230,7 +235,10 @@ export async function updateCharacter(
     'SELECT sheet, max_hp FROM characters WHERE id = $1',
     [characterId],
   );
-  const sheet = keepGmFields(schema, before?.sheet ?? {}, checkSheet(schema, body.sheet));
+  const written = { ...body.sheet };
+  if (body.inventory && !writesInventory(schema, Object.keys(body.sheet)))
+    putInventory(schema, written, body.inventory);
+  const sheet = keepGmFields(schema, before?.sheet ?? {}, checkSheet(schema, written));
   // Settled after the GM's fields are kept, so a Max HP the GM holds still decides.
   const maxHp =
     settleMaxHp(schema, sheet, body.maxHp, writesMaxHp(schema, Object.keys(body.sheet))) ??
@@ -414,6 +422,15 @@ export async function applyDraft(
     (field) => removeEntry(schema, sheet, field) ?? named(field),
   );
   for (const { field, value } of patch.fields ?? []) sheet[keyFor(named(field))] = value;
+  // A sheet with its own inventory list takes the items given, unless its list was written too.
+  if (
+    patch.inventory &&
+    !writesInventory(
+      schema,
+      (patch.fields ?? []).map((f) => f.field),
+    )
+  )
+    putInventory(schema, sheet, patch.inventory);
   let checked = checkSheet(schema, sheet);
   if (!opts.asGm) {
     const before = row?.sheet ?? {};

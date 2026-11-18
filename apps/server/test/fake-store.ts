@@ -1,5 +1,5 @@
 import type { RuleHit, SheetSchema } from '@tavern/protocol';
-import { EMPTY_SCHEMA } from '../src/sheet-schema.js';
+import { EMPTY_SCHEMA, inventoryOf } from '../src/sheet-schema.js';
 import type {
   CharRow,
   EntityRow,
@@ -46,7 +46,8 @@ export class FakeStore implements GameStore {
     return this.chars.map((c) => ({
       ...c,
       conditions: [...c.conditions],
-      inventory: c.inventory.map((i) => ({ ...i })),
+      // Like the real store, a sheet with its own inventory list holds the inventory there.
+      inventory: inventoryOf(this.schema, c.sheet, c.inventory).map((i) => ({ ...i })),
       sheet: { ...c.sheet },
     }));
   }

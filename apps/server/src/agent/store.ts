@@ -11,7 +11,7 @@ import type {
   SheetSchema,
 } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
-import { campaignSchema } from '../sheet-schema.js';
+import { campaignSchema, inventoryOf } from '../sheet-schema.js';
 import { editMessage } from '../realtime/messages.js';
 import { redactSecrets } from './loop.js';
 import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
@@ -197,6 +197,8 @@ export const pgStore: GameStore = {
   sheetSchema: (campaignId) => campaignSchema(campaignId),
 
   async characters(campaignId) {
+    // A sheet with its own inventory list holds the inventory there.
+    const schema = await campaignSchema(campaignId);
     const rows = await q<CharDb>(
       `SELECT c.id, c.name, c.kind, c.controller, c.hp, c.max_hp, c.temp_hp, c.conditions, c.inventory,
               c.sheet, c.persona, c.whereabouts, c.portrait,
@@ -215,7 +217,7 @@ export const pgStore: GameStore = {
       maxHp: r.max_hp,
       tempHp: r.temp_hp,
       conditions: r.conditions,
-      inventory: r.inventory,
+      inventory: inventoryOf(schema, r.sheet, r.inventory),
       sheet: r.sheet,
       persona: r.persona,
       whereabouts: r.whereabouts,
