@@ -3,7 +3,7 @@ import { createWriteStream } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import type { GameSystem, RuleDocument } from '@tavern/protocol';
+import type { GameSystem, RuleDocument, SheetDraftView } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
@@ -12,6 +12,9 @@ import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireAdmin, requireUser } from '../http/security.js';
 import { enqueue, hasPending } from '../jobs/queue.js';
+import { rulesCorpus } from '../agent/sheet-drafter.js';
+import { builtInAiFor, instanceAiConfigured } from '../llm/index.js';
+import { applyProposals, proposalsFor } from '../sheet-proposals.js';
 import { editLoreSchema } from '../rules/lore.js';
 import { sniffFile } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
@@ -42,6 +45,18 @@ const DEFAULT_FIELDS = [
   { key: 'skills', label: 'Skills' },
   { key: 'features', label: 'Abilities & features' },
 ];
+
+interface DraftRow {
+  sheet_template: unknown;
+  sheet_draft: unknown;
+  sheet_draft_notes: string[];
+  sheet_draft_status: SheetDraftView['status'];
+  sheet_draft_error: string | null;
+  sheet_draft_at: Date | null;
+}
+const DRAFT_SQL = `SELECT sheet_template, sheet_draft, sheet_draft_notes, sheet_draft_status, sheet_draft_error,
+                          sheet_draft_at
+                     FROM game_systems WHERE id = $1`;
 
 const slugify = (name: string) =>
   name
@@ -88,7 +103,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const admin = auth.user.role === 'admin';
     const rows = await q(
       `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.lore, s.lore_status, s.homebrew,
-              s.gm_instructions,
+              s.gm_instructions, s.sheet_draft_status,
               (SELECT count(*)::int FROM documents d WHERE d.system_id = s.id AND d.campaign_id IS NULL) AS docs,
               (SELECT count(*)::int FROM documents d
                  WHERE d.system_id = s.id AND d.campaign_id IS NULL AND d.kind = 'setting') AS setting_docs,
@@ -108,7 +123,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       lore: r.lore ?? null,
       homebrew: r.homebrew,
       // Written for the GM, so only the admins who write them see them.
-      ...(admin ? { gmInstructions: r.gm_instructions } : {}),
+      ...(admin ? { gmInstructions: r.gm_instructions, sheetDraftStatus: r.sheet_draft_status } : {}),
     }));
     return { systems };
   });
@@ -208,6 +223,109 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       meta: { sheetSchema: true },
     });
     return { sheetSchema: schema };
+  });
+
+  // ---- the AI's draft of a system's sheet ----
+
+  /**
+   * Have the AI draft the system's sheet from its rulebooks. It runs in the
+   * background; the draft waits for review and changes nothing on its own.
+   */
+  app.post<{ Params: { id: string } }>('/api/systems/:id/sheet-draft', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const sys = await q1<{ created_by: string | null; sheet_draft_status: string }>(
+      'SELECT created_by, sheet_draft_status FROM game_systems WHERE id = $1',
+      [id],
+    );
+    if (!sys) throw notFound();
+    if (!(await rulesCorpus(id)).length)
+      throw badRequest('Upload a rulebook and let it finish indexing first: the draft is read from it.');
+    // The job runs on the system creator's key if the server has none of its own.
+    const owner = sys.created_by ?? auth.user.id;
+    if (!(instanceAiConfigured() || (await builtInAiFor(owner))))
+      throw badRequest(
+        'Drafting a sheet needs the built-in AI, and this server has none set up.',
+        'no_built_in',
+      );
+    if (!(await hasPending('draft_sheet', 'systemId', id))) {
+      await enqueue('draft_sheet', { systemId: id });
+      await q(
+        `UPDATE game_systems SET sheet_draft_status = 'queued', sheet_draft_error = NULL WHERE id = $1`,
+        [id],
+      );
+    }
+    await audit('system.sheet_draft_requested', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+    });
+    return { ok: true };
+  });
+
+  /** The draft, as the changes it would make to the sheet the system has now. */
+  app.get<{ Params: { id: string } }>(
+    '/api/systems/:id/sheet-draft',
+    async (req): Promise<SheetDraftView> => {
+      requireAdmin(req);
+      const id = parse(uuid, req.params.id);
+      const row = await q1<DraftRow>(DRAFT_SQL, [id]);
+      if (!row) throw notFound();
+      const draft = row.sheet_draft ? toSchema(row.sheet_draft) : null;
+      return {
+        status: row.sheet_draft_status,
+        error: row.sheet_draft_error,
+        notes: row.sheet_draft_notes,
+        proposals: draft ? proposalsFor(toSchema(row.sheet_template), draft) : [],
+        draftedAt: row.sheet_draft_at?.toISOString() ?? null,
+      };
+    },
+  );
+
+  /**
+   * Make the changes the admin chose, and only those, then let the draft go.
+   * Ids are the proposals' own; one the draft no longer proposes is ignored.
+   */
+  app.post<{ Params: { id: string } }>('/api/systems/:id/sheet-draft/apply', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const { accept } = parse(z.object({ accept: z.array(z.string().max(80)).max(200) }), req.body);
+    const row = await q1<DraftRow>(DRAFT_SQL, [id]);
+    if (!row) throw notFound();
+    if (!row.sheet_draft) throw conflict('There is no draft to apply.');
+    const schema = applyProposals(toSchema(row.sheet_template), toSchema(row.sheet_draft), accept);
+    await q(
+      `UPDATE game_systems SET sheet_template = $2, sheet_draft = NULL, sheet_draft_notes = '[]',
+              sheet_draft_status = 'none', sheet_draft_error = NULL WHERE id = $1`,
+      [id, JSON.stringify(schema)],
+    );
+    await audit('system.updated', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+      meta: { sheetSchema: true, fromDraft: accept.length },
+    });
+    return { sheetSchema: schema };
+  });
+
+  /** Let a draft (or a failed attempt) go without changing the sheet. */
+  app.delete<{ Params: { id: string } }>('/api/systems/:id/sheet-draft', async (req) => {
+    requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const row = await q1<{ sheet_draft_status: string }>(
+      `UPDATE game_systems SET sheet_draft = NULL, sheet_draft_notes = '[]', sheet_draft_status = 'none',
+              sheet_draft_error = NULL
+        WHERE id = $1 AND sheet_draft_status NOT IN ('queued', 'drafting') RETURNING sheet_draft_status`,
+      [id],
+    );
+    if (!row) {
+      if (await q1('SELECT 1 FROM game_systems WHERE id = $1', [id]))
+        throw conflict('Wait for the draft to finish.');
+      throw notFound();
+    }
+    return { ok: true };
   });
 
   app.delete<{ Params: { id: string } }>('/api/systems/:id', async (req) => {
