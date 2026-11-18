@@ -2,6 +2,7 @@ import type {
   CharacterDraft,
   InventoryItem,
   RuleHit,
+  SheetField,
   SheetSchema,
   SheetSuggestion,
   SheetValue,
@@ -292,8 +293,14 @@ export const changeSchema = z.object({
     .max(60)
     .describe('The field to change: "maxHp" for hit points, or the sheet field name'),
   suggested: z
-    .union([z.string().trim().max(1500), z.number().finite()])
-    .describe('The value the rules work out'),
+    .union([
+      z.string().trim().max(1500),
+      z.number().finite(),
+      z.object({ current: z.number().finite(), max: z.number().finite() }),
+    ])
+    .describe(
+      'The value the rules work out: a number or text, or for a track its current and maximum ({"current": 4, "max": 4})',
+    ),
   reason: z.string().trim().min(1).max(300).describe('One line on why, naming the rule where you can'),
 });
 export type DraftChange = z.infer<typeof changeSchema>;
@@ -340,6 +347,7 @@ The sheet reader copies what is written and does not do arithmetic, so a value t
 Rules:
 - Only propose a change the rules in front of you actually determine. Do not guess, and do not touch a field the rules leave to the player (name, persona, ability scores the player chose, flavour).
 - Use "maxHp" as the field for hit points. For anything else, use the field name as it appears on the draft.
+- Give a track (mana, stress, ammunition) as its current and maximum value.
 - Show your arithmetic in the reason, briefly, and name the rule.
 - If every value already matches the rules, call suggest_changes with an empty list.
 Call suggest_changes exactly once.
@@ -370,6 +378,30 @@ function currentValue(field: string, draft: CharacterDraft): string {
 }
 
 /**
+ * A suggested value as the editor shows and applies it: text or a number, in
+ * the shape of the field it lands on. A model sometimes writes a track as JSON
+ * text ('{"current": 4, "max": 4}'); that is read back into the value first,
+ * and a track always comes out as "4/4". Undefined when it cannot be read as
+ * the field's kind.
+ */
+function suggestedValue(raw: DraftChange['suggested'], field?: SheetField): string | number | undefined {
+  let value: unknown = raw;
+  if (typeof raw === 'string' && /^\s*[[{]/.test(raw)) {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      // Not JSON after all: keep the text.
+    }
+  }
+  if (field && field.type !== 'list') {
+    const v = coerce(field, value);
+    if (v === undefined) return undefined;
+    return typeof v === 'number' ? v : formatValue(v);
+  }
+  return typeof value === 'number' ? value : formatValue(value) || undefined;
+}
+
+/**
  * Turn a model's proposed changes into suggestions the editor can show: each one
  * routed to the field it belongs on (hit points to the HP box), with the draft's
  * current value, a cleaned HP number, and no-ops and duplicates dropped. Shared
@@ -383,15 +415,20 @@ export function suggestionsFromChanges(
 ): SheetSuggestion[] {
   const out: SheetSuggestion[] = [];
   const seen = new Set<string>();
+  const index = schema && fieldIndex(schema);
   for (const change of changes) {
     const field = suggestionField(change.field, draft, schema);
     if (!field || seen.has(field.toLowerCase())) continue;
     // maxHp is a number; clamp it to the sheet's range and drop a non-numeric answer.
-    let suggested: string | number = change.suggested;
+    let suggested: string | number;
     if (field === MAX_HP_KEY) {
       const n = Math.round(Number(change.suggested));
       if (!Number.isFinite(n) || n < 1 || n > 9999) continue;
       suggested = n;
+    } else {
+      const shown = suggestedValue(change.suggested, index?.get(field.toLowerCase()));
+      if (shown === undefined) continue;
+      suggested = shown;
     }
     const current = currentValue(field, draft);
     // Nothing to suggest when the value already reads the same.

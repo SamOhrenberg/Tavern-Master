@@ -91,3 +91,40 @@ describe("a sheet's own Max HP field", () => {
     expect(box[0]?.field).toBe('maxHp');
   });
 });
+
+describe('a rules check on a track', () => {
+  const MANA: SheetSchema = {
+    version: 2,
+    hp: { label: 'HP' },
+    sections: [
+      {
+        id: 'status',
+        label: 'Status',
+        fields: [
+          { key: 'Mana', label: 'Mana', type: 'track' },
+          { key: 'Intelligence', label: 'Intelligence', type: 'number' },
+        ],
+      },
+    ],
+    createSteps: [],
+  };
+
+  it('reads a track the model wrote as JSON text, or as an object, as "current/max"', () => {
+    const draft = draftFromRecord({ name: 'Ryan', fields: [{ field: 'Intelligence', value: 4 }] }, MANA)!;
+    const reason = 'Max mana equals Intelligence (4).';
+    const asText = suggestionsFromChanges(
+      [{ field: 'Mana', suggested: '{"current": 4, "max": 4}', reason }],
+      draft,
+      MANA,
+    );
+    expect(asText).toEqual([{ field: 'Mana', current: '(not set)', suggested: '4/4', reason }]);
+    const asObject = suggestionsFromChanges(
+      [{ field: 'mana', suggested: { current: 3, max: 4 }, reason }],
+      draft,
+      MANA,
+    );
+    expect(asObject[0]?.suggested).toBe('3/4');
+    // A value that cannot be read as a track is dropped rather than shown.
+    expect(suggestionsFromChanges([{ field: 'Mana', suggested: 'lots', reason }], draft, MANA)).toEqual([]);
+  });
+});

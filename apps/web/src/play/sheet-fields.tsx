@@ -191,7 +191,9 @@ export function sheetFromValues(
 function Hint({ field, locked }: { field: SheetField; locked: boolean }) {
   const parts = [
     locked ? 'The GM keeps this.' : '',
-    field.type === 'derived' && field.derivedFrom ? `Worked out: ${field.derivedFrom}.` : '',
+    field.type === 'derived' && field.derivedFrom
+      ? `Worked out: ${field.derivedFrom.trim().replace(/\.*$/, '')}.`
+      : '',
     field.help ?? '',
   ].filter(Boolean);
   return parts.length ? <span className="hint">{parts.join(' ')}</span> : null;

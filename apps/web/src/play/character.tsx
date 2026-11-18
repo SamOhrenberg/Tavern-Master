@@ -44,6 +44,34 @@ const int = (s: string, fallback: number) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+/** A track written as JSON ('{"current": 4, "max": 4}'), which older drafts may hold. */
+function jsonTrack(value: string): { current: number; max: number } | undefined {
+  if (!value.trim().startsWith('{')) return undefined;
+  try {
+    const v: unknown = JSON.parse(value);
+    if (typeof v === 'object' && v && 'current' in v && 'max' in v) {
+      const { current, max } = v as { current: unknown; max: unknown };
+      if (typeof current === 'number' && typeof max === 'number') return { current, max };
+    }
+  } catch {
+    // Plain text, not JSON.
+  }
+  return undefined;
+}
+
+/** A suggested track value as its two boxes: "4/4", "4", or JSON. */
+const trackParts = (value: string): string[] => {
+  const json = jsonTrack(value);
+  if (json) return [String(json.current), String(json.max)];
+  return value.split('/').map((x) => x.trim());
+};
+
+/** A suggested value as it reads in the list of changes: a track as "4/4". */
+const shownSuggestion = (value: string | number): string => {
+  const json = typeof value === 'string' ? jsonTrack(value) : undefined;
+  return json ? `${json.current}/${json.max}` : String(value);
+};
+
 interface Row extends InventoryItem {
   id: number;
 }
@@ -169,7 +197,7 @@ export function CharacterSheet({
       const lower = s.field.toLowerCase();
       const field = fields.find((f) => f.key.toLowerCase() === lower);
       if (field?.type === 'track') {
-        const [current, max = current] = value.split('/').map((x) => x.trim());
+        const [current, max = current] = trackParts(value);
         set(field.key, { current: current ?? '', max: max ?? '' });
       } else if (field?.type === 'checkbox') set(field.key, /^(yes|true)$/i.test(value));
       // A list is not something one suggested value can replace; the suggestion stays to read.
@@ -277,7 +305,7 @@ export function CharacterSheet({
                           s.field)}
                     </span>
                     <span className="sheet-check-change">
-                      <s>{s.current}</s> → <b>{String(s.suggested)}</b>
+                      <s>{s.current}</s> → <b>{shownSuggestion(s.suggested)}</b>
                     </span>
                   </div>
                   <p className="small muted">{s.reason}</p>
