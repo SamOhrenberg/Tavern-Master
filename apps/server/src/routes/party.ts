@@ -331,6 +331,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
           llm,
           systemName: campaign.system_name,
           draft,
+          schema: toSchema(campaign.sheet_template),
           rules,
           signal: AbortSignal.timeout(60_000),
           onUsage: (usage, model) =>

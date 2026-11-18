@@ -16,6 +16,32 @@ export const isTrack = (v: unknown): v is TrackValue =>
   typeof (v as TrackValue).current === 'number' &&
   typeof (v as TrackValue).max === 'number';
 
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+const HP_NAMES = ['hp', 'hitpoints', 'hitpoint', 'health'];
+
+/**
+ * The field a system's sheet keeps maximum hit points in, if it has one
+ * ("Max HP", worked out by the rules). The HP box steps aside for it, and the
+ * server sets the character's maximum from it. Matches the server's rule.
+ */
+export function maxHpField(schema: SheetSchema | undefined): SheetField | undefined {
+  if (!schema) return undefined;
+  const hp = [...new Set([...HP_NAMES, squash(schema.hp.label)])].filter(Boolean);
+  const max = hp.flatMap((h) => [`max${h}`, `maximum${h}`, `${h}max`, `${h}maximum`]);
+  return fieldsOf(schema).find((f) => {
+    if (f.type !== 'number' && f.type !== 'derived' && f.type !== 'text') return false;
+    const names = [squash(f.key), squash(f.label)];
+    return names.some((n) => max.includes(n)) || (f.type === 'derived' && names.some((n) => hp.includes(n)));
+  });
+}
+
+/** The whole number a max-HP value reads as ("27.5" and "27 (10 + ...)" are 27), if it is one. */
+export function readMaxHp(v: unknown): number | undefined {
+  const m = /^\s*([+-]?\d+(?:\.\d+)?)/.exec(String(v ?? '').replace(/[−–]/g, '-'));
+  const whole = m ? Math.floor(Number(m[1])) : NaN;
+  return whole >= 1 && whole <= 9999 ? whole : undefined;
+}
+
 /** A value on a sheet whatever the spelling of its name ("strength" for "Strength"). */
 export function lookup(sheet: Record<string, unknown>, key: string): unknown {
   const hit = Object.keys(sheet).find((k) => k.toLowerCase() === key.toLowerCase());

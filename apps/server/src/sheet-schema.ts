@@ -213,6 +213,67 @@ export function fieldIndex(schema: SheetSchema): Map<string, SheetField> {
   return new Map(schemaFields(schema).map((f) => [f.key.toLowerCase(), f]));
 }
 
+// ---- maximum hit points ----
+
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+const HP_NAMES = ['hp', 'hitpoints', 'hitpoint', 'health'];
+
+/**
+ * The field a system's sheet keeps maximum hit points in, if it has one
+ * ("Max HP", worked out by the rules). Such a sheet holds max HP itself, so
+ * the HP box steps aside and the character's maximum follows this field.
+ * A plain "HP" counts only when the rules work it out: anything else may be
+ * current hit points.
+ */
+export function maxHpField(schema: SheetSchema): SheetField | undefined {
+  const hp = [...new Set([...HP_NAMES, squash(schema.hp.label)])].filter(Boolean);
+  const max = hp.flatMap((h) => [`max${h}`, `maximum${h}`, `${h}max`, `${h}maximum`]);
+  return schemaFields(schema).find((f) => {
+    if (f.type !== 'number' && f.type !== 'derived' && f.type !== 'text') return false;
+    const names = [squash(f.key), squash(f.label)];
+    return names.some((n) => max.includes(n)) || (f.type === 'derived' && names.some((n) => hp.includes(n)));
+  });
+}
+
+/** The whole number a max-HP value reads as ("27.5" and "27 (10 + ...)" are 27), if it is one. */
+export function readMaxHp(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : num(formatValue(v));
+  if (n === undefined || !Number.isFinite(n)) return undefined;
+  const whole = Math.floor(n);
+  return whole >= 1 && whole <= 9999 ? whole : undefined;
+}
+
+/**
+ * Settle maximum hit points on a sheet that has its own Max HP field, so the
+ * two never disagree. A max HP given without the field being written goes
+ * into the field; otherwise the field's number wins. Returns the maximum to
+ * store, or undefined when the sheet has no such field or it holds no number
+ * (the caller keeps what it had). Changes `sheet` in place.
+ */
+export function settleMaxHp(
+  schema: SheetSchema,
+  sheet: Record<string, unknown>,
+  given: number | undefined,
+  fieldWritten: boolean,
+): number | undefined {
+  const field = maxHpField(schema);
+  if (!field) return undefined;
+  const key = Object.keys(sheet).find((k) => k.trim().toLowerCase() === field.key.toLowerCase()) ?? field.key;
+  if (given !== undefined && !fieldWritten) {
+    sheet[key] = given;
+    return given;
+  }
+  return readMaxHp(sheet[key]);
+}
+
+/** Whether a list of written names includes the sheet's Max HP field, by name or label. */
+export function writesMaxHp(schema: SheetSchema, names: string[]): boolean {
+  const field = maxHpField(schema);
+  if (!field) return false;
+  const want = [field.key.toLowerCase(), field.label.toLowerCase()];
+  return names.some((n) => want.includes(n.trim().toLowerCase()));
+}
+
 // ---- values ----
 
 /** What a tool or a request may send as one value. The schema decides what it becomes. */
@@ -609,8 +670,11 @@ export function schemaGuide(schema: SheetSchema, opts: { forGm?: boolean; steps?
       for (const f of sec.fields) lines.push(describeField(f, !!opts.forGm));
     }
   }
+  const maxField = maxHpField(schema);
   lines.push(
-    `${schema.hp.label} are this system's hit points: their maximum is max_hp, not a sheet field.`,
+    maxField
+      ? `${schema.hp.label} are this system's hit points: their maximum is the "${maxField.key}" field. Write it there and leave max_hp out.`
+      : `${schema.hp.label} are this system's hit points: their maximum is max_hp, not a sheet field.`,
     'Anything else the rules need can go under a short field name of your own, using letters, digits and spaces, as text or a number.',
   );
   if (opts.steps && schema.createSteps.length) {

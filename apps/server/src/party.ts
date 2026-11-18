@@ -11,8 +11,10 @@ import {
   keepGmFields,
   LIMITS,
   removeEntry,
+  settleMaxHp,
   unknownNamesNote,
   valueInput,
+  writesMaxHp,
 } from './sheet-schema.js';
 import { uploadPath } from './storage.js';
 
@@ -42,7 +44,8 @@ export const inventorySchema = z
 
 export const characterSchema = z.object({
   name: z.string().trim().min(1).max(60),
-  maxHp: z.number().int().min(1).max(9999),
+  // Left out when the system's sheet has its own Max HP field: that field sets it.
+  maxHp: z.number().int().min(1).max(9999).optional(),
   hp: z.number().int().min(0).max(9999).optional(),
   // The shape of each value is checked against the system's sheet schema when it is saved.
   sheet: z
@@ -174,7 +177,13 @@ export async function createCharacter(
   if (viewer.role !== 'owner' && (counts?.own ?? 0) >= MAX_OWN)
     throw conflict(`You already run ${MAX_OWN} characters in this campaign.`);
   await assertNameFree(campaignId, body.name, null);
-  const sheet = checkSheet(await campaignSchema(campaignId), body.sheet);
+  const schema = await campaignSchema(campaignId);
+  const written = { ...body.sheet };
+  const maxHp =
+    settleMaxHp(schema, written, body.maxHp, writesMaxHp(schema, Object.keys(body.sheet))) ??
+    body.maxHp ??
+    10;
+  const sheet = checkSheet(schema, written);
 
   return tx(async (client) => {
     const row = await q1<{ id: string }>(
@@ -187,8 +196,8 @@ export async function createCharacter(
         control.kind,
         control.controller,
         JSON.stringify(sheet),
-        Math.min(body.hp ?? body.maxHp, body.maxHp),
-        body.maxHp,
+        Math.min(body.hp ?? maxHp, maxHp),
+        maxHp,
         JSON.stringify(body.inventory ?? []),
         body.persona ?? '',
         body.privateNotes ?? '',
@@ -217,10 +226,17 @@ export async function updateCharacter(
   if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
   await assertNameFree(campaignId, body.name, characterId);
   const schema = await campaignSchema(campaignId);
-  const before = await q1<{ sheet: Record<string, unknown> }>('SELECT sheet FROM characters WHERE id = $1', [
-    characterId,
-  ]);
+  const before = await q1<{ sheet: Record<string, unknown>; max_hp: number }>(
+    'SELECT sheet, max_hp FROM characters WHERE id = $1',
+    [characterId],
+  );
   const sheet = keepGmFields(schema, before?.sheet ?? {}, checkSheet(schema, body.sheet));
+  // Settled after the GM's fields are kept, so a Max HP the GM holds still decides.
+  const maxHp =
+    settleMaxHp(schema, sheet, body.maxHp, writesMaxHp(schema, Object.keys(body.sheet))) ??
+    body.maxHp ??
+    before?.max_hp ??
+    10;
   // Private notes belong to the players who run the character, so only they can change them.
   const notes = access.playerIds.includes(viewer.userId) ? (body.privateNotes ?? null) : null;
   await q(
@@ -236,7 +252,7 @@ export async function updateCharacter(
       campaignId,
       body.name,
       JSON.stringify(sheet),
-      body.maxHp,
+      maxHp,
       body.hp !== undefined,
       body.hp ?? 0,
       body.inventory ? JSON.stringify(body.inventory) : null,
@@ -373,7 +389,7 @@ export async function applyDraft(
       viewer,
       {
         name: patch.name,
-        maxHp: patch.max_hp ?? 10,
+        maxHp: patch.max_hp,
         sheet: sheet as CharacterBody['sheet'],
         inventory: patch.inventory,
         persona: patch.persona,
@@ -411,7 +427,17 @@ export async function applyDraft(
         `${kept.map((k) => `"${k}"`).join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept by the GM, so ${kept.length === 1 ? 'it was' : 'they were'} left as ${kept.length === 1 ? 'it was' : 'they were'}.`,
       );
   }
-  const maxHp = patch.max_hp ?? row?.max_hp ?? 10;
+  // A sheet with its own Max HP field keeps it and the maximum in step.
+  const fieldMax = settleMaxHp(
+    schema,
+    checked,
+    patch.max_hp,
+    writesMaxHp(
+      schema,
+      (patch.fields ?? []).map((f) => f.field),
+    ),
+  );
+  const maxHp = fieldMax ?? patch.max_hp ?? row?.max_hp ?? 10;
   // Someone at full health stays at full health when their maximum changes.
   const hp = row && row.hp >= row.max_hp ? maxHp : Math.min(row?.hp ?? maxHp, maxHp);
   await q(

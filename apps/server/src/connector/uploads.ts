@@ -187,10 +187,11 @@ export const UPLOAD_TOOLS: ConnectorTool[] = [
       const item = await heldRequest(t, input.work_id, 'sheet');
       const { work_id: _id, corrections, ...record } = input;
       const sys = await template(t.id);
-      const draft = draftFromRecord(record, sys?.schema ?? EMPTY_SCHEMA);
+      const schema = sys?.schema ?? EMPTY_SCHEMA;
+      const draft = draftFromRecord(record, schema);
       if (!draft) throw new ToolError('Nothing was recorded. Fill in what the sheet says, or skip_work.');
       // Corrections the rules call for ride back with the draft for the player to apply or ignore.
-      const suggestions = suggestionsFromChanges(corrections ?? [], draft);
+      const suggestions = suggestionsFromChanges(corrections ?? [], draft, schema);
       if (suggestions.length) draft.suggestions = suggestions;
       await finishWork(item.id, { draft });
       await dropSheetFile(item.payload);

@@ -8,8 +8,10 @@ import {
   fieldName,
   removeEntry,
   schemaFields,
+  settleMaxHp,
   unknownNamesNote,
   valueInput,
+  writesMaxHp,
 } from '../sheet-schema.js';
 import type { ToolDef } from '../llm/types.js';
 import { describeRoll, DiceError, roll, systemRng, type Rng } from './dice.js';
@@ -803,15 +805,26 @@ export const EDIT_SHEET = tool({
       if (err instanceof HttpError) throw new ToolError(err.message);
       throw err;
     }
+    // A sheet with its own Max HP field keeps it and the maximum in step.
+    const maxHp =
+      settleMaxHp(
+        schema,
+        checked,
+        input.max_hp,
+        writesMaxHp(
+          schema,
+          (input.set ?? []).map((s) => s.field),
+        ),
+      ) ?? input.max_hp;
     const changed = [
       ...(input.set ?? []).map((s) => named(s.field)),
       ...removed.map((f) => `-${f}`),
-      ...(input.max_hp && input.max_hp !== c.maxHp ? [`max HP ${c.maxHp}→${input.max_hp}`] : []),
+      ...(maxHp && maxHp !== c.maxHp ? [`max HP ${c.maxHp}→${maxHp}`] : []),
     ];
     if (!changed.length) throw new ToolError('Nothing to change.');
     c.sheet = checked;
-    if (input.max_hp) {
-      c.maxHp = input.max_hp;
+    if (maxHp) {
+      c.maxHp = maxHp;
       c.hp = Math.min(c.hp, c.maxHp);
     }
     await store.saveSheet(c);

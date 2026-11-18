@@ -16,6 +16,8 @@ import {
   fieldsOf,
   formatValue,
   initialValues,
+  maxHpField,
+  readMaxHp,
   SheetSections,
   sheetFromValues,
   type FieldInput,
@@ -124,6 +126,8 @@ export function CharacterSheet({
 }) {
   const fields = fieldsOf(schema);
   const hpLabel = schema?.hp.label ?? 'Hit points';
+  // A sheet with its own Max HP field (worked out by the rules) holds the maximum there, not in the box.
+  const ownMax = maxHpField(schema);
   const source: Record<string, unknown> = character?.sheet ?? draft?.sheet ?? {};
   // Names the schema does not know (fields the DM, the guide or an upload added) are listed underneath.
   const known = new Set(fields.map((f) => f.key.toLowerCase()));
@@ -196,7 +200,8 @@ export function CharacterSheet({
   /** Write a suggested value into the matching field, then clear the suggestion. */
   const apply = (s: SheetSuggestion) => {
     const value = String(s.suggested);
-    if (s.field === 'maxHp') setMaxHp(value);
+    if (s.field === 'maxHp' && !ownMax) setMaxHp(value);
+    else if (s.field === 'maxHp' && ownMax) set(ownMax.key, value);
     else {
       const lower = s.field.toLowerCase();
       const field = fields.find((f) => f.key.toLowerCase() === lower);
@@ -225,10 +230,13 @@ export function CharacterSheet({
       const value = x.value.trim();
       if (key && value) out[key] = /^-?\d+$/.test(value) ? Number(value) : value;
     }
-    const max = Math.max(1, int(maxHp, 10));
+    // With its own Max HP field, the server reads the maximum from the sheet.
+    const max = ownMax
+      ? (readMaxHp(values[ownMax.key]) ?? character?.maxHp ?? 10)
+      : Math.max(1, int(maxHp, 10));
     const body = {
       name: name.trim(),
-      maxHp: max,
+      ...(ownMax ? {} : { maxHp: max }),
       ...(character && hp.trim() !== '' ? { hp: Math.max(0, Math.min(max, int(hp, max))) } : {}),
       sheet: out,
       inventory: items
@@ -297,7 +305,7 @@ export function CharacterSheet({
                   <div className="sheet-check-what">
                     <span className="sheet-check-field">
                       {s.field === 'maxHp'
-                        ? `Max ${hpLabel.toLowerCase()}`
+                        ? (ownMax?.label ?? `Max ${hpLabel.toLowerCase()}`)
                         : (fields.find((f) => f.key.toLowerCase() === s.field.toLowerCase())?.label ??
                           s.field)}
                     </span>
@@ -370,29 +378,33 @@ export function CharacterSheet({
           />
         </Field>
 
-        <div className="row top">
-          <Field label={`Max ${hpLabel.toLowerCase()}`}>
-            <input
-              className="input"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={maxHp}
-              onChange={(e) => setMaxHp(e.target.value)}
-              required
-            />
-          </Field>
-          {character && (
-            <Field label="Current">
-              <input
-                className="input"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={hp}
-                onChange={(e) => setHp(e.target.value)}
-              />
-            </Field>
-          )}
-        </div>
+        {(!ownMax || character) && (
+          <div className="row top">
+            {!ownMax && (
+              <Field label={`Max ${hpLabel.toLowerCase()}`}>
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={maxHp}
+                  onChange={(e) => setMaxHp(e.target.value)}
+                  required
+                />
+              </Field>
+            )}
+            {character && (
+              <Field label={ownMax ? `Current ${hpLabel}` : 'Current'}>
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={hp}
+                  onChange={(e) => setHp(e.target.value)}
+                />
+              </Field>
+            )}
+          </div>
+        )}
 
         <SheetSections schema={schema} values={values} onChange={set} newSheet={!character} />
 
