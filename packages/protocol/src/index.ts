@@ -89,10 +89,83 @@ export interface SettingLore {
   cautions: string[];
 }
 
+/**
+ * The original sheet template: a row of ability scores and a list of text
+ * fields. Still accepted wherever a schema is read, and turned into a
+ * {@link SheetSchema} on the way.
+ */
 export interface SheetTemplate {
   abilities: string[];
   fields: { key: string; label: string }[];
 }
+
+/**
+ * What a character sheet holds in one game system: its sections and typed
+ * fields, how the hit points are named, and the order characters are built
+ * in. The sheet form, the sheet reader, the character guide and the GM all
+ * work from it.
+ */
+export interface SheetSchema {
+  version: 2;
+  /** Hit points under the system's own name ("Hit points", "Health", "Wounds"). */
+  hp: { label: string };
+  sections: SheetSection[];
+  /** The order the character guide builds a character in, one step per line. */
+  createSteps: string[];
+}
+
+export interface SheetSection {
+  id: string;
+  label: string;
+  fields: SheetField[];
+}
+
+/**
+ * - number, text, longtext, select, checkbox: a single value.
+ * - track: something with a current and a maximum value (stress, sanity, spell slots, ammunition).
+ * - list: repeating rows with fields of their own (attacks, spells, talents).
+ * - derived: a value the rules work out from others; `derivedFrom` says how, in words.
+ */
+export type SheetFieldType =
+  'number' | 'text' | 'longtext' | 'select' | 'checkbox' | 'track' | 'list' | 'derived';
+
+export interface SheetField {
+  /** The name the value is stored under on the sheet: letters, digits, underscores and spaces. */
+  key: string;
+  label: string;
+  type: SheetFieldType;
+  /** A line under the field telling the player what goes there. */
+  help?: string;
+  /** The choices of a select. */
+  options?: string[];
+  /** Bounds of a number or a track's maximum. */
+  min?: number;
+  max?: number;
+  /** The fields of each row of a list. Single values only: no lists or tracks inside. */
+  itemFields?: SheetField[];
+  /** For a derived value: the rule that settles it, in words ("10 + Dexterity modifier"). */
+  derivedFrom?: string;
+  /** Settled when the character is made, or changing during play. */
+  setAt?: 'creation' | 'play';
+  /**
+   * Who keeps it. 'gm': a player may fill it in while it is empty, and from then
+   * on only the GM changes it (experience, corruption, a curse).
+   */
+  editableBy?: 'player' | 'gm' | 'both';
+  /** Shown on the party card, not only on the full sheet. */
+  showOnCard?: boolean;
+  /** For the GM: what this field means in play and when it comes up. */
+  gmNote?: string;
+}
+
+/** A track's value on a sheet. */
+export interface TrackValue {
+  current: number;
+  max: number;
+}
+export type SheetScalar = string | number | boolean;
+/** One value on a sheet: a single value, a track, or the rows of a list. */
+export type SheetValue = SheetScalar | TrackValue | Record<string, SheetScalar>[];
 
 export interface RuleDocument {
   id: string;
