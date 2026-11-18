@@ -16,17 +16,26 @@ export function Avatar({
   name,
   seed,
   small,
+  large,
   online,
+  src,
 }: {
   name: string;
   seed?: string;
   small?: boolean;
+  /** The size the character sheet shows a picture at. */
+  large?: boolean;
   /** Whether the person is in the app right now. Left out for avatars that are not a person's. */
   online?: boolean;
+  /** A picture to show instead of the initial (a character's portrait). */
+  src?: string;
 }) {
   return (
-    <span className={`avatar h${hue(seed ?? name)}${small ? ' sm' : ''}`} aria-hidden="true">
-      {(name.trim()[0] ?? '?').toUpperCase()}
+    <span
+      className={`avatar h${hue(seed ?? name)}${small ? ' sm' : ''}${large ? ' lg' : ''}${src ? ' pic' : ''}`}
+      aria-hidden="true"
+    >
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : (name.trim()[0] ?? '?').toUpperCase()}
       {online !== undefined && <i className={`avatar-dot${online ? ' on' : ''}`} />}
     </span>
   );

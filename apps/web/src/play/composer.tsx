@@ -84,7 +84,7 @@ export function Composer({
     <>
       {mode === 'act' && (choices > 1 || (!actingAs && companions.length > 0)) && (
         <label className={`act-as${voicing ? ' voicing' : ''}`}>
-          {actingAs && <Avatar name={actingAs.name} seed={actingAs.id} small />}
+          {actingAs && <Avatar name={actingAs.name} seed={actingAs.id} src={actingAs.portrait} small />}
           <span className="act-as-label">{voicing ? 'Speaking for' : 'Acting as'}</span>
           <select
             className="act-as-select"

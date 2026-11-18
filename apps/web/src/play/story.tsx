@@ -299,6 +299,8 @@ interface ItemProps {
   mine: boolean;
   /** Hide the name row when the previous message came from the same player. */
   joined: boolean;
+  /** The picture of the character who acted, if it has one. */
+  portrait?: string;
   onCite: (citation: Citation) => void;
   /** Open the codex entry a narration link points to. */
   onRef?: (entityId: string) => void;
@@ -312,6 +314,7 @@ export const MessageItem = memo(function MessageItem({
   message: m,
   mine,
   joined,
+  portrait,
   onCite,
   onRef,
   canEdit,
@@ -382,7 +385,9 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div className={`msg action${mine ? ' mine' : ''}${joined ? ' joined' : ''}${m.ai ? ' ai' : ''}`}>
       {!mine && (
-        <div className="action-avatar">{!joined && <Avatar name={who} seed={m.user?.id ?? who} small />}</div>
+        <div className="action-avatar">
+          {!joined && <Avatar name={who} seed={m.user?.id ?? who} src={portrait} small />}
+        </div>
       )}
       <div className="action-body">
         {!joined && (

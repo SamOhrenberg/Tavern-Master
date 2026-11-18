@@ -76,7 +76,7 @@ export function CharacterCard({
   return (
     <div className={`card char${mine ? ' mine' : ''}`}>
       <div className="row">
-        <Avatar name={ch.name} seed={ch.id} online={played ? here : undefined} />
+        <Avatar name={ch.name} seed={ch.id} src={ch.portrait} online={played ? here : undefined} />
         <div className="grow">
           <h3 className="truncate">{ch.name}</h3>
           <p className="small muted truncate">

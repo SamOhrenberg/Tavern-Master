@@ -7,11 +7,11 @@ import type {
   SheetSuggestion,
   SheetTemplate,
 } from '@tavern/protocol';
-import { useState, type FormEvent } from 'react';
-import { api } from '../api';
-import { useAction } from '../app';
-import { IconCheck, IconPlus, IconSparkle, IconTrash } from '../icons';
-import { ConfirmButton, Field, Sheet } from '../ui';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { api, errorMessage } from '../api';
+import { useAction, useToast } from '../app';
+import { IconCheck, IconImage, IconPlus, IconSparkle, IconTrash } from '../icons';
+import { Avatar, ConfirmButton, Field, Sheet } from '../ui';
 
 const LONG = /feature|spell|proficien|skill|trait|background|equipment|note|talent|power/i;
 
@@ -33,6 +33,48 @@ const int = (s: string, fallback: number) => {
   const n = Number.parseInt(s, 10);
   return Number.isFinite(n) ? n : fallback;
 };
+
+/** Pictures are stored this many pixels square: sharp on a phone, small to send. */
+const PORTRAIT_PX = 512;
+
+/**
+ * Cut the middle square out of a picture (a little above centre on a tall one,
+ * where a face usually is), shrink it and encode it as JPEG, so a phone photo
+ * of several megabytes uploads as a few dozen kilobytes.
+ */
+async function squarePortrait(file: File): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('That picture could not be read. Try a PNG or JPEG.'));
+      i.src = url;
+    });
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const side = Math.min(w, h);
+    const out = Math.min(PORTRAIT_PX, side);
+    const canvas = document.createElement('canvas');
+    canvas.width = out;
+    canvas.height = out;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('This browser cannot prepare pictures.');
+    // JPEG has no transparency: give cut-out art a dark backdrop instead of black.
+    ctx.fillStyle = '#26222e';
+    ctx.fillRect(0, 0, out, out);
+    ctx.drawImage(img, (w - side) / 2, (h - side) / 4, side, side, 0, 0, out, out);
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('That picture could not be prepared.'))),
+        'image/jpeg',
+        0.86,
+      ),
+    );
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 interface Row extends InventoryItem {
   id: number;
@@ -108,7 +150,43 @@ export function CharacterSheet({
   const [notes, setNotes] = useState(character?.privateNotes ?? '');
   // Changes the rules check proposed on an uploaded draft, until applied or waved off.
   const [suggestions, setSuggestions] = useState<SheetSuggestion[]>(draft?.suggestions ?? []);
+  // A picture chosen here goes up with the sheet; until then it is only previewed.
+  const [picture, setPicture] = useState<{ blob: Blob; url: string } | null>(null);
+  const [dropPicture, setDropPicture] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const notify = useToast();
   const [busy, run] = useAction();
+  useEffect(
+    () => () => {
+      if (picture) URL.revokeObjectURL(picture.url);
+    },
+    [picture],
+  );
+  const shownPicture = picture?.url ?? (dropPicture ? undefined : character?.portrait);
+
+  const choosePicture = async (file: File | undefined) => {
+    if (picker.current) picker.current.value = '';
+    if (!file) return;
+    try {
+      const blob = await squarePortrait(file);
+      setPicture({ blob, url: URL.createObjectURL(blob) });
+      setDropPicture(false);
+    } catch (err) {
+      notify(errorMessage(err), 'error');
+    }
+  };
+
+  /** Send the picture change, if any, once the character exists. */
+  const savePicture = async (id: string) => {
+    const path = `/campaigns/${campaignId}/characters/${id}/portrait`;
+    if (picture) {
+      const form = new FormData();
+      form.append('file', picture.blob, 'portrait.jpg');
+      await api(path, { method: 'PUT', form });
+    } else if (dropPicture && character?.portrait) {
+      await api(path, { method: 'DELETE' });
+    }
+  };
 
   const companion = (character?.kind ?? control?.kind) === 'npc';
   const aiRun = (character?.controller ?? control?.controller ?? 'player') !== 'player';
@@ -170,11 +248,20 @@ export function CharacterSheet({
     };
     void run(
       async () => {
+        let id = character?.id;
         if (character) {
           await api(`/campaigns/${campaignId}/characters/${character.id}`, { method: 'PUT', body });
         } else {
-          await api(`/campaigns/${campaignId}/characters`, { body: { character: body, control } });
+          ({ id } = await api<{ id: string }>(`/campaigns/${campaignId}/characters`, {
+            body: { character: body, control },
+          }));
         }
+        // The sheet is saved either way: a picture that fails to send must not leave the form
+        // open for a second "Join the party" that would make the character twice.
+        if (id)
+          await savePicture(id).catch((err) =>
+            notify(`The sheet is saved, but the picture was not: ${errorMessage(err)}`, 'error'),
+          );
         onSaved();
       },
       character ? 'Sheet saved' : companion ? `${body.name} joins the party` : 'Welcome to the party',
@@ -234,6 +321,46 @@ export function CharacterSheet({
             ))}
           </div>
         )}
+        <div className="portrait-pick">
+          <button
+            type="button"
+            className="portrait-btn"
+            onClick={() => picker.current?.click()}
+            aria-label={shownPicture ? 'Change the picture' : 'Add a picture'}
+          >
+            <Avatar name={name || '?'} seed={character?.id ?? name} src={shownPicture} large />
+            <span className="portrait-badge" aria-hidden="true">
+              <IconImage />
+            </span>
+          </button>
+          <div className="portrait-acts">
+            <button type="button" className="btn sm ghost" onClick={() => picker.current?.click()}>
+              {shownPicture ? 'Change picture' : 'Add a picture'}
+            </button>
+            {shownPicture && (
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => {
+                  setPicture(null);
+                  setDropPicture(true);
+                }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <input
+            ref={picker}
+            type="file"
+            className="sr-only"
+            accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
+            onChange={(e) => void choosePicture(e.target.files?.[0])}
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+        </div>
+
         <Field label="Name">
           <input
             className="input"

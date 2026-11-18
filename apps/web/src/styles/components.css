@@ -396,6 +396,22 @@
   height: 28px;
   font-size: 12px;
 }
+.avatar.lg {
+  width: 88px;
+  height: 88px;
+  font-size: 34px;
+}
+/* A portrait fills the circle; the colour behind it shows only while it loads. */
+.avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.avatar.pic {
+  box-shadow: 0 0 0 1px var(--line);
+}
 .avatar.h0 {
   background: linear-gradient(135deg, #f6dca4, #d79a3c);
 }

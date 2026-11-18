@@ -290,6 +290,11 @@ function Play({ id, campaign, state, template }: TableProps) {
       (x, y) =>
         Number(x.kind === 'npc') - Number(y.kind === 'npc') || x.playerIds.length - y.playerIds.length,
     );
+  // Actions name the character who acted, so its picture is found by name.
+  const portraits = useMemo(
+    () => new Map((game?.characters ?? []).flatMap((ch) => (ch.portrait ? [[ch.name, ch.portrait]] : []))),
+    [game?.characters],
+  );
   // Party members the GM or their own AI play: anyone may speak for one without taking it over.
   const companions = (game?.characters ?? []).filter((ch) => ch.controller !== 'player');
   const acted = mine.filter((ch) => table.turn.acted.includes(ch.id)).map((ch) => ch.id);
@@ -517,6 +522,7 @@ function Play({ id, campaign, state, template }: TableProps) {
                           message={m}
                           mine={m.user?.id === me.id}
                           joined={joined}
+                          portrait={m.characterName ? portraits.get(m.characterName) : undefined}
                           onCite={setCitation}
                           onRef={openRef}
                           canEdit={canEdit(m)}
