@@ -186,8 +186,9 @@ node scripts/dm-launcher.mjs status       # who is at each table, and where Clau
 ```
 
 Settings live in `~/.tavern-dm/config.json` (`dir` for the campaign
-folders, `idleMinutes`, `pollSeconds`, `claude` for the executable's path);
-`TAVERN_URL` and `TAVERN_TOKEN` override them. Run logs are in
+folders, `idleMinutes`, `pollSeconds`, `claude` for the executable's path,
+`claudeBackupToken`); `TAVERN_URL`, `TAVERN_TOKEN` and
+`CLAUDE_CODE_OAUTH_TOKEN_BACKUP` override them. Run logs are in
 `~/.tavern-dm/logs`. To talk with Claude as your co-DM, open the folder in
 Claude Code as usual, but do not start `/dm` there while the launcher runs
 it too.
@@ -209,6 +210,14 @@ Without `CLAUDE_CODE_OAUTH_TOKEN`, sign in inside the container once instead:
 `docker compose run --rm dm-launcher claude`, type `/login`, and follow the
 link. The sign-in is kept in the `dm-home` volume with the campaign folders
 and logs. Updating Claude Code means pulling or rebuilding the image.
+
+To keep Claude at the table when a plan runs out, set
+`CLAUDE_CODE_OAUTH_TOKEN_BACKUP` to a second `claude setup-token` token
+(`claudeBackupToken` in the config when the launcher runs outside Docker).
+When the main sign-in runs out of usage or is signed out, the table
+restarts on the backup a few seconds later; other errors just retry. New
+runs go back to the main sign-in once its limit resets, or after 30 minutes
+when Claude's error does not say when.
 
 The server must be reachable over public HTTPS, since Anthropic's cloud makes
 the connection for claude.ai, and Claude Code signs in only over HTTPS or to

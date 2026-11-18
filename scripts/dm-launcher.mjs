@@ -13,8 +13,10 @@
  *   node scripts/dm-launcher.mjs status       what the server says about each table
  *
  * Make the token in the app under You → Claude → Use a token instead. Settings
- * live in ~/.tavern-dm/config.json; TAVERN_URL, TAVERN_TOKEN, TAVERN_IDLE_MINUTES and
- * TAVERN_ECHO (also print what Claude does to the console) override them.
+ * live in ~/.tavern-dm/config.json; TAVERN_URL, TAVERN_TOKEN, TAVERN_IDLE_MINUTES,
+ * TAVERN_ECHO (also print what Claude does to the console) and
+ * CLAUDE_CODE_OAUTH_TOKEN_BACKUP (a second Claude Code sign-in, used while the
+ * main one is out of usage or failing) override them.
  * No dependencies: Node 20 or later.
  */
 /* eslint-disable no-console -- a command-line tool: the console is its interface. */
@@ -54,6 +56,8 @@ const DEFAULTS = {
   claude: '',
   /** Also print what Claude is doing to the console, not only to the log (for `docker compose logs`). */
   echo: false,
+  /** A second Claude Code token (`claude setup-token`), for when the main sign-in runs out or fails. */
+  claudeBackupToken: '',
 };
 
 // ------------------------------------------------------------ settings
@@ -84,6 +88,8 @@ function settings(f) {
   if (process.env.TAVERN_TOKEN) s.token = process.env.TAVERN_TOKEN;
   if (process.env.TAVERN_ECHO) s.echo = process.env.TAVERN_ECHO;
   if (process.env.TAVERN_IDLE_MINUTES) s.idleMinutes = process.env.TAVERN_IDLE_MINUTES;
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN_BACKUP)
+    s.claudeBackupToken = process.env.CLAUDE_CODE_OAUTH_TOKEN_BACKUP;
   for (const k of Object.keys(DEFAULTS)) if (f[k] !== undefined) s[k] = f[k];
   s.idleMinutes = Number(s.idleMinutes) || DEFAULTS.idleMinutes;
   s.echo = ['1', 'true', 'yes', true].includes(s.echo);
@@ -93,6 +99,7 @@ function settings(f) {
   s.token = String(s.token)
     .trim()
     .replace(/^Bearer\s+/i, '');
+  s.claudeBackupToken = String(s.claudeBackupToken ?? '').trim();
   s.dir = resolve(s.dir);
   return s;
 }
@@ -172,7 +179,7 @@ function findClaude(s) {
   return (claudeCmd = { file: 'claude', shell: false });
 }
 
-function spawnClaude(s, cwd, mcpPath) {
+function spawnClaude(s, cwd, mcpPath, signIn) {
   const args = [
     '-p',
     '/dm',
@@ -188,7 +195,13 @@ function spawnClaude(s, cwd, mcpPath) {
     `mcp__${SERVER_NAME}`,
   ];
   const { file, shell } = findClaude(s);
-  const opts = { cwd, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
+  const opts = {
+    cwd,
+    env: { ...process.env, ...signIn.env },
+    windowsHide: true,
+    detached: !WIN,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  };
   // A .cmd shim only runs through the shell; quote everything for it.
   if (shell) return spawn([file, ...args].map((a) => `"${a}"`).join(' '), { ...opts, shell: true });
   return spawn(file, args, opts);
@@ -205,6 +218,46 @@ function killTree(proc) {
       proc.kill('SIGTERM');
     }
   }
+}
+
+// ------------------------------------------------------------ Claude's sign-ins
+
+/** How long a sign-in sits out when it is out of usage or signed out, unless Claude says when its limit resets. */
+const SIGN_IN_REST_MS = 30 * 60_000;
+
+/**
+ * Claude Code's sign-ins, best first: the main one (CLAUDE_CODE_OAUTH_TOKEN, or
+ * the /login kept on this computer), then the backup token when there is one.
+ * A sign-in that runs out of usage or is signed out sits out for a while, so new runs use the other.
+ */
+let signIns = [];
+function setSignIns(s) {
+  signIns = [{ name: 'main sign-in', env: {}, restUntil: 0 }];
+  if (s.claudeBackupToken)
+    signIns.push({
+      name: 'backup token',
+      env: { CLAUDE_CODE_OAUTH_TOKEN: s.claudeBackupToken },
+      restUntil: 0,
+    });
+}
+
+/** The first sign-in not sitting out; when every one is, the one back soonest. */
+function pickSignIn(now = Date.now()) {
+  return (
+    signIns.find((x) => x.restUntil <= now) ?? signIns.reduce((a, b) => (b.restUntil < a.restUntil ? b : a))
+  );
+}
+
+/**
+ * Sit a sign-in out after a run on it failed. A usage limit that names its reset
+ * ("…limit reached|1731888000") sits out until then; anything else for a while.
+ */
+function restSignIn(signIn, error) {
+  const now = Date.now();
+  const resetAt = Number(/\|(\d{10})\b/.exec(error ?? '')?.[1]) * 1000;
+  const until =
+    resetAt > now ? Math.min(resetAt + 60_000, now + 7 * 24 * 60 * 60_000) : now + SIGN_IN_REST_MS;
+  signIn.restUntil = Math.max(signIn.restUntil, until);
 }
 
 // ------------------------------------------------------------ the log
@@ -245,6 +298,9 @@ let echo = false;
 
 /** Claude Code's answer when it has no sign-in, or one that no longer works. */
 const SIGNED_OUT = /not logged in|\/login|invalid api key|oauth token|authenticat/i;
+/** A sign-in out of usage until its limit resets ("Claude AI usage limit reached|1731888000"). */
+const OUT_OF_USAGE =
+  /usage limit|limit reached|hit your limit|limit will reset|out of (extra )?usage|credit balance/i;
 
 const short = (v, n = 160) => {
   const s = (typeof v === 'string' ? v : JSON.stringify(v ?? '')).replace(/\s+/g, ' ').trim();
@@ -252,7 +308,10 @@ const short = (v, n = 160) => {
 };
 const toolName = (n) => n.replace(`mcp__${SERVER_NAME}__`, '');
 
-/** One line of Claude's stream-json, made readable. Returns the connector's status from the start-up line. */
+/**
+ * One line of Claude's stream-json, made readable. Returns the connector's
+ * status from the start-up line, and the error when the run ends in one.
+ */
 function readEvent(c, raw) {
   let e;
   try {
@@ -282,7 +341,10 @@ function readEvent(c, raw) {
   } else if (e.type === 'result') {
     const cost = typeof e.total_cost_usd === 'number' ? `, $${e.total_cost_usd.toFixed(2)}` : '';
     trace(c, `Run ended: ${e.subtype}, ${e.num_turns ?? '?'} turns${cost}. ${short(e.result ?? '', 300)}`);
-    if (e.is_error && SIGNED_OUT.test(String(e.result ?? ''))) return { signedOut: String(e.result) };
+    if (e.is_error) {
+      const error = String(e.result ?? e.subtype ?? 'error');
+      return { error, signedOut: SIGNED_OUT.test(error) };
+    }
   }
 }
 
@@ -296,25 +358,30 @@ function startRun(s, c, t) {
     .then((cwd) => {
       t.preparing = false;
       if (t.proc || stopping) return;
-      const proc = spawnClaude(s, cwd, mcpConfig(s, c));
+      const signIn = pickSignIn();
+      const proc = spawnClaude(s, cwd, mcpConfig(s, c), signIn);
       Object.assign(t, {
         proc,
+        signIn,
         startedAt: Date.now(),
         unwantedSince: null,
         quietSince: null,
         stopReason: null,
         mcpProblem: null,
+        claudeError: null,
       });
-      log(c, `Claude is coming to the table (${c.players} player${c.players === 1 ? '' : 's'} there).`);
+      const on = signIns.length > 1 ? `, on the ${signIn.name}` : '';
+      log(c, `Claude is coming to the table (${c.players} player${c.players === 1 ? '' : 's'} there${on}).`);
       createInterface({ input: proc.stdout }).on('line', (line) => {
         const r = readEvent(c, line);
+        if (r?.error) t.claudeError = r.error;
         if (r?.signedOut) {
           t.mcpProblem = 'signed-out';
-          log(
-            c,
-            `Claude Code is not signed in ("${r.signedOut}"). Set CLAUDE_CODE_OAUTH_TOKEN (from \`claude setup-token\`), ` +
-              'or run `claude` once and type /login. Trying again in 5 min.',
-          );
+          const fix =
+            signIn === signIns[0]
+              ? 'Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), or run `claude` once and type /login.'
+              : 'Make a new one with `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN_BACKUP.';
+          log(c, `Claude Code's ${signIn.name} does not work ("${short(r.error, 200)}"). ${fix}`);
         }
         // 'pending' means still connecting; only a definite failure is worth stopping for.
         if (r?.mcp && ['failed', 'needs-auth', 'missing'].includes(r.mcp)) {
@@ -356,8 +423,29 @@ function runEnded(c, t, code) {
       ? 'Claude left the table'
       : `Claude exited with code ${code}`;
   t.proc = null;
+  // The sign-in itself failing (out of usage, signed out): sit it out and use
+  // another. A passing API error or a crash is not the sign-in's fault, and
+  // backs off below instead of spending the backup's usage.
+  const claudeFailed =
+    !t.stopReason &&
+    (t.mcpProblem === 'signed-out' || (!t.mcpProblem && OUT_OF_USAGE.test(t.claudeError ?? '')));
+  if (claudeFailed && t.signIn) {
+    restSignIn(t.signIn, t.claudeError);
+    const next = pickSignIn();
+    if (next !== t.signIn && next.restUntil <= Date.now()) {
+      t.holdUntil = Date.now() + 5_000;
+      const back = new Date(t.signIn.restUntil).toLocaleTimeString([], { hour12: false });
+      log(
+        c,
+        `${why} on the ${t.signIn.name}${t.claudeError ? ` ("${short(t.claudeError, 200)}")` : ''}. ` +
+          `Switching to the ${next.name}; the ${t.signIn.name} is tried again after ${back}.`,
+      );
+      return;
+    }
+  }
   if (t.mcpProblem) {
     t.holdUntil = Date.now() + 5 * 60_000;
+    if (t.mcpProblem === 'signed-out') log(c, 'Trying again in 5 min.');
   } else if (!t.stopReason && (code !== 0 || ran < 60_000)) {
     // Failing fast: back off so a broken setup does not spin.
     t.failures = (t.failures ?? 0) + 1;
@@ -420,9 +508,12 @@ async function tick(s) {
 async function run(s) {
   requireServer(s);
   echo = s.echo;
+  setSignIns(s);
   findClaude(s);
   mkdirSync(s.dir, { recursive: true });
   console.log(`Watching ${s.server} for tables that need Claude. Campaign folders: ${s.dir}`);
+  if (s.claudeBackupToken)
+    console.log('A backup Claude Code token is set; runs move to it when the main sign-in fails.');
   console.log(`Logs: ${LOGS}  (follow one with: node scripts/dm-launcher.mjs watch <name>)`);
   const shutdown = () => {
     if (stopping) process.exit(1);
