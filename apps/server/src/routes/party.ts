@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
 import type {
   BuilderEvent,
@@ -33,7 +34,9 @@ import {
   createCharacter,
   deleteCharacter,
   loadAccess,
+  portraitUrl,
   setControl,
+  setPortrait,
   updateCharacter,
   type Control,
 } from '../party.js';
@@ -44,6 +47,8 @@ import { uploadPath } from '../storage.js';
 
 const uuid = z.string().uuid();
 const SHEET_MAX_BYTES = 10 * 1024 * 1024;
+/** The app shrinks a picture to a few hundred pixels before sending it, so this is generous. */
+const PORTRAIT_MAX_BYTES = 2 * 1024 * 1024;
 /** Images go to the model as they are, and model APIs cap a single image at about this size. */
 const IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
 /** Roughly ten dense pages. A longer upload is a rulebook, not a character sheet. */
@@ -121,6 +126,57 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
     getRoom(campaignId)?.partyChanged();
     return { ok: true };
   });
+
+  // ---- character pictures ----
+
+  /** Set a character's picture: a PNG, JPEG or WebP image, replacing any it had. */
+  app.put<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId/portrait', async (req) => {
+    const { campaignId, viewer } = await requireMember(req);
+    const characterId = parse(uuid, req.params.characterId);
+    // Check before taking the file, so a stranger's upload is never written to disk.
+    const access = await loadAccess(campaignId, characterId);
+    if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
+    const file = await receiveFile(req, PORTRAIT_MAX_BYTES);
+    try {
+      if (!sniffImage(await readHead(file.path))) throw badRequest('Choose a PNG, JPEG or WebP picture.');
+      await setPortrait(campaignId, characterId, viewer, file.storageName);
+    } catch (err) {
+      await discard(file);
+      throw err;
+    }
+    getRoom(campaignId)?.partyChanged();
+    return { portrait: portraitUrl(campaignId, characterId, file.storageName) };
+  });
+
+  app.delete<{ Params: CharParams }>('/api/campaigns/:id/characters/:characterId/portrait', async (req) => {
+    const { campaignId, viewer } = await requireMember(req);
+    const characterId = parse(uuid, req.params.characterId);
+    await setPortrait(campaignId, characterId, viewer, null);
+    getRoom(campaignId)?.partyChanged();
+    return { ok: true };
+  });
+
+  /** Anyone at the table may see the party's pictures. */
+  app.get<{ Params: CharParams }>(
+    '/api/campaigns/:id/characters/:characterId/portrait',
+    async (req, reply) => {
+      const { campaignId } = await requireMember(req);
+      const characterId = parse(uuid, req.params.characterId);
+      const row = await q1<{ portrait: string | null }>(
+        'SELECT portrait FROM characters WHERE id = $1 AND campaign_id = $2',
+        [characterId, campaignId],
+      );
+      if (!row?.portrait) throw notFound('No picture');
+      const path = uploadPath(row.portrait);
+      const type = sniffImage(await readHead(path).catch(() => Buffer.alloc(0)));
+      if (!type) throw notFound('No picture');
+      // The address changes with every new picture, so this one never goes stale.
+      return reply
+        .header('Cache-Control', 'private, max-age=31536000, immutable')
+        .type(type)
+        .send(createReadStream(path));
+    },
+  );
 
   /**
    * Read an uploaded character sheet (PDF, text, or a photo) into a draft.

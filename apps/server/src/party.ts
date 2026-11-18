@@ -1,7 +1,9 @@
+import { rm } from 'node:fs/promises';
 import type { CharacterController, CharacterKind, InventoryItem } from '@tavern/protocol';
 import { z } from 'zod';
 import { q, q1, tx } from './db/pool.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
+import { uploadPath } from './storage.js';
 
 /**
  * The party: who is in it and who speaks for each member. Used by the REST
@@ -244,6 +246,44 @@ export async function setControl(campaignId: string, characterId: string, wanted
   });
 }
 
+/**
+ * Where the app loads a character's picture from. The storage name is random
+ * and changes with every upload, so part of it doubles as a cache-buster and
+ * the picture can be cached for good.
+ */
+export function portraitUrl(campaignId: string, characterId: string, portrait: string | null | undefined) {
+  return portrait
+    ? `/api/campaigns/${campaignId}/characters/${characterId}/portrait?v=${portrait.slice(0, 12)}`
+    : undefined;
+}
+
+/** Remove a picture file that nothing refers to any more. */
+export async function dropPortrait(portrait: string | null | undefined): Promise<void> {
+  if (portrait) await rm(uploadPath(portrait), { force: true });
+}
+
+/**
+ * Give a character a new picture, or none, by the same rule as editing its
+ * sheet. The file it had before is removed.
+ */
+export async function setPortrait(
+  campaignId: string,
+  characterId: string,
+  viewer: Viewer,
+  portrait: string | null,
+): Promise<void> {
+  const access = await loadAccess(campaignId, characterId);
+  if (!canEdit(viewer, access)) throw forbidden('That character belongs to another player.');
+  const row = await q1<{ old: string | null }>(
+    `WITH old AS (SELECT portrait FROM characters WHERE id = $1 AND campaign_id = $2 FOR UPDATE)
+     UPDATE characters c SET portrait = $3, updated_at = now() FROM old
+      WHERE c.id = $1 RETURNING old.portrait AS old`,
+    [characterId, campaignId, portrait],
+  );
+  if (!row) throw notFound('Character not found');
+  if (row.old !== portrait) await dropPortrait(row.old);
+}
+
 export async function deleteCharacter(
   campaignId: string,
   characterId: string,
@@ -252,7 +292,11 @@ export async function deleteCharacter(
   const access = await loadAccess(campaignId, characterId);
   const sole = access.playerIds.length === 1 && access.playerIds[0] === viewer.userId;
   if (viewer.role !== 'owner' && !sole) throw forbidden('Only the campaign owner can remove that character.');
-  await q('DELETE FROM characters WHERE id = $1 AND campaign_id = $2', [characterId, campaignId]);
+  const gone = await q1<{ portrait: string | null }>(
+    'DELETE FROM characters WHERE id = $1 AND campaign_id = $2 RETURNING portrait',
+    [characterId, campaignId],
+  );
+  await dropPortrait(gone?.portrait);
 }
 
 /**

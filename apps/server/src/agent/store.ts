@@ -57,6 +57,8 @@ export interface CharRow {
   persona: string;
   /** Where they are while the party is split up. Empty: with the party, in the current scene. */
   whereabouts: string;
+  /** Storage name of the character's picture, if it has one. */
+  portrait?: string | null;
 }
 
 export interface EntityRow {
@@ -179,6 +181,7 @@ interface CharDb {
   sheet: Record<string, unknown>;
   persona: string;
   whereabouts: string;
+  portrait: string | null;
 }
 
 export const MAX_NOTES = 24;
@@ -191,7 +194,7 @@ export const pgStore: GameStore = {
   async characters(campaignId) {
     const rows = await q<CharDb>(
       `SELECT c.id, c.name, c.kind, c.controller, c.hp, c.max_hp, c.temp_hp, c.conditions, c.inventory,
-              c.sheet, c.persona, c.whereabouts,
+              c.sheet, c.persona, c.whereabouts, c.portrait,
               coalesce((SELECT array_agg(p.user_id::text ORDER BY p.user_id)
                           FROM character_players p WHERE p.character_id = c.id), '{}') AS player_ids
          FROM characters c WHERE c.campaign_id = $1 ORDER BY c.created_at, c.id`,
@@ -211,6 +214,7 @@ export const pgStore: GameStore = {
       sheet: r.sheet,
       persona: r.persona,
       whereabouts: r.whereabouts,
+      portrait: r.portrait,
     }));
   },
 

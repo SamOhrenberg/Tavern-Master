@@ -408,6 +408,8 @@ export interface Character {
   inventory: InventoryItem[];
   /** Personality, looks, history and goals. */
   persona: string;
+  /** Where to load the character's picture from; absent when it has none. */
+  portrait?: string;
   /** Where they are when the party has split; empty when with the party. */
   whereabouts?: string;
   /** Only present for the players who run the character. */

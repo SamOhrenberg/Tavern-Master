@@ -40,6 +40,7 @@ import { builtInAiFor } from '../llm/index.js';
 import { findOutsideAi } from '../llm/outside.js';
 import { notifyUser } from '../notify/notify.js';
 import { usageTotals } from '../llm/usage.js';
+import { portraitUrl } from '../party.js';
 import { editMessage, listMessages } from '../realtime/messages.js';
 import { dmStatusOf, getRoom, openRoom } from '../realtime/room.js';
 import { restartSession, rewindTo } from '../rewind.js';
@@ -446,7 +447,9 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const room = getRoom(campaignId);
     for (const u of room?.present() ?? []) room?.kick(u.id);
     const files = await q<{ storage_name: string }>(
-      'SELECT storage_name FROM documents WHERE campaign_id = $1',
+      `SELECT storage_name FROM documents WHERE campaign_id = $1
+       UNION ALL
+       SELECT portrait FROM characters WHERE campaign_id = $1 AND portrait IS NOT NULL`,
       [campaignId],
     );
     await q('DELETE FROM campaigns WHERE id = $1', [campaignId]);
@@ -608,6 +611,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         conditions: c.conditions,
         inventory: c.inventory,
         persona: c.persona,
+        portrait: portraitUrl(campaignId, c.id, c.portrait),
         whereabouts: c.whereabouts,
         // Private notes go only to the players who run the character.
         ...(c.playerIds.includes(auth.user.id) ? { privateNotes: myNotes.get(c.id) ?? '' } : {}),
