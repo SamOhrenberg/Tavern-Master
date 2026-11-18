@@ -2,6 +2,7 @@ import { q, q1, tx } from '../db/pool.js';
 import { enqueue, hasPending } from '../jobs/queue.js';
 import { dmMode } from '../connector/mode.js';
 import { queueWork } from '../connector/work.js';
+import { builtInAiFor, instanceAiConfigured } from '../llm/index.js';
 import { log } from '../log.js';
 import { uploadPath } from '../storage.js';
 import { catalogue } from './catalogue.js';
@@ -134,6 +135,30 @@ export async function ingestDocument(documentId: string, emb: Embedder | undefin
   }
   await describe(doc, chunks);
   await maybeDistilLore(doc);
+  await maybeDraftSheet(doc);
+}
+
+/**
+ * The first rulebook of a system that has never had its sheet drafted is
+ * ready: draft one, so the admin finds a sheet to review rather than a blank.
+ * Only with a built-in AI to draft it; later drafts are the admin's to ask for.
+ */
+async function maybeDraftSheet(doc: DocRow): Promise<void> {
+  if (doc.campaign_id || doc.kind === 'setting') return;
+  try {
+    const sys = await q1<{ created_by: string | null }>(
+      `SELECT created_by FROM game_systems
+        WHERE id = $1 AND sheet_draft_at IS NULL AND sheet_draft_status = 'none'`,
+      [doc.system_id],
+    );
+    if (!sys) return;
+    if (!(instanceAiConfigured() || (sys.created_by && (await builtInAiFor(sys.created_by))))) return;
+    if (await hasPending('draft_sheet', 'systemId', doc.system_id)) return;
+    await enqueue('draft_sheet', { systemId: doc.system_id });
+    await q(`UPDATE game_systems SET sheet_draft_status = 'queued' WHERE id = $1`, [doc.system_id]);
+  } catch (err) {
+    log().warn({ err, systemId: doc.system_id }, 'could not queue a sheet draft');
+  }
 }
 
 /**

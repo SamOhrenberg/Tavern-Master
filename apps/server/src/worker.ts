@@ -10,6 +10,7 @@ import { log } from './log.js';
 import { embedder, internalToken } from './rules/embed.js';
 import { ingestDocument } from './rules/ingest.js';
 import { distilLore } from './rules/lore.js';
+import { draftSheet } from './agent/sheet-drafter.js';
 import { safeEqual } from './security/crypto.js';
 import { ensureDataDirs, modelsDir, uploadsDir } from './storage.js';
 
@@ -30,6 +31,8 @@ async function handle(job: Job): Promise<void> {
     await summarizeCampaign(payload.campaignId, payload.sessionId);
   } else if (job.kind === 'distil_lore' && payload.systemId) {
     await distilLore(payload.systemId);
+  } else if (job.kind === 'draft_sheet' && payload.systemId) {
+    await draftSheet(payload.systemId);
   } else {
     throw new Error(`unknown job kind ${job.kind}`);
   }
