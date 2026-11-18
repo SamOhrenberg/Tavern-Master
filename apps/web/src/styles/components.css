@@ -157,6 +157,21 @@
   font-size: 14px;
   border-radius: var(--r-sm);
 }
+/* A toggle that is on, such as a member made an owner. */
+.btn.on {
+  background: var(--gold-wash);
+  border-color: var(--gold-deep);
+  color: var(--gold);
+}
+.btn.sm .pill-icon {
+  width: 16px;
+  height: 16px;
+}
+/* The host's buttons beside a member: they keep their size, the name truncates. */
+.member-acts {
+  flex: none;
+  gap: 6px;
+}
 .icon-btn {
   display: grid;
   place-items: center;

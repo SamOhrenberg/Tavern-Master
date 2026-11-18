@@ -152,8 +152,7 @@ export async function openTable(call: ConnectorCall): Promise<Table> {
     owns: boolean;
   }>(
     `SELECT c.name, c.phase, c.status, c.opened_at IS NOT NULL AS opened, c.system_id, c.owner_id, c.settings,
-            EXISTS (SELECT 1 FROM campaign_members m
-                     WHERE m.campaign_id = c.id AND m.user_id = $2 AND m.role = 'owner') AS owns
+            c.owner_id = $2 AS owns
        FROM campaigns c WHERE c.id = $1`,
     [id, call.user.userId],
   );

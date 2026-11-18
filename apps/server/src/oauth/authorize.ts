@@ -77,9 +77,7 @@ async function campaignOf(row: RequestRow, userId: string): Promise<{ id: string
   const target = parseResource(row.resource);
   if (!target?.campaignId) return null;
   const owned = await q1<{ id: string; name: string }>(
-    `SELECT c.id, c.name FROM campaigns c
-       JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $2 AND m.role = 'owner'
-      WHERE c.id = $1`,
+    `SELECT c.id, c.name FROM campaigns c WHERE c.id = $1 AND c.owner_id = $2`,
     [target.campaignId, userId],
   );
   if (!owned) throw forbidden('You do not own the campaign this connection is for.');

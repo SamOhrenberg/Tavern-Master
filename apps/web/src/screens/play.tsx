@@ -12,7 +12,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
 import { useAction, useAuth, useMe, useQuery, useToast, useVisualViewport, type Query } from '../app';
 import { IconBack, IconChevron, IconDots, IconGavel, IconScroll, IconSparkle, IconUsers } from '../icons';
-import { CastPanels, runsIt, type CastPanel } from '../play/cast';
+import { CastPanels, hostOf, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
 import { Composer, TurnBar, type Mode } from '../play/composer';
 import { FeedbackButton } from '../feedback/button';
@@ -362,7 +362,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
   const others = table.present.filter((u) => u.id !== me.id).length;
   const claude = c.dm === 'claude';
   const dm = table.dm ?? c.dmStatus;
-  const host = c.members.find((m) => m.role === 'owner')?.displayName ?? 'The host';
+  const host = hostOf(c)?.displayName ?? 'The host';
   const people = others === 0 ? 'just you' : `${others} other${others > 1 ? 's' : ''} here`;
   const subtitle = archived
     ? 'Archived'
@@ -416,7 +416,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
         </button>
         <div className="grow play-title">
           <h1 className="truncate">{c.name}</h1>
-          {claude && c.role === 'owner' && !archived ? (
+          {claude && c.ownerId === me.id && !archived ? (
             <button
               type="button"
               className={`truncate play-sub${table.link === 'open' && !dmAbsent(dm) ? ' on' : ''}`}
@@ -704,7 +704,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
           owner={c.role === 'owner'}
           claude={c.dm === 'claude'}
           dm={dm}
-          hostName={c.members.find((m) => m.role === 'owner')?.displayName ?? 'the host'}
+          hostName={hostOf(c)?.displayName ?? 'the host'}
           signal={rulesSignal}
           onClose={() => setRulesOpen(false)}
         />

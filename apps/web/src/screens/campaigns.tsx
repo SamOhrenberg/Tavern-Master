@@ -16,6 +16,7 @@ function greeting(): string {
 }
 
 function CampaignCard({ c }: { c: CampaignSummary }) {
+  const me = useMe();
   return (
     <Link to={`/c/${c.id}`} className={`card tap campaign${c.status === 'archived' ? ' archived' : ''}`}>
       <div className="row">
@@ -32,7 +33,7 @@ function CampaignCard({ c }: { c: CampaignSummary }) {
         {c.role === 'owner' && (
           <span className="pill arcane">
             <IconCrown className="pill-icon" />
-            Yours
+            {c.ownerId === me.id ? 'Yours' : 'Owner'}
           </span>
         )}
         {c.dm === 'claude' && <span className="pill arcane">Claude</span>}

@@ -316,9 +316,8 @@ export const SESSION_TOOLS: ConnectorTool[] = [
                 (SELECT count(*)::int FROM dm_work w
                   WHERE w.campaign_id = c.id AND w.status IN ('waiting', 'claimed')) AS waiting
            FROM campaigns c
-           JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1 AND m.role = 'owner'
            JOIN game_systems s ON s.id = c.system_id
-          WHERE c.status = 'active' ORDER BY c.created_at`,
+          WHERE c.owner_id = $1 AND c.status = 'active' ORDER BY c.created_at`,
         [user.userId],
       );
       if (!rows.length)
@@ -368,8 +367,7 @@ export const SESSION_TOOLS: ConnectorTool[] = [
         if (!input.campaign) throw new ToolError('Say which campaign: call list_campaigns to see yours.');
         const owned = await q<{ id: string; name: string }>(
           `SELECT c.id, c.name FROM campaigns c
-             JOIN campaign_members m ON m.campaign_id = c.id AND m.user_id = $1 AND m.role = 'owner'
-            WHERE c.status = 'active' ORDER BY c.created_at`,
+            WHERE c.owner_id = $1 AND c.status = 'active' ORDER BY c.created_at`,
           [user.userId],
         );
         const want = input.campaign.toLowerCase();

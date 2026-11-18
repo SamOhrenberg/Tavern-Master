@@ -5,6 +5,7 @@ import { useAction, useQuery } from '../app';
 import { IconCheck, IconScroll, IconSend } from '../icons';
 import { Empty, Skeletons } from '../ui';
 import { nameList, playersOf, ReadyList } from './ready';
+import { hostOf } from './cast';
 
 /**
  * A line of table talk for between sessions, when there is no composer:
@@ -73,10 +74,10 @@ export function RecapView({
     return () => window.clearInterval(timer);
   }, [writing, reloadRecap]);
 
-  const { waitingOn } = playersOf(c.members);
+  const { waitingOn } = playersOf(c.members, c.ownerId);
   const iAmReady = c.members.find((m) => m.id === meId)?.ready ?? false;
   const othersWaiting = waitingOn.filter((m) => m.id !== meId);
-  const host = c.members.find((m) => m.role === 'owner')?.displayName ?? 'The host';
+  const host = hostOf(c)?.displayName ?? 'The host';
   const next = (latest?.number ?? 0) + 1;
 
   const setReady = (ready: boolean) =>
@@ -147,7 +148,7 @@ export function RecapView({
             </button>
           </section>
 
-          <ReadyList members={c.members} meId={meId} title="Ready for the next session" />
+          <ReadyList members={c.members} hostId={c.ownerId} meId={meId} title="Ready for the next session" />
 
           {talk.length > 0 && (
             <section>

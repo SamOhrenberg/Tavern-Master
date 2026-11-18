@@ -9,23 +9,25 @@ export function nameList(names: string[]): string {
     : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-/** Everyone but the host, who readies up before the host begins or resumes. */
-export function playersOf(members: CampaignMember[]) {
-  const players = members.filter((m) => m.role !== 'owner');
+/** Everyone but the host (other owners too), who readies up before the host begins or resumes. */
+export function playersOf(members: CampaignMember[], hostId: string) {
+  const players = members.filter((m) => m.id !== hostId);
   return { players, waitingOn: players.filter((m) => !m.ready) };
 }
 
 /** Who is ready, as a titled list. Nothing when the host plays alone. */
 export function ReadyList({
   members,
+  hostId,
   meId,
   title,
 }: {
   members: CampaignMember[];
+  hostId: string;
   meId: string;
   title: string;
 }) {
-  const { players, waitingOn } = playersOf(members);
+  const { players, waitingOn } = playersOf(members, hostId);
   if (players.length === 0) return null;
   return (
     <section>

@@ -13,7 +13,7 @@ import {
   IconSparkle,
   IconUsers,
 } from '../icons';
-import { CastPanels, runsIt, type CastPanel } from '../play/cast';
+import { CastPanels, hostOf, runsIt, type CastPanel } from '../play/cast';
 import { ClaudeSetupSheet, DmChip, dmAbsent, dmLine } from '../play/claude';
 import { Documents } from '../play/documents';
 import { ManageSheet } from '../play/manage';
@@ -45,7 +45,10 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
   // Straight from creating a Claude campaign: open the setup, once. The query is
   // dropped without a router navigation, which would reload the campaign under us.
   const [settingUp, setSettingUp] = useState(
-    () => owner && c.dm === 'claude' && new URLSearchParams(window.location.search).get('setup') === 'claude',
+    () =>
+      c.ownerId === me.id &&
+      c.dm === 'claude' &&
+      new URLSearchParams(window.location.search).get('setup') === 'claude',
   );
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -92,13 +95,13 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
   const characters = game?.characters ?? [];
   const mine = characters.filter((ch) => runsIt(ch, me.id));
   const without = c.members.filter((m) => !characters.some((ch) => runsIt(ch, m.id)));
-  const host = c.members.find((m) => m.role === 'owner');
+  const host = hostOf(c);
   const others = table.present.filter((u) => u.id !== me.id).length;
   const claude = c.dm === 'claude';
   const dm = table.dm ?? c.dmStatus;
   const people = others === 0 ? 'just you here' : `${others + 1} here`;
   // The ready check: everyone but the host readies up before the host can begin.
-  const players = c.members.filter((m) => m.role !== 'owner');
+  const players = c.members.filter((m) => m.id !== c.ownerId);
   const waitingOn = players.filter((m) => !m.ready);
   const iAmReady = c.members.find((m) => m.id === me.id)?.ready ?? false;
   const othersWaiting = waitingOn.filter((m) => m.id !== me.id);
@@ -137,7 +140,7 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
         </button>
         <div className="grow play-title">
           <h1 className="truncate">{c.name}</h1>
-          {owner && claude ? (
+          {c.ownerId === me.id && claude ? (
             <button
               type="button"
               className={`truncate play-sub${table.link === 'open' && (!claude || !dmAbsent(dm)) ? ' on' : ''}`}
@@ -316,7 +319,7 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
             </div>
           </section>
 
-          <ReadyList members={c.members} meId={me.id} title="Ready to begin" />
+          <ReadyList members={c.members} hostId={c.ownerId} meId={me.id} title="Ready to begin" />
 
           <section>
             <div className="section-title">

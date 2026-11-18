@@ -215,9 +215,11 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.patch<{ Params: { id: string } }>('/api/campaigns/:id', async (req) => {
-    const { auth, campaignId } = await requireMember(req, true);
+    const { campaignId, host, hostId } = await requireMember(req, true);
     const body = parse(patchSchema, req.body);
-    if (body.dm === 'server' && !(await builtInAiFor(auth.user.id)))
+    // Who runs the table is the host's: it is their AI, or their Claude, that plays every part.
+    if (body.dm && !host) throw forbidden('Only the host, who made this campaign, can change who runs it.');
+    if (body.dm === 'server' && !(await builtInAiFor(hostId)))
       throw badRequest(NO_BUILT_IN, 'no_built_in_ai');
     if (body.polishWith) {
       const ai = await findOutsideAi(body.polishWith);
@@ -250,9 +252,9 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  /** What the owner needs to run this campaign from the Claude app. */
+  /** What the host needs to run this campaign from the Claude app. */
   app.get<{ Params: { id: string } }>('/api/campaigns/:id/connector', async (req) => {
-    const { auth, campaignId } = await requireMember(req, true);
+    const { auth, campaignId } = await requireMember(req, 'host');
     const row = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
     if (!row) throw notFound('Campaign not found');
     return {
@@ -268,7 +270,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
    * holds no secret (Claude signs in on first use), so a plain link works.
    */
   app.get<{ Params: { id: string } }>('/api/campaigns/:id/connector/kit', async (req, reply) => {
-    const { campaignId } = await requireMember(req, true);
+    const { campaignId } = await requireMember(req, 'host');
     const row = await q1<{ name: string }>('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
     if (!row) throw notFound('Campaign not found');
     const zip = zipStore(kitFiles({ id: campaignId, name: row.name }, config().baseUrl.origin));
@@ -487,7 +489,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/campaigns/:id', async (req) => {
-    const { campaignId } = await requireMember(req, true);
+    const { campaignId } = await requireMember(req, 'host');
     const room = getRoom(campaignId);
     for (const u of room?.present() ?? []) room?.kick(u.id);
     const files = await q<{ storage_name: string }>(
@@ -578,22 +580,70 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true, campaignId: accept ? campaignId : null };
   });
 
-  /** The owner removes a player, or a player leaves. */
+  /**
+   * An owner removes a player, or anyone but the host leaves. Only the host
+   * removes another owner, and nobody removes the host.
+   */
   app.delete<{ Params: { id: string; userId: string } }>(
     '/api/campaigns/:id/members/:userId',
     async (req) => {
-      const { auth, role, campaignId } = await requireMember(req);
+      const { auth, role, campaignId, hostId, host } = await requireMember(req);
       const target = parse(uuid, req.params.userId);
+      if (target === hostId)
+        throw badRequest('The host cannot leave; delete or archive the campaign instead.');
       if (target !== auth.user.id && role !== 'owner')
-        throw forbidden('Only the campaign owner can remove players.');
-      const rows = await q(
-        `DELETE FROM campaign_members WHERE campaign_id = $1 AND user_id = $2 AND role <> 'owner' RETURNING user_id`,
-        [campaignId, target],
+        throw forbidden('Only the campaign’s owners can remove players.');
+      const rows = await q<{ role: string }>(
+        `DELETE FROM campaign_members WHERE campaign_id = $1 AND user_id = $2
+            AND ($3::boolean OR user_id = $4 OR role <> 'owner')
+          RETURNING role`,
+        [campaignId, target, host, auth.user.id],
       );
-      if (!rows.length) throw badRequest('The owner cannot leave; delete or archive the campaign instead.');
-      // Their characters stay in the party, unassigned, for the owner to hand on.
+      if (!rows.length) {
+        if (
+          await q1('SELECT 1 FROM campaign_members WHERE campaign_id = $1 AND user_id = $2', [
+            campaignId,
+            target,
+          ])
+        )
+          throw forbidden('Only the host can remove another owner.');
+        throw notFound('They are not in this campaign.');
+      }
+      // Their characters stay in the party, unassigned, for the owners to hand on.
       getRoom(campaignId)?.kick(target);
       getRoom(campaignId)?.partyChanged();
+      return { ok: true };
+    },
+  );
+
+  /**
+   * The host makes a player an owner, with everything the host can do at the
+   * table, or makes an owner a player again. What stays the host's: who runs
+   * the table (their AI, or their Claude), deleting the campaign, and this.
+   */
+  app.put<{ Params: { id: string; userId: string } }>(
+    '/api/campaigns/:id/members/:userId/role',
+    async (req) => {
+      const { auth, campaignId, hostId } = await requireMember(req, 'host');
+      const target = parse(uuid, req.params.userId);
+      const { role } = parse(z.object({ role: z.enum(['owner', 'player']) }), req.body);
+      if (target === hostId) throw badRequest('The host is always an owner.');
+      const rows = await q(
+        'UPDATE campaign_members SET role = $3 WHERE campaign_id = $1 AND user_id = $2 RETURNING user_id',
+        [campaignId, target, role],
+      );
+      if (!rows.length) throw notFound('They are not in this campaign.');
+      await audit('campaign.member_role', {
+        actorId: auth.user.id,
+        targetType: 'campaign',
+        targetId: campaignId,
+        ip: req.ip,
+        meta: { userId: target, role },
+      });
+      // The socket reads each member's role per message, so nobody needs to reconnect.
+      const room = getRoom(campaignId);
+      room?.broadcast({ type: 'state_changed' });
+      room?.partyChanged();
       return { ok: true };
     },
   );
@@ -657,6 +707,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         persona: c.persona,
         portrait: portraitUrl(campaignId, c.id, c.portrait),
         whereabouts: c.whereabouts,
+        ...(c.createdBy ? { createdBy: c.createdBy } : {}),
         // Private notes go only to the players who run the character.
         ...(c.playerIds.includes(auth.user.id) ? { privateNotes: myNotes.get(c.id) ?? '' } : {}),
       }));

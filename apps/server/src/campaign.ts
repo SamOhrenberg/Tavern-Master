@@ -74,7 +74,7 @@ export async function updateCampaign(campaignId: string, patch: CampaignPatch): 
 }
 
 /**
- * The players (everyone but the host) who have not marked themselves ready, by
+ * The players (everyone but the host, co-owners included) who have not marked themselves ready, by
  * name. Given the open room, a player who is ready but not connected also
  * counts as not ready (used between sessions, where ready means present).
  */
@@ -82,7 +82,8 @@ export async function notReady(campaignId: string, here?: Room): Promise<string[
   const rows = await q<{ id: string; display_name: string; ready: boolean }>(
     `SELECT u.id, u.display_name, m.ready_at IS NOT NULL AS ready
        FROM campaign_members m JOIN users u ON u.id = m.user_id
-      WHERE m.campaign_id = $1 AND m.role <> 'owner' ORDER BY m.joined_at`,
+      WHERE m.campaign_id = $1 AND m.user_id <> (SELECT owner_id FROM campaigns WHERE id = $1)
+      ORDER BY m.joined_at`,
     [campaignId],
   );
   const present = here ? new Set(here.present().map((u) => u.id)) : null;
@@ -103,7 +104,7 @@ export async function startCampaign(campaignId: string): Promise<void> {
     `UPDATE campaigns SET phase = 'active', started_at = now()
       WHERE id = $1 AND phase = 'prep' AND status = 'active'
         AND NOT EXISTS (SELECT 1 FROM campaign_members m
-                         WHERE m.campaign_id = $1 AND m.role <> 'owner' AND m.ready_at IS NULL)
+                         WHERE m.campaign_id = $1 AND m.user_id <> campaigns.owner_id AND m.ready_at IS NULL)
       RETURNING id`,
     [campaignId],
   );
@@ -177,7 +178,7 @@ export async function resumeSession(campaignId: string, opts: { anyway?: boolean
     `UPDATE campaigns SET resting_since = NULL
       WHERE id = $1 AND resting_since IS NOT NULL
         AND ($2::boolean OR NOT EXISTS (SELECT 1 FROM campaign_members m
-                         WHERE m.campaign_id = $1 AND m.role <> 'owner' AND m.ready_at IS NULL))
+                         WHERE m.campaign_id = $1 AND m.user_id <> campaigns.owner_id AND m.ready_at IS NULL))
       RETURNING id`,
     [campaignId, !!opts.anyway],
   );

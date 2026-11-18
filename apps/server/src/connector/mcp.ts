@@ -76,7 +76,8 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
       const owns =
         UUID.test(campaignId) &&
         (await q1(
-          `SELECT 1 FROM campaign_members WHERE campaign_id = $1 AND user_id = $2 AND role = 'owner'`,
+          // The host's Claude runs the table; the campaign's other owners play it in the app.
+          `SELECT 1 FROM campaigns WHERE id = $1 AND owner_id = $2`,
           [campaignId, user.userId],
         ));
       if (!owns) return rpcError(reply, 404, 'No such campaign.');

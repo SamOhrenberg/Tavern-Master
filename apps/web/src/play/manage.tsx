@@ -10,6 +10,7 @@ import { DmChip } from './claude';
 import { Documents } from './documents';
 import { SheetVersionCard } from './sheet-update';
 import { WishesEditor } from './wishes';
+import { hostOf } from './cast';
 
 const WINDOWS = [
   { seconds: 10, label: '10 seconds' },
@@ -54,10 +55,12 @@ export function ManageSheet({
   const meta = useMeta();
   const claude = c.dm === 'claude';
   const status = dmStatus ?? c.dmStatus;
-  const host = c.members.find((m) => m.role === 'owner')?.displayName ?? 'the host';
+  const host = hostOf(c)?.displayName ?? 'the host';
   const me = useMe();
   const navigate = useNavigate();
   const owner = c.role === 'owner';
+  // The host made the campaign: their AI or Claude runs it, and only they make others owners.
+  const isHost = c.ownerId === me.id;
   const friends = useQuery(
     () => (owner ? api<{ friends: Friend[] }>('/friends') : Promise.resolve({ friends: [] })),
     [owner],
@@ -137,24 +140,53 @@ export function ManageSheet({
                 {m.characterName ?? 'No character yet'}
               </div>
             </div>
-            {m.role === 'owner' ? (
+            {m.id === c.ownerId ? (
               <span className="pill arcane">
                 <IconCrown className="pill-icon" />
                 Host
               </span>
             ) : (
-              owner && (
-                <ConfirmButton
-                  className="btn sm danger"
-                  confirmLabel="Remove?"
-                  disabled={busy}
-                  onConfirm={() =>
-                    void act(() => api(`/campaigns/${c.id}/members/${m.id}`, { method: 'DELETE' }), 'Removed')
-                  }
-                >
-                  Remove
-                </ConfirmButton>
-              )
+              <div className="row member-acts">
+                {m.role === 'owner' && !isHost && <span className="pill">Owner</span>}
+                {isHost && (
+                  <button
+                    type="button"
+                    className={`btn sm${m.role === 'owner' ? ' on' : ''}`}
+                    aria-pressed={m.role === 'owner'}
+                    disabled={busy}
+                    onClick={() =>
+                      void act(
+                        () =>
+                          api(`/campaigns/${c.id}/members/${m.id}/role`, {
+                            method: 'PUT',
+                            body: { role: m.role === 'owner' ? 'player' : 'owner' },
+                          }),
+                        m.role === 'owner'
+                          ? `${m.displayName} is a player again`
+                          : `${m.displayName} is now an owner`,
+                      )
+                    }
+                  >
+                    {m.role === 'owner' && <IconCrown className="pill-icon" />}
+                    Owner
+                  </button>
+                )}
+                {(isHost || (owner && m.role !== 'owner')) && (
+                  <ConfirmButton
+                    className="btn sm danger"
+                    confirmLabel="Remove?"
+                    disabled={busy}
+                    onConfirm={() =>
+                      void act(
+                        () => api(`/campaigns/${c.id}/members/${m.id}`, { method: 'DELETE' }),
+                        'Removed',
+                      )
+                    }
+                  >
+                    Remove
+                  </ConfirmButton>
+                )}
+              </div>
             )}
           </div>
         ))}
@@ -211,12 +243,17 @@ export function ManageSheet({
               <b className="grow">{claude ? 'Claude' : 'Built-in AI'}</b>
             </div>
             {claude && <DmChip dm={status} />}
-            {claude && onClaudeSetup && (
+            {isHost && claude && onClaudeSetup && (
               <button type="button" className="btn block" onClick={onClaudeSetup}>
                 Claude setup
               </button>
             )}
-            {claude ? (
+            {!isHost ? (
+              <p className="small muted">
+                {claude ? `Runs on ${host}’s Claude.` : `Runs on ${host}’s AI.`} Only {host} can change who
+                runs the table.
+              </p>
+            ) : claude ? (
               meta?.builtInAi && (
                 <ConfirmButton
                   className="btn ghost block"
@@ -491,34 +528,55 @@ export function ManageSheet({
             >
               {c.status === 'active' ? 'Archive campaign' : 'Restore campaign'}
             </button>
-            <ConfirmButton
-              className="btn danger block"
-              confirmLabel="Tap again to delete everything"
-              disabled={busy}
-              onConfirm={() =>
-                void act(() => api(`/campaigns/${c.id}`, { method: 'DELETE' }), 'Campaign deleted', true)
-              }
-            >
-              Delete campaign
-            </ConfirmButton>
+            {isHost ? (
+              <ConfirmButton
+                className="btn danger block"
+                confirmLabel="Tap again to delete everything"
+                disabled={busy}
+                onConfirm={() =>
+                  void act(() => api(`/campaigns/${c.id}`, { method: 'DELETE' }), 'Campaign deleted', true)
+                }
+              >
+                Delete campaign
+              </ConfirmButton>
+            ) : (
+              <LeaveButton campaignId={c.id} meId={me.id} busy={busy} act={act} />
+            )}
           </>
         ) : (
-          <ConfirmButton
-            className="btn danger block"
-            confirmLabel="Tap again to leave"
-            disabled={busy}
-            onConfirm={() =>
-              void act(
-                () => api(`/campaigns/${c.id}/members/${me.id}`, { method: 'DELETE' }),
-                'You left the campaign',
-                true,
-              )
-            }
-          >
-            Leave campaign
-          </ConfirmButton>
+          <LeaveButton campaignId={c.id} meId={me.id} busy={busy} act={act} />
         )}
       </div>
     </Sheet>
+  );
+}
+
+/** Leave the campaign: for anyone but the host, who deletes or archives it instead. */
+function LeaveButton({
+  campaignId,
+  meId,
+  busy,
+  act,
+}: {
+  campaignId: string;
+  meId: string;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>, done?: string, leave?: boolean) => unknown;
+}) {
+  return (
+    <ConfirmButton
+      className="btn danger block"
+      confirmLabel="Tap again to leave"
+      disabled={busy}
+      onConfirm={() =>
+        void act(
+          () => api(`/campaigns/${campaignId}/members/${meId}`, { method: 'DELETE' }),
+          'You left the campaign',
+          true,
+        )
+      }
+    >
+      Leave campaign
+    </ConfirmButton>
   );
 }

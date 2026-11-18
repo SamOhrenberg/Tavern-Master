@@ -93,8 +93,7 @@ export async function resolveToken(
     stale: boolean;
   }>(
     `SELECT t.id, t.user_id, u.display_name, t.campaign_id, t.resource,
-            EXISTS (SELECT 1 FROM campaign_members m
-                     WHERE m.campaign_id = t.campaign_id AND m.user_id = t.user_id AND m.role = 'owner') AS owns,
+            EXISTS (SELECT 1 FROM campaigns c WHERE c.id = t.campaign_id AND c.owner_id = t.user_id) AS owns,
             t.last_used_at IS NULL OR t.last_used_at < now() - interval '60 seconds' AS stale
        FROM connector_tokens t JOIN users u ON u.id = t.user_id
       WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND u.status = 'active'
