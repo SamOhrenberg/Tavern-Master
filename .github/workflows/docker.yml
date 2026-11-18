@@ -1,15 +1,12 @@
 name: Docker
 
+# Run by CI once the tests and the audit pass (see ci.yml): pushes and runs by
+# hand on main publish the images, pull requests only build and scan them.
 on:
-  push:
-    branches: [main]
-    tags: ['v*.*.*']
-  pull_request:
+  workflow_call:
   schedule:
-    # Re-scan the published image weekly so new CVEs in the base image surface.
+    # Re-scan the image weekly so new CVEs in the base image surface. Never publishes.
     - cron: '23 5 * * 1'
-  # Run by hand from the Actions tab. On main it publishes like a push.
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,7 +14,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository }}
-  # Images are published for pushes, and for runs by hand on main.
+  # Called from CI, github.event_name is CI's own event.
   PUBLISH: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
 
 jobs:

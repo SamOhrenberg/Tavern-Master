@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*.*.*']
   pull_request:
-  # Run by hand from the Actions tab.
+  # Run by hand from the Actions tab. On main it publishes the images like a push.
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request replaces the run; on main, each publish finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -55,3 +57,15 @@ jobs:
           node-version: 22
       # Fails the build on known high/critical advisories in shipped dependencies.
       - run: npm audit --omit=dev --audit-level=high
+
+  # The images are built, smoke-tested and scanned only once the code passes,
+  # so a failing commit is never published.
+  docker:
+    needs: [test, audit]
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      # upload-sarif reads the run it belongs to.
+      actions: read
