@@ -6,25 +6,12 @@ import { q1, tx, closeDb, waitForDb } from './db/pool.js';
 import { migrate } from './db/migrate.js';
 import { enqueue } from './jobs/queue.js';
 import { log } from './log.js';
+import { SRD_SHEET, SRD_TEMPLATE_V1 } from './srd-sheet.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from './storage.js';
 
 const SEED_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'seed');
 
 export const SRD_SLUG = 'dnd5e-srd';
-
-const SRD_SHEET_TEMPLATE = {
-  abilities: ['Strength', 'Dexterity', 'Constitution', 'Intelligence', 'Wisdom', 'Charisma'],
-  fields: [
-    { key: 'class', label: 'Class' },
-    { key: 'level', label: 'Level' },
-    { key: 'species', label: 'Species' },
-    { key: 'background', label: 'Background' },
-    { key: 'armorClass', label: 'Armor Class' },
-    { key: 'speed', label: 'Speed' },
-    { key: 'proficiencies', label: 'Proficiencies' },
-    { key: 'features', label: 'Features & spells' },
-  ],
-};
 
 /**
  * Create the starter game system with a short SRD rules excerpt and queue it
@@ -48,7 +35,7 @@ export async function seedSrdSystem(): Promise<boolean> {
         'D&D 5e (SRD 5.1)',
         'Fifth edition core rules from the System Reference Document 5.1 (CC-BY-4.0). ' +
           'Seeded with a short excerpt; upload the full SRD for complete coverage.',
-        JSON.stringify(SRD_SHEET_TEMPLATE),
+        JSON.stringify(SRD_SHEET),
       ],
       client,
     );
@@ -71,9 +58,26 @@ export async function seedSrdSystem(): Promise<boolean> {
   return true;
 }
 
-/** First boot only: seed when the library is completely empty. */
+/**
+ * Move a starter system that still has its original sheet template to the
+ * full fifth-edition sheet. The field names carry over, so its characters
+ * read the same. A template an admin has changed is left alone.
+ */
+export async function upgradeSrdSheet(): Promise<boolean> {
+  const row = await q1<{ id: string }>(
+    'UPDATE game_systems SET sheet_template = $2 WHERE slug = $1 AND sheet_template = $3::jsonb RETURNING id',
+    [SRD_SLUG, JSON.stringify(SRD_SHEET), JSON.stringify(SRD_TEMPLATE_V1)],
+  );
+  if (row) log().info('gave the starter system its full character sheet');
+  return !!row;
+}
+
+/** First boot only: seed when the library is completely empty. Every boot: bring the starter sheet up to date. */
 export async function seedIfEmpty(): Promise<void> {
-  if (await q1('SELECT 1 FROM game_systems LIMIT 1')) return;
+  if (await q1('SELECT 1 FROM game_systems LIMIT 1')) {
+    await upgradeSrdSheet().catch((err) => log().error({ err }, 'upgrading the starter sheet failed'));
+    return;
+  }
   await seedSrdSystem().catch((err) => log().error({ err }, 'seeding failed'));
 }
 
