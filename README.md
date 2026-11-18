@@ -21,6 +21,8 @@ screenshots in [portfolio.md](portfolio.md).
   job queue all run on your hardware.
 - **Any rules system.** Admins create game systems and upload PDFs, Markdown
   or text. The DM retrieves from the campaign's system only, and cites it.
+  An admin can make a player an owner of one system, who can then shape it
+  as an admin would.
 - **Homebrew that grows at the table.** Mark a system homebrew and every
   table playing it gets a rules desk: a side chat where the players talk
   rules over with the DM, change them, steer the campaign or point out a bad
@@ -33,10 +35,13 @@ screenshots in [portfolio.md](portfolio.md).
   over with the AI (built-in, or Claude through the connector). It proposes
   sheet changes and writes a GM guide and rulings that every table follows.
 - **Multiplayer.** Friends, campaign invites, real-time play. Actions from
-  several players are gathered into one turn with clear attribution.
+  several players are gathered into one turn with clear attribution. The
+  host can make any player an owner, with the host's own access to the
+  table; who runs it (the host's AI or Claude) stays the host's.
 - **A party, not just a player.** Each campaign has its own characters. Fill
   the party out with companions that are played by a player (or several), by
   the DM, or by a separate AI that knows only what the character has seen.
+  Any player can add a companion and choose who plays it.
 - **A prep phase.** Before the first scene, build characters by hand, in a
   chat with a guide that knows the rules, or from an uploaded sheet; add
   campaign documents; and tell the DM what you hope the story holds, or leave

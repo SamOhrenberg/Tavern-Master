@@ -1,4 +1,11 @@
-import type { GameSystem, LoreStatus, RuleDocument, RuleHit, SettingLore } from '@tavern/protocol';
+import type {
+  GameSystem,
+  LoreStatus,
+  RuleDocument,
+  RuleHit,
+  SettingLore,
+  SystemOwner,
+} from '@tavern/protocol';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../api';
@@ -13,7 +20,17 @@ import {
   IconTrash,
   IconUpload,
 } from '../icons';
-import { ConfirmButton, Empty, Field, PageHead, Segmented, Sheet, Skeletons, ruleSource } from '../ui';
+import {
+  Avatar,
+  ConfirmButton,
+  Empty,
+  Field,
+  PageHead,
+  Segmented,
+  Sheet,
+  Skeletons,
+  ruleSource,
+} from '../ui';
 import { SheetSchemaPanel } from './sheet-schema';
 import { WorkshopSheet } from './workshop';
 
@@ -600,6 +617,8 @@ export function SystemScreen() {
   const [editingLore, setEditingLore] = useState(false);
   const [workshop, setWorkshop] = useState(false);
   const system = systems.data?.systems.find((s) => s.id === id);
+  // Admins and the system's owners shape it; an admin still needs 2FA first.
+  const manage = !!system?.canEdit && !(admin && locked);
   const list = docs.data?.documents ?? [];
   const loreBusy = LORE[system?.loreStatus ?? 'none'].live;
   // A sheet draft is written in the background too.
@@ -707,11 +726,11 @@ export function SystemScreen() {
         ) : (
           <div className="stack">
             {rulebooks.map((d) => (
-              <DocCard key={d.id} doc={d} manage={admin && !locked} busy={busy} act={act} />
+              <DocCard key={d.id} doc={d} manage={manage} busy={busy} act={act} />
             ))}
           </div>
         )}
-        {admin && !locked && (
+        {manage && (
           <>
             <input
               ref={picker}
@@ -744,14 +763,14 @@ export function SystemScreen() {
         >
           <SheetSchemaPanel
             system={system}
-            manage={admin && !locked}
+            manage={manage}
             rulebooks={rulebooks.filter((d) => d.status === 'ready').length}
             onSaved={() => void reloadSystems()}
           />
         </Group>
       )}
 
-      {system && admin && !locked && (
+      {system && manage && (
         <Group systemId={id} name="workshop" title="Workshop" count={0}>
           <div className="card stack">
             <p className="small muted">
@@ -799,11 +818,11 @@ export function SystemScreen() {
           {settingDocs.length > 0 && (
             <div className="stack">
               {settingDocs.map((d) => (
-                <DocCard key={d.id} doc={d} manage={admin && !locked} busy={busy} act={act} />
+                <DocCard key={d.id} doc={d} manage={manage} busy={busy} act={act} />
               ))}
             </div>
           )}
-          {admin && !locked && (
+          {manage && (
             <>
               {!loreBusy && (system.lore || settingDocs.length > 0) && (
                 <button type="button" className="btn block" onClick={() => setEditingLore(true)}>
@@ -841,13 +860,13 @@ export function SystemScreen() {
         </Group>
       )}
 
-      {system && (admin || system.homebrew) && (
+      {system && (manage || system.homebrew) && (
         <>
           <div className="section-title">
             <span>Whose rules</span>
           </div>
           <div className="card stack homebrew-card">
-            {admin && !locked ? (
+            {manage ? (
               <Segmented
                 value={system.homebrew ? 'homebrew' : 'published'}
                 options={HOMEBREW_OPTIONS}
@@ -873,7 +892,7 @@ export function SystemScreen() {
         </>
       )}
 
-      {system && admin && !locked && (
+      {system && manage && (
         <>
           <div className="section-title">
             <span>GM instructions</span>
@@ -916,6 +935,8 @@ export function SystemScreen() {
         </div>
       )}
 
+      {system && <SystemOwners systemId={id} admin={admin && !locked} canSee={manage} />}
+
       {admin && !locked && system && (
         <div className="danger-zone">
           <ConfirmButton
@@ -934,5 +955,118 @@ export function SystemScreen() {
         </div>
       )}
     </main>
+  );
+}
+
+interface UserRow {
+  id: string;
+  username: string;
+  displayName: string;
+  role: string;
+  status: string;
+}
+
+/**
+ * The players an admin trusts with this system. They can do what an admin
+ * can to it (rulebooks, sheet, workshop, GM guide), and nothing else. Admins
+ * add and remove them; the owners themselves only see the list.
+ */
+function SystemOwners({ systemId, admin, canSee }: { systemId: string; admin: boolean; canSee: boolean }) {
+  const owners = useQuery(
+    () =>
+      canSee
+        ? api<{ owners: SystemOwner[] }>(`/systems/${systemId}/owners`)
+        : Promise.resolve({ owners: [] as SystemOwner[] }),
+    [systemId, canSee],
+  );
+  const users = useQuery(
+    () => (admin ? api<{ users: UserRow[] }>('/admin/users') : Promise.resolve({ users: [] as UserRow[] })),
+    [admin],
+  );
+  const [pick, setPick] = useState('');
+  const [busy, run] = useAction();
+  if (!canSee) return null;
+  const list = owners.data?.owners ?? [];
+  // Admins can already change every system, so only active players are offered.
+  const choosable = (users.data?.users ?? []).filter(
+    (u) => u.role !== 'admin' && u.status === 'active' && !list.some((o) => o.id === u.id),
+  );
+  if (!admin && list.length === 0) return null;
+
+  const change = (userId: string, add: boolean, name: string) =>
+    run(
+      async () => {
+        await api(`/systems/${systemId}/owners/${userId}`, { method: add ? 'PUT' : 'DELETE' });
+        setPick('');
+        await owners.reload();
+      },
+      add ? `${name} can shape this system now` : `${name} is no longer an owner`,
+    );
+
+  return (
+    <>
+      <div className="section-title">
+        <span>Owners</span>
+        {list.length > 0 && <span>{list.length}</span>}
+      </div>
+      <div className="stack">
+        <p className="small muted">
+          {admin
+            ? 'Players you trust with this system. They can upload its rulebooks, change its sheet, use its workshop and write its GM guide, as an admin can.'
+            : 'Players an admin trusted with this system. Together with the admins, they shape it.'}
+        </p>
+        {list.length > 0 && (
+          <div className="list">
+            {list.map((o) => (
+              <div key={o.id}>
+                <Avatar name={o.displayName} seed={o.id} />
+                <div className="grow truncate">{o.displayName}</div>
+                {admin && (
+                  <ConfirmButton
+                    className="btn sm danger"
+                    confirmLabel="Remove?"
+                    disabled={busy}
+                    onConfirm={() => void change(o.id, false, o.displayName)}
+                  >
+                    Remove
+                  </ConfirmButton>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {admin &&
+          (choosable.length > 0 ? (
+            <div className="add-friend">
+              <select
+                className="select"
+                value={pick}
+                onChange={(e) => setPick(e.target.value)}
+                aria-label="Player to make an owner"
+              >
+                <option value="">Choose a player…</option>
+                {choosable.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.displayName} (@{u.username})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || !pick}
+                onClick={() => {
+                  const u = choosable.find((x) => x.id === pick);
+                  if (u) void change(u.id, true, u.displayName);
+                }}
+              >
+                Add
+              </button>
+            </div>
+          ) : (
+            users.data && <p className="small faint">Every player on this server is already an owner.</p>
+          ))}
+      </div>
+    </>
   );
 }

@@ -13,7 +13,8 @@ import { audit } from '../audit.js';
 import { q, q1 } from '../db/pool.js';
 import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { GUIDE_LIMITS, loadGuide, saveGuide, TOPIC_IDS, withoutRuling, withTopic } from '../gm-guide.js';
-import { enforceLimit, rateLimiters, requireAdmin } from '../http/security.js';
+import { enforceLimit, rateLimiters } from '../http/security.js';
+import { requireSystemEditor } from '../http/system-access.js';
 import { log } from '../log.js';
 import { workshopLauncherLive } from './summon.js';
 
@@ -32,14 +33,14 @@ async function systemOrNotFound(id: string): Promise<SystemRow> {
 }
 
 /**
- * The workshop, for admins: talk a game system over with the AI, and keep
+ * The workshop, for admins and a system's owners: talk a game system over with the AI, and keep
  * the GM guide it writes. Sheet changes it proposes go to the system's sheet
  * draft and are reviewed there (see systems.ts).
  */
 export async function workshopRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: Params }>('/api/systems/:id/workshop', async (req): Promise<{ workshop: Workshop }> => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const who = await answererOf(await systemOrNotFound(id), auth.user.id);
     return {
       workshop: {
@@ -55,8 +56,8 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
 
   /** Choose who answers the workshop in the app: the built-in AI, or Claude through the connector. */
   app.patch<{ Params: Params }>('/api/systems/:id/workshop', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const { answeredBy } = parse(z.object({ answeredBy: z.enum(['server', 'claude']) }), req.body);
     const sys = await systemOrNotFound(id);
     if (answeredBy === 'server' && !(await answererOf(sys, auth.user.id)).builtIn)
@@ -71,8 +72,8 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
    * for each thing the AI does, then the stored message.
    */
   app.post<{ Params: Params }>('/api/systems/:id/workshop/messages', async (req, reply) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const { text } = parse(z.object({ text: z.string().trim().min(1).max(4000) }), req.body);
     const sys = await systemOrNotFound(id);
     if ((await answererOf(sys, auth.user.id)).answeredBy === 'claude') {
@@ -118,8 +119,8 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
 
   /** Start the conversation over. The sheet, its draft and the guide stay as they are. */
   app.delete<{ Params: Params }>('/api/systems/:id/workshop', async (req) => {
-    requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    await requireSystemEditor(req, id);
     await systemOrNotFound(id);
     if (workshopBusy(id)) throw conflict('Wait for the answer first.');
     await q('DELETE FROM system_workshop_messages WHERE system_id = $1', [id]);
@@ -130,8 +131,8 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: Params & { topic: string } }>(
     '/api/systems/:id/guide/:topic',
     async (req): Promise<{ guide: GmGuide }> => {
-      const auth = requireAdmin(req);
       const id = parse(uuid, req.params.id);
+      const auth = await requireSystemEditor(req, id);
       const topic = parse(z.enum(TOPIC_IDS), req.params.topic) as GuideTopicId;
       const { text } = parse(z.object({ text: z.string().max(GUIDE_LIMITS.topic) }), req.body);
       await systemOrNotFound(id);
@@ -152,8 +153,8 @@ export async function workshopRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: Params & { rulingId: string } }>(
     '/api/systems/:id/guide/rulings/:rulingId',
     async (req): Promise<{ guide: GmGuide }> => {
-      const auth = requireAdmin(req);
       const id = parse(uuid, req.params.id);
+      const auth = await requireSystemEditor(req, id);
       const rulingId = parse(z.string().min(1).max(20), req.params.rulingId);
       await systemOrNotFound(id);
       const guide = withoutRuling(await loadGuide(id), rulingId);

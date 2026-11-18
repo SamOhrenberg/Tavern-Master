@@ -3,7 +3,7 @@ import { createWriteStream } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import type { GameSystem, RuleDocument, SheetDraftView } from '@tavern/protocol';
+import type { GameSystem, RuleDocument, SheetDraftView, SystemOwner } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
@@ -11,6 +11,7 @@ import { config } from '../config.js';
 import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, HttpError, notFound, parse } from '../errors.js';
 import { enforceLimit, rateLimiters, requireAdmin, requireUser } from '../http/security.js';
+import { ownedSystems, requireDocumentEditor, requireSystemEditor } from '../http/system-access.js';
 import { enqueue, hasPending } from '../jobs/queue.js';
 import { rulesCorpus } from '../agent/sheet-drafter.js';
 import { builtInAiFor, instanceAiConfigured } from '../llm/index.js';
@@ -106,6 +107,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/systems', async (req) => {
     const auth = requireUser(req);
     const admin = auth.user.role === 'admin';
+    const owned = admin ? new Set<string>() : await ownedSystems(auth.user.id);
     const rows = await q(
       `SELECT s.id, s.slug, s.name, s.description, s.sheet_template, s.sheet_version, s.lore, s.lore_status, s.homebrew,
               s.gm_instructions, s.sheet_draft_status,
@@ -115,22 +117,26 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
               (SELECT count(*)::int FROM chunks c WHERE c.system_id = s.id AND c.campaign_id IS NULL) AS chunks
          FROM game_systems s ORDER BY s.name`,
     );
-    const systems: GameSystem[] = rows.map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      name: r.name,
-      description: r.description,
-      sheetSchema: toSchema(r.sheet_template),
-      sheetVersion: r.sheet_version,
-      documentCount: r.docs,
-      chunkCount: r.chunks,
-      settingDocumentCount: r.setting_docs,
-      loreStatus: r.lore_status,
-      lore: r.lore ?? null,
-      homebrew: r.homebrew,
-      // Written for the GM, so only the admins who write them see them.
-      ...(admin ? { gmInstructions: r.gm_instructions, sheetDraftStatus: r.sheet_draft_status } : {}),
-    }));
+    const systems: GameSystem[] = rows.map((r) => {
+      const canEdit = admin || owned.has(r.id);
+      return {
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        description: r.description,
+        sheetSchema: toSchema(r.sheet_template),
+        sheetVersion: r.sheet_version,
+        documentCount: r.docs,
+        chunkCount: r.chunks,
+        settingDocumentCount: r.setting_docs,
+        loreStatus: r.lore_status,
+        lore: r.lore ?? null,
+        homebrew: r.homebrew,
+        canEdit,
+        // Written for the GM, so only the people who write them see them.
+        ...(canEdit ? { gmInstructions: r.gm_instructions, sheetDraftStatus: r.sheet_draft_status } : {}),
+      };
+    });
     return { systems };
   });
 
@@ -176,8 +182,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
    *   instructions from the next turn on.
    */
   app.patch<{ Params: { id: string } }>('/api/systems/:id', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const { homebrew, gmInstructions } = parse(
       z
         .object({
@@ -214,8 +220,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
    * moves a replaced field's values to its new name).
    */
   app.put<{ Params: { id: string } }>('/api/systems/:id/sheet-schema', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const body = (req.body ?? {}) as { schema?: unknown; renames?: unknown };
     const schema = parseSchema(body.schema);
     const row = await q1<{ sheet_template: unknown }>(
@@ -242,8 +248,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
    * background; the draft waits for review and changes nothing on its own.
    */
   app.post<{ Params: { id: string } }>('/api/systems/:id/sheet-draft', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const sys = await q1<{ created_by: string | null; sheet_draft_status: string }>(
       'SELECT created_by, sheet_draft_status FROM game_systems WHERE id = $1',
       [id],
@@ -278,8 +284,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>(
     '/api/systems/:id/sheet-draft',
     async (req): Promise<SheetDraftView> => {
-      requireAdmin(req);
       const id = parse(uuid, req.params.id);
+      await requireSystemEditor(req, id);
       const row = await q1<DraftRow>(DRAFT_SQL, [id]);
       if (!row) throw notFound();
       const draft = row.sheet_draft ? toSchema(row.sheet_draft) : null;
@@ -302,8 +308,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
    * one whose values it carries over; both changes must be among those chosen.
    */
   app.post<{ Params: { id: string } }>('/api/systems/:id/sheet-draft/apply', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const { accept, renames: pairs } = parse(
       z.object({ accept: z.array(z.string().max(80)).max(200), renames: renamesInput }),
       req.body,
@@ -336,8 +342,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
 
   /** Let a draft (or a failed attempt) go without changing the sheet. */
   app.delete<{ Params: { id: string } }>('/api/systems/:id/sheet-draft', async (req) => {
-    requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    await requireSystemEditor(req, id);
     const row = await q1<{ sheet_draft_status: string }>(
       `UPDATE game_systems SET sheet_draft = NULL, sheet_draft_notes = '[]', sheet_draft_status = 'none',
               sheet_draft_error = NULL
@@ -349,6 +355,76 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         throw conflict('Wait for the draft to finish.');
       throw notFound();
     }
+    return { ok: true };
+  });
+
+  // ---- owners: players an admin trusts with one system ----
+
+  /** Who owns a system besides the admins. Anyone who can edit it may see the list. */
+  app.get<{ Params: { id: string } }>(
+    '/api/systems/:id/owners',
+    async (req): Promise<{ owners: SystemOwner[] }> => {
+      const id = parse(uuid, req.params.id);
+      await requireSystemEditor(req, id);
+      const rows = await q<{ id: string; username: string; display_name: string; added_at: Date }>(
+        `SELECT u.id, u.username, u.display_name, o.added_at
+           FROM game_system_owners o JOIN users u ON u.id = o.user_id
+          WHERE o.system_id = $1 ORDER BY o.added_at`,
+        [id],
+      );
+      return {
+        owners: rows.map((r) => ({
+          id: r.id,
+          username: r.username,
+          displayName: r.display_name,
+          addedAt: r.added_at.toISOString(),
+        })),
+      };
+    },
+  );
+
+  /** An admin makes a player an owner of one system. */
+  app.put<{ Params: { id: string; userId: string } }>('/api/systems/:id/owners/:userId', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const userId = parse(uuid, req.params.userId);
+    if (!(await q1('SELECT 1 FROM game_systems WHERE id = $1', [id]))) throw notFound();
+    const user = await q1<{ role: string }>(`SELECT role FROM users WHERE id = $1 AND status = 'active'`, [
+      userId,
+    ]);
+    if (!user) throw notFound('No such player.');
+    if (user.role === 'admin') throw badRequest('Admins can already change every system.');
+    await q(
+      `INSERT INTO game_system_owners (system_id, user_id, added_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [id, userId, auth.user.id],
+    );
+    await audit('system.owner_added', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+      meta: { userId },
+    });
+    return { ok: true };
+  });
+
+  /** An admin takes a system back from one of its owners. */
+  app.delete<{ Params: { id: string; userId: string } }>('/api/systems/:id/owners/:userId', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const userId = parse(uuid, req.params.userId);
+    const rows = await q('DELETE FROM game_system_owners WHERE system_id = $1 AND user_id = $2 RETURNING 1', [
+      id,
+      userId,
+    ]);
+    if (!rows.length) throw notFound();
+    await audit('system.owner_removed', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+      meta: { userId },
+    });
     return { ok: true };
   });
 
@@ -397,8 +473,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
    * which overwrites manual edits.
    */
   app.put<{ Params: { id: string } }>('/api/systems/:id/lore', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, id);
     const lore = parse(editLoreSchema, req.body);
     const row = await q1<{ id: string }>(
       `UPDATE game_systems
@@ -417,8 +493,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post<{ Params: { id: string } }>('/api/systems/:id/documents', async (req) => {
-    const auth = requireAdmin(req);
     const systemId = parse(uuid, req.params.id);
+    const auth = await requireSystemEditor(req, systemId);
     if (!(await q1('SELECT 1 FROM game_systems WHERE id = $1', [systemId]))) throw notFound();
     if (!req.isMultipart()) throw badRequest('Send the file as multipart/form-data.');
 
@@ -487,8 +563,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post<{ Params: { id: string } }>('/api/documents/:id/retry', async (req) => {
-    requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    await requireDocumentEditor(req, id);
     const rows = await q(
       `UPDATE documents SET status = 'queued', error = NULL
         WHERE id = $1 AND status = 'failed' AND campaign_id IS NULL RETURNING id`,
@@ -501,8 +577,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
 
   /** Mark a library document as rules or setting/flavour, and refresh the system's lore. */
   app.patch<{ Params: { id: string } }>('/api/documents/:id', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireDocumentEditor(req, id);
     const kind = parse(z.enum(['rules', 'setting']), (req.body as { kind?: unknown })?.kind);
     const row = await q1<DocRow>(
       `UPDATE documents SET kind = $2 WHERE id = $1 AND campaign_id IS NULL RETURNING ${DOC_COLS}`,
@@ -527,8 +603,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/documents/:id', async (req) => {
-    const auth = requireAdmin(req);
     const id = parse(uuid, req.params.id);
+    const auth = await requireDocumentEditor(req, id);
     const row = await q1<{ storage_name: string; kind: string | null; system_id: string }>(
       'DELETE FROM documents WHERE id = $1 AND campaign_id IS NULL RETURNING storage_name, kind, system_id',
       [id],

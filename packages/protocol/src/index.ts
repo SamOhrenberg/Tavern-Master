@@ -52,12 +52,22 @@ export interface GameSystem {
    */
   homebrew: boolean;
   /**
+   * The viewer may shape this system: they are an admin, or one of the
+   * players an admin made an owner of it.
+   */
+  canEdit: boolean;
+  /**
    * Standing instructions for the GM of every table on this system, such as
-   * which other AI to ask for what. Sent to admins only.
+   * which other AI to ask for what. Sent to those who can edit it only.
    */
   gmInstructions?: string;
-  /** Where the AI's draft of this system's sheet stands. Sent to admins only. */
+  /** Where the AI's draft of this system's sheet stands. Sent to those who can edit it only. */
   sheetDraftStatus?: SheetDraftStatus;
+}
+
+/** A player an admin trusted with one game system, as the system's owners list shows them. */
+export interface SystemOwner extends UserRef {
+  addedAt: string;
 }
 
 export type SheetDraftStatus = 'none' | 'queued' | 'drafting' | 'ready' | 'failed';

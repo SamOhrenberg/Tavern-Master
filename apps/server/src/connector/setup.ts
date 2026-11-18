@@ -7,6 +7,7 @@ import { endCurrentSession, insertCampaign, startCampaign, updateCampaign } from
 import { q, q1 } from '../db/pool.js';
 import { HttpError } from '../errors.js';
 import { enforceLimit, rateLimiters } from '../http/security.js';
+import { ownedSystems } from '../http/system-access.js';
 import { applyDraft, type Control, type Viewer } from '../party.js';
 import { config } from '../config.js';
 import { sniffImage } from '../rules/parse.js';
@@ -118,11 +119,14 @@ export const SETUP_TOOLS: ConnectorTool[] = [
       if (!rows.length) return 'This server has no game systems yet. The admin adds them in the app.';
       const admin =
         (await q1<{ role: string }>('SELECT role FROM users WHERE id = $1', [user.userId]))?.role === 'admin';
-      const waiting = admin ? await unansweredCounts(rows.map((r) => r.id)) : new Map<string, number>();
+      // Admins see the workshop for every system; a system's owners for the systems they own.
+      const owned = admin ? null : await ownedSystems(user.userId);
+      const shapes = (id: string) => admin || !!owned?.has(id);
+      const waiting = await unansweredCounts(rows.filter((r) => shapes(r.id)).map((r) => r.id));
       return rows
         .map((r) => {
           const line = `- ${r.name}: ${r.description || 'no description'}`;
-          return admin ? `${line}\n  Workshop: ${workshopLine(r, waiting.get(r.id) ?? 0)}` : line;
+          return shapes(r.id) ? `${line}\n  Workshop: ${workshopLine(r, waiting.get(r.id) ?? 0)}` : line;
         })
         .join('\n');
     },

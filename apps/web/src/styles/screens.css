@@ -254,7 +254,8 @@ button.banner {
   display: flex;
   gap: 10px;
 }
-.add-friend .input {
+.add-friend .input,
+.add-friend .select {
   flex: 1;
   min-width: 0;
 }

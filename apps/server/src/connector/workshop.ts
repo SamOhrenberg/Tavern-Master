@@ -41,7 +41,7 @@ const systemArg = z
   .max(80)
   .describe('The game system: its name or id, as list_systems shows it');
 
-/** The system a workshop call is about, for an admin on the account-wide address only. */
+/** The system a workshop call is about, for an admin or that system's owner, on the account-wide address only. */
 async function adminSystem(call: ConnectorCall, ref: unknown): Promise<WorkshopSystem> {
   if (call.pinned)
     throw new ToolError(
@@ -51,14 +51,21 @@ async function adminSystem(call: ConnectorCall, ref: unknown): Promise<WorkshopS
     'SELECT role, totp_enabled_at IS NOT NULL AS totp FROM users WHERE id = $1',
     [call.user.userId],
   );
-  if (user?.role !== 'admin') throw new ToolError('Only the server’s admins can use the workshop.');
-  if (config().ADMIN_REQUIRE_TOTP && !user.totp)
+  const admin = user?.role === 'admin';
+  if (admin && config().ADMIN_REQUIRE_TOTP && !user.totp)
     throw new ToolError('Admins must turn on two-factor sign-in in the app before using the workshop.');
+  // An admin reaches every system; a player only the systems an admin made them an owner of.
+  const all = await q<{ id: string; name: string; slug: string }>(
+    admin
+      ? 'SELECT id, name, slug FROM game_systems ORDER BY name'
+      : `SELECT s.id, s.name, s.slug FROM game_systems s
+           JOIN game_system_owners o ON o.system_id = s.id AND o.user_id = $1 ORDER BY s.name`,
+    admin ? [] : [call.user.userId],
+  );
+  if (!admin && !all.length)
+    throw new ToolError('Only the server’s admins, and the owners of a game system, can use the workshop.');
   const want = String(ref ?? '').trim();
   if (!want) throw new ToolError('Say which system: call list_systems to see them.');
-  const all = await q<{ id: string; name: string; slug: string }>(
-    'SELECT id, name, slug FROM game_systems ORDER BY name',
-  );
   const low = want.toLowerCase();
   const hit =
     all.find((s) => s.id === want || s.slug === low) ??
@@ -89,7 +96,7 @@ const delivered = new Map<string, number>();
 /** How long workshop_wait sleeps between looks at the database, should a message arrive another way. */
 const RECHECK_MS = 30_000;
 
-/** The built-in workshop's tools, made to take the system by name and to check the caller is an admin. */
+/** The built-in workshop's tools, made to take the system by name and to check the caller may shape it. */
 function wrap(spec: ToolSpec, readOnly: boolean): ConnectorTool {
   const inner = jsonSchema(spec.schema) as { properties?: Record<string, unknown>; required?: string[] };
   return {
