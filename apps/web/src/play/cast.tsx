@@ -7,7 +7,7 @@ import type {
   DmStatus,
   GameState,
   PendingSheet,
-  SheetTemplate,
+  SheetSchema,
 } from '@tavern/protocol';
 import { useRef, useState } from 'react';
 import { api, errorMessage } from '../api';
@@ -344,7 +344,7 @@ export function CastPanels({
   setPanel,
   campaign,
   state,
-  template,
+  schema,
   onChanged,
   dm = null,
   guideSignal = 0,
@@ -353,7 +353,7 @@ export function CastPanels({
   setPanel: (panel: CastPanel) => void;
   campaign: CampaignDetail;
   state: GameState | undefined;
-  template: SheetTemplate | undefined;
+  schema: SheetSchema | undefined;
   onChanged: () => void;
   /** Where Claude is, live from the table. */
   dm?: DmStatus | null;
@@ -381,7 +381,7 @@ export function CastPanels({
     return (
       <CharacterSheet
         campaignId={campaign.id}
-        template={template}
+        schema={schema}
         character={c}
         draft={panel.draft}
         control={panel.control}

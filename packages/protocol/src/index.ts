@@ -31,7 +31,8 @@ export interface GameSystem {
   slug: string;
   name: string;
   description: string;
-  sheetTemplate: SheetTemplate;
+  /** What a character sheet holds in this system. */
+  sheetSchema: SheetSchema;
   documentCount: number;
   chunkCount: number;
   /** How many of the system's library documents are setting/flavour material. */

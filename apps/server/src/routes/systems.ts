@@ -15,6 +15,7 @@ import { enqueue, hasPending } from '../jobs/queue.js';
 import { editLoreSchema } from '../rules/lore.js';
 import { sniffFile } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
+import { fromTemplate, parseSchema, toSchema } from '../sheet-schema.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from '../storage.js';
 
 const uuid = z.string().uuid();
@@ -99,7 +100,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       slug: r.slug,
       name: r.name,
       description: r.description,
-      sheetTemplate: r.sheet_template,
+      sheetSchema: toSchema(r.sheet_template),
       documentCount: r.docs,
       chunkCount: r.chunks,
       settingDocumentCount: r.setting_docs,
@@ -116,7 +117,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireAdmin(req);
     const body = parse(systemSchema, req.body);
     const base = slugify(body.name);
-    const template = { abilities: body.abilities, fields: body.fields ?? DEFAULT_FIELDS };
+    const template = fromTemplate({ abilities: body.abilities, fields: body.fields ?? DEFAULT_FIELDS });
     for (let n = 0; n < 20; n++) {
       const row = await q1<{ id: string }>(
         `INSERT INTO game_systems (slug, name, description, sheet_template, created_by, homebrew)
@@ -183,6 +184,30 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       },
     });
     return { ok: true };
+  });
+
+  /**
+   * Replace what a system's character sheets hold. Sheets already written keep
+   * their values: a field that is gone shows under "More on the sheet", and a
+   * value is fitted to its field's new kind the next time the sheet is saved.
+   */
+  app.put<{ Params: { id: string } }>('/api/systems/:id/sheet-schema', async (req) => {
+    const auth = requireAdmin(req);
+    const id = parse(uuid, req.params.id);
+    const schema = parseSchema((req.body as { schema?: unknown } | undefined)?.schema);
+    const row = await q1<{ id: string }>(
+      'UPDATE game_systems SET sheet_template = $2 WHERE id = $1 RETURNING id',
+      [id, JSON.stringify(schema)],
+    );
+    if (!row) throw notFound();
+    await audit('system.updated', {
+      actorId: auth.user.id,
+      targetType: 'system',
+      targetId: id,
+      ip: req.ip,
+      meta: { sheetSchema: true },
+    });
+    return { sheetSchema: schema };
   });
 
   app.delete<{ Params: { id: string } }>('/api/systems/:id', async (req) => {

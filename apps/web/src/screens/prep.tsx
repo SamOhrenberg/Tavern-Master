@@ -31,7 +31,7 @@ import type { TableProps } from './play';
  * each party member, the table adds its documents and each player may tell
  * the DM what they hope the story holds. Then the owner begins.
  */
-export function Prep({ id, campaign, state, template }: TableProps) {
+export function Prep({ id, campaign, state, schema }: TableProps) {
   const me = useMe();
   const { setMe } = useAuth();
   const notify = useToast();
@@ -279,7 +279,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
                     key={ch.id}
                     ch={ch}
                     campaign={c}
-                    template={template}
+                    schema={schema}
                     meId={me.id}
                     present={table.present}
                     onOpen={setCast}
@@ -427,7 +427,7 @@ export function Prep({ id, campaign, state, template }: TableProps) {
         setPanel={setCast}
         campaign={c}
         state={game}
-        template={template}
+        schema={schema}
         dm={table.dm}
         guideSignal={guideSignal}
         onChanged={reload}

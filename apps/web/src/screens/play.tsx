@@ -76,8 +76,8 @@ function Table({ id }: { id: string }) {
       </main>
     );
   }
-  const template = systems.data?.systems.find((s) => s.id === c.systemId)?.sheetTemplate;
-  const shared = { id, campaign, state, template };
+  const schema = systems.data?.systems.find((s) => s.id === c.systemId)?.sheetSchema;
+  const shared = { id, campaign, state, schema };
   // Keyed by phase so beginning the campaign swaps the lobby for a fresh play screen.
   return c.phase === 'prep' ? <Prep key="prep" {...shared} /> : <Play key="play" {...shared} />;
 }
@@ -86,10 +86,10 @@ export interface TableProps {
   id: string;
   campaign: Query<{ campaign: CampaignDetail }>;
   state: Query<{ state: GameState }>;
-  template: GameSystem['sheetTemplate'] | undefined;
+  schema: GameSystem['sheetSchema'] | undefined;
 }
 
-function Play({ id, campaign, state, template }: TableProps) {
+function Play({ id, campaign, state, schema }: TableProps) {
   const me = useMe();
   const { setMe } = useAuth();
   const notify = useToast();
@@ -643,7 +643,7 @@ function Play({ id, campaign, state, template }: TableProps) {
         <PartySheet
           campaign={c}
           state={game}
-          template={template}
+          schema={schema}
           meId={me.id}
           present={table.present}
           onOpen={(next) => {
@@ -658,7 +658,7 @@ function Play({ id, campaign, state, template }: TableProps) {
         setPanel={setCast}
         campaign={c}
         state={game}
-        template={template}
+        schema={schema}
         dm={table.dm}
         guideSignal={guideSignal}
         onChanged={() => {

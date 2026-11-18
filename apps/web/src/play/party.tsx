@@ -4,7 +4,7 @@ import type {
   Entity,
   EntityKind,
   GameState,
-  SheetTemplate,
+  SheetSchema,
   UserRef,
 } from '@tavern/protocol';
 import { api } from '../api';
@@ -23,6 +23,7 @@ import {
 } from '../icons';
 import { Avatar, Empty, HpBar, Presence, Segmented, Sheet, timeAgo } from '../ui';
 import { CastActions, playedBy, runsIt, type CastPanel } from './cast';
+import { fieldsOf, formatValue, isTrack, lookup } from './sheet-fields';
 
 type Tab = 'party' | 'world' | 'journal';
 
@@ -43,20 +44,18 @@ function entityMatches(e: Entity, q: string): boolean {
   return [e.name, e.summary, e.article, ...e.aliases].join('\n').toLowerCase().includes(needle);
 }
 
-const show = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
-
 /** A party member: who plays them, how they are doing, and their sheet. */
 export function CharacterCard({
   ch,
   campaign,
-  template,
+  schema,
   meId,
   present,
   onOpen,
 }: {
   ch: Character;
   campaign: CampaignDetail;
-  template: SheetTemplate | undefined;
+  schema: SheetSchema | undefined;
   meId: string;
   present: UserRef[];
   onOpen: (panel: CastPanel) => void;
@@ -65,13 +64,31 @@ export function CharacterCard({
   // A character a person plays: whether any of its players is in the app right now.
   const played = ch.controller === 'player' && ch.playerIds.length > 0;
   const here = ch.playerIds.some((id) => present.some((u) => u.id === id));
-  const abilities = (template?.abilities ?? []).filter((a) => show(ch.sheet[a]) !== '');
-  const fields = (template?.fields ?? []).filter((f) => show(ch.sheet[f.key]) !== '');
-  const brief = fields.filter((f) => show(ch.sheet[f.key]).length <= 24).slice(0, 3);
-  const long = fields.filter((f) => !brief.includes(f));
+  const all = fieldsOf(schema);
+  const value = (key: string) => lookup(ch.sheet, key);
+  const filled = all.filter((f) => formatValue(value(f.key)) !== '');
+  // A section with a few card numbers (the ability scores) makes a grid; a lone one (Level) joins the line.
+  const grid = (schema?.sections ?? []).flatMap((sec) => {
+    const nums = sec.fields.filter((f) => f.showOnCard && f.type === 'number' && filled.includes(f));
+    return nums.length >= 3 ? nums : [];
+  });
+  const tracks = filled.filter((f) => f.showOnCard && f.type === 'track' && isTrack(value(f.key)));
+  const brief = filled
+    .filter(
+      (f) =>
+        f.showOnCard &&
+        !grid.includes(f) &&
+        f.type !== 'track' &&
+        f.type !== 'list' &&
+        formatValue(value(f.key)).length <= 24,
+    )
+    .slice(0, 3);
+  const long = filled.filter((f) => !grid.includes(f) && !brief.includes(f) && !tracks.includes(f));
   // Whatever else is on the sheet: fields the DM, the guide or an upload added.
-  const known = new Set([...(template?.abilities ?? []), ...(template?.fields ?? []).map((f) => f.key)]);
-  const extra = Object.keys(ch.sheet).filter((k) => !known.has(k) && show(ch.sheet[k]) !== '');
+  const known = new Set(all.map((f) => f.key.toLowerCase()));
+  const extra = Object.keys(ch.sheet).filter(
+    (k) => !known.has(k.toLowerCase()) && formatValue(ch.sheet[k]) !== '',
+  );
 
   return (
     <div className={`card char${mine ? ' mine' : ''}`}>
@@ -89,9 +106,10 @@ export function CharacterCard({
             {brief.length > 0 &&
               ` · ${brief
                 // A bare number means nothing without its label ("Level 3", not "3").
-                .map(
-                  (f) => (/^-?\d+$/.test(show(ch.sheet[f.key])) ? `${f.label} ` : '') + show(ch.sheet[f.key]),
-                )
+                .map((f) => {
+                  const v = formatValue(value(f.key));
+                  return (/^[+-]?\d+$/.test(v) ? `${f.label} ` : '') + v;
+                })
                 .join(' · ')}`}
           </p>
         </div>
@@ -115,7 +133,16 @@ export function CharacterCard({
         </div>
       )}
 
-      <HpBar hp={ch.hp} max={ch.maxHp} temp={ch.tempHp} />
+      <HpBar hp={ch.hp} max={ch.maxHp} temp={ch.tempHp} label={schema?.hp.label} />
+      {tracks.map((f) => {
+        const t = value(f.key) as { current: number; max: number };
+        return (
+          <div key={f.key} className="card-track">
+            <span className="small muted">{f.label}</span>
+            <HpBar hp={t.current} max={t.max} label={f.label} />
+          </div>
+        );
+      })}
 
       {ch.conditions.length > 0 && (
         <div className="row wrap conditions">
@@ -127,12 +154,12 @@ export function CharacterCard({
         </div>
       )}
 
-      {abilities.length > 0 && (
+      {grid.length > 0 && (
         <div className="abilities">
-          {abilities.map((a) => (
-            <div key={a} className="ability">
-              <span>{a.slice(0, 3)}</span>
-              <b>{show(ch.sheet[a])}</b>
+          {grid.map((f) => (
+            <div key={f.key} className="ability" title={f.label}>
+              <span>{f.label.slice(0, 3)}</span>
+              <b>{formatValue(value(f.key))}</b>
             </div>
           ))}
         </div>
@@ -151,16 +178,27 @@ export function CharacterCard({
               <p>{ch.persona}</p>
             </div>
           )}
-          {long.map((f) => (
-            <div key={f.key} className="sheet-field">
-              <span className="label">{f.label}</span>
-              <p>{show(ch.sheet[f.key])}</p>
-            </div>
-          ))}
+          {long.map((f) => {
+            const v = value(f.key);
+            return (
+              <div key={f.key} className="sheet-field">
+                <span className="label">{f.label}</span>
+                {Array.isArray(v) ? (
+                  <ul className="sheet-rows">
+                    {v.map((row, i) => (
+                      <li key={i}>{formatValue([row])}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>{formatValue(v)}</p>
+                )}
+              </div>
+            );
+          })}
           {extra.map((k) => (
             <div key={k} className="sheet-field">
               <span className="label">{k}</span>
-              <p>{show(ch.sheet[k])}</p>
+              <p>{formatValue(ch.sheet[k])}</p>
             </div>
           ))}
           {ch.inventory.length > 0 && (
@@ -225,7 +263,7 @@ function EntityRow({ e }: { e: Entity }) {
 export function PartySheet({
   campaign,
   state,
-  template,
+  schema,
   meId,
   present,
   onOpen,
@@ -233,7 +271,7 @@ export function PartySheet({
 }: {
   campaign: CampaignDetail;
   state: GameState;
-  template: SheetTemplate | undefined;
+  schema: SheetSchema | undefined;
   meId: string;
   present: UserRef[];
   /** Open one of the party sheets (add, edit, guide, who plays). */
@@ -278,7 +316,7 @@ export function PartySheet({
               key={ch.id}
               ch={ch}
               campaign={campaign}
-              template={template}
+              schema={schema}
               meId={meId}
               present={present}
               onOpen={onOpen}

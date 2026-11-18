@@ -5,15 +5,22 @@ import type {
   CharacterKind,
   InventoryItem,
   SheetSuggestion,
-  SheetTemplate,
+  SheetSchema,
 } from '@tavern/protocol';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import { useAction, useToast } from '../app';
 import { IconCheck, IconImage, IconPlus, IconSparkle, IconTrash } from '../icons';
 import { Avatar, ConfirmButton, Field, Sheet } from '../ui';
-
-const LONG = /feature|spell|proficien|skill|trait|background|equipment|note|talent|power/i;
+import {
+  fieldsOf,
+  formatValue,
+  initialValues,
+  SheetSections,
+  sheetFromValues,
+  type FieldInput,
+  type FormValues,
+} from './sheet-fields';
 
 /** Who will run a character that does not exist yet. */
 export interface Control {
@@ -28,7 +35,6 @@ const keyOf = (label: string) =>
     .replace(/[^\w ]+/g, ' ')
     .trim()
     .slice(0, 40);
-const text = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 const int = (s: string, fallback: number) => {
   const n = Number.parseInt(s, 10);
   return Number.isFinite(n) ? n : fallback;
@@ -87,7 +93,7 @@ interface Extra {
 
 /**
  * Create or edit a character sheet by hand. The form is drawn from the game
- * system's sheet template, and anything else on the sheet (fields the DM, the
+ * system's sheet schema, and anything else on the sheet (fields the DM, the
  * guide or an uploaded sheet added) is listed underneath so nothing is hidden.
  *
  * `draft` pre-fills a new sheet from an upload the AI has read; nothing is
@@ -95,7 +101,7 @@ interface Extra {
  */
 export function CharacterSheet({
   campaignId,
-  template,
+  schema,
   character,
   draft,
   control,
@@ -105,7 +111,7 @@ export function CharacterSheet({
   onSaved,
 }: {
   campaignId: string;
-  template: SheetTemplate | undefined;
+  schema: SheetSchema | undefined;
   character?: Character;
   draft?: CharacterDraft;
   /** For a new character. Left out, it is the player's own. */
@@ -116,32 +122,20 @@ export function CharacterSheet({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const abilities = template?.abilities ?? [];
-  const fields = template?.fields ?? [];
+  const fields = fieldsOf(schema);
+  const hpLabel = schema?.hp.label ?? 'Hit points';
   const source: Record<string, unknown> = character?.sheet ?? draft?.sheet ?? {};
-  // An uploaded sheet may spell a field differently from the template ("strength" for "Strength").
-  const lookup = (key: string) => {
-    const hit = Object.keys(source).find((k) => k.toLowerCase() === key.toLowerCase());
-    return hit === undefined ? '' : text(source[hit]);
-  };
-  const known = new Set([
-    ...abilities.map((a) => keyOf(a).toLowerCase()),
-    ...fields.map((f) => f.key.toLowerCase()),
-  ]);
+  // Names the schema does not know (fields the DM, the guide or an upload added) are listed underneath.
+  const known = new Set(fields.map((f) => f.key.toLowerCase()));
 
   const [name, setName] = useState(character?.name ?? draft?.name ?? '');
   const [maxHp, setMaxHp] = useState(String(character?.maxHp ?? draft?.maxHp ?? 10));
   const [hp, setHp] = useState(String(character?.hp ?? ''));
-  const [sheet, setSheet] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    for (const a of abilities) init[keyOf(a)] = lookup(keyOf(a));
-    for (const f of fields) init[f.key] = lookup(f.key);
-    return init;
-  });
+  const [values, setValues] = useState<FormValues>(() => initialValues(schema, source));
   const [extras, setExtras] = useState<Extra[]>(() =>
     Object.entries(source)
-      .filter(([k, v]) => !known.has(k.toLowerCase()) && text(v) !== '')
-      .map(([key, v], id) => ({ id, key, value: text(v) })),
+      .filter(([k, v]) => !known.has(k.toLowerCase()) && formatValue(v) !== '')
+      .map(([key, v], id) => ({ id, key, value: formatValue(v) })),
   );
   const [items, setItems] = useState<Row[]>(() =>
     (character?.inventory ?? draft?.inventory ?? []).map((item, id) => ({ ...item, id })),
@@ -191,7 +185,7 @@ export function CharacterSheet({
   const companion = (character?.kind ?? control?.kind) === 'npc';
   const aiRun = (character?.controller ?? control?.controller ?? 'player') !== 'player';
 
-  const set = (key: string, value: string) => setSheet((s) => ({ ...s, [key]: value }));
+  const set = (key: string, value: FieldInput) => setValues((s) => ({ ...s, [key]: value }));
   const setItem = (id: number, patch: Partial<Row>) =>
     setItems((list) => list.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   const setExtra = (id: number, patch: Partial<Extra>) =>
@@ -205,10 +199,14 @@ export function CharacterSheet({
     if (s.field === 'maxHp') setMaxHp(value);
     else {
       const lower = s.field.toLowerCase();
-      const stateKey = [...abilities.map(keyOf), ...fields.map((f) => f.key)].find(
-        (k) => k.toLowerCase() === lower,
-      );
-      if (stateKey) set(stateKey, value);
+      const field = fields.find((f) => f.key.toLowerCase() === lower);
+      if (field?.type === 'track') {
+        const [current, max = current] = value.split('/').map((x) => x.trim());
+        set(field.key, { current: current ?? '', max: max ?? '' });
+      } else if (field?.type === 'checkbox') set(field.key, /^(yes|true)$/i.test(value));
+      // A list is not something one suggested value can replace; the suggestion stays to read.
+      else if (field?.type === 'list') return;
+      else if (field) set(field.key, value);
       else
         setExtras((list) => {
           const idx = list.findIndex((x) => keyOf(x.key).toLowerCase() === lower);
@@ -221,15 +219,12 @@ export function CharacterSheet({
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const out: Record<string, string | number> = {};
-    const put = (key: string, raw: string, numeric: boolean) => {
-      const value = raw.trim();
-      if (!key || value === '') return;
-      out[key] = numeric && /^-?\d+$/.test(value) ? Number(value) : value;
-    };
-    for (const a of abilities) put(keyOf(a), sheet[keyOf(a)] ?? '', true);
-    for (const f of fields) put(f.key, sheet[f.key] ?? '', false);
-    for (const x of extras) put(keyOf(x.key), x.value, true);
+    const out = sheetFromValues(schema, values, source);
+    for (const x of extras) {
+      const key = keyOf(x.key);
+      const value = x.value.trim();
+      if (key && value) out[key] = /^-?\d+$/.test(value) ? Number(value) : value;
+    }
     const max = Math.max(1, int(maxHp, 10));
     const body = {
       name: name.trim(),
@@ -301,7 +296,10 @@ export function CharacterSheet({
                 <div className="grow">
                   <div className="sheet-check-what">
                     <span className="sheet-check-field">
-                      {s.field === 'maxHp' ? 'Max hit points' : s.field}
+                      {s.field === 'maxHp'
+                        ? `Max ${hpLabel.toLowerCase()}`
+                        : (fields.find((f) => f.key.toLowerCase() === s.field.toLowerCase())?.label ??
+                          s.field)}
                     </span>
                     <span className="sheet-check-change">
                       <s>{s.current}</s> → <b>{String(s.suggested)}</b>
@@ -373,7 +371,7 @@ export function CharacterSheet({
         </Field>
 
         <div className="row top">
-          <Field label="Max hit points">
+          <Field label={`Max ${hpLabel.toLowerCase()}`}>
             <input
               className="input"
               inputMode="numeric"
@@ -396,47 +394,7 @@ export function CharacterSheet({
           )}
         </div>
 
-        {abilities.length > 0 && (
-          <div>
-            <span className="label">Abilities</span>
-            <div className="ability-inputs">
-              {abilities.map((a) => (
-                <label key={a} className="ability-input">
-                  <span>{a}</span>
-                  <input
-                    className="input"
-                    inputMode="numeric"
-                    value={sheet[keyOf(a)] ?? ''}
-                    onChange={(e) => set(keyOf(a), e.target.value)}
-                    placeholder="10"
-                    maxLength={6}
-                  />
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {fields.map((f) => (
-          <Field key={f.key} label={f.label}>
-            {LONG.test(f.key) || LONG.test(f.label) ? (
-              <textarea
-                className="textarea"
-                rows={3}
-                value={sheet[f.key] ?? ''}
-                onChange={(e) => set(f.key, e.target.value)}
-                maxLength={1500}
-              />
-            ) : (
-              <input
-                className="input"
-                value={sheet[f.key] ?? ''}
-                onChange={(e) => set(f.key, e.target.value)}
-                maxLength={200}
-              />
-            )}
-          </Field>
-        ))}
+        <SheetSections schema={schema} values={values} onChange={set} newSheet={!character} />
 
         <div>
           <span className="label">More on the sheet</span>

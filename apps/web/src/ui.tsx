@@ -276,12 +276,27 @@ export function ConfirmButton({
 }
 
 /** Hit points as a bar that shifts from green to gold to red as they drop. */
-export function HpBar({ hp, max, temp = 0 }: { hp: number; max: number; temp?: number }) {
+/** A bar for hit points, or any track with a current and a maximum value (`label` names it). */
+export function HpBar({
+  hp,
+  max,
+  temp = 0,
+  label,
+}: {
+  hp: number;
+  max: number;
+  temp?: number;
+  label?: string;
+}) {
   const ratio = max > 0 ? Math.max(0, Math.min(1, hp / max)) : 0;
   const tone = ratio > 0.5 ? '' : ratio > 0.25 ? ' mid' : ' low';
   return (
     <div className="hp">
-      <div className={`bar${tone}`} role="img" aria-label={`${hp} of ${max} hit points`}>
+      <div
+        className={`bar${tone}`}
+        role="img"
+        aria-label={`${hp} of ${max} ${(label ?? 'hit points').toLowerCase()}`}
+      >
         <i style={{ width: `${ratio * 100}%` }} />
       </div>
       <span className="hp-num">
