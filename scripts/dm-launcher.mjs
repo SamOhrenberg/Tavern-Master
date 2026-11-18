@@ -339,9 +339,13 @@ let echo = false;
 
 /** Claude Code's answer when it has no sign-in, or one that no longer works. */
 const SIGNED_OUT = /not logged in|\/login|invalid api key|oauth token|authenticat/i;
-/** A sign-in out of usage until its limit resets ("Claude AI usage limit reached|1731888000"). */
+/**
+ * A sign-in out of usage until its limit resets: "Claude AI usage limit
+ * reached|1731888000", "You've hit your limit · resets 3pm", "You've hit your
+ * org's monthly spend limit … your weekly limit resets Nov 20".
+ */
 const OUT_OF_USAGE =
-  /usage limit|limit reached|hit your limit|limit will reset|out of (extra )?usage|credit balance/i;
+  /usage limit|limit reached|hit your [\w’' ]*limit|limit (will )?resets?|spend(ing)? limit|out of (extra )?usage|credit balance/i;
 
 const short = (v, n = 160) => {
   const s = (typeof v === 'string' ? v : JSON.stringify(v ?? '')).replace(/\s+/g, ' ').trim();
@@ -386,6 +390,9 @@ function readEvent(c, raw) {
       const error = String(e.result ?? e.subtype ?? 'error');
       return { error, signedOut: SIGNED_OUT.test(error) };
     }
+    // Claude Code can end a run out of usage as a "success" and then exit 1:
+    // keep the text, so runEnded can tell why when the exit code says it failed.
+    return { result: String(e.result ?? '') };
   }
 }
 
@@ -411,6 +418,7 @@ function startRun(s, c, t) {
         stopReason: null,
         mcpProblem: null,
         claudeError: null,
+        lastResult: null,
       });
       const on = signIns.length > 1 ? `, on the ${signIn.name}` : '';
       log(
@@ -422,6 +430,7 @@ function startRun(s, c, t) {
       createInterface({ input: proc.stdout }).on('line', (line) => {
         const r = readEvent(c, line);
         if (r?.error) t.claudeError = r.error;
+        if (r?.result !== undefined) t.lastResult = r.result;
         if (r?.signedOut) {
           t.mcpProblem = 'signed-out';
           const fix =
@@ -470,6 +479,8 @@ function runEnded(c, t, code) {
       ? `Claude left the ${c.kind === 'workshop' ? 'workshop' : 'table'}`
       : `Claude exited with code ${code}`;
   t.proc = null;
+  // A run that exits non-zero after a "success" result failed for the reason that result gives.
+  if (!t.claudeError && code !== 0 && t.lastResult) t.claudeError = t.lastResult;
   // The sign-in itself failing (out of usage, signed out): sit it out and use
   // another. A passing API error or a crash is not the sign-in's fault, and
   // backs off below instead of spending the backup's usage.
