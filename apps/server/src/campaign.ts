@@ -24,7 +24,9 @@ export interface NewCampaign {
 export async function insertCampaign(c: NewCampaign): Promise<string> {
   return tx(async (client) => {
     const row = await q1<{ id: string }>(
-      `INSERT INTO campaigns (system_id, owner_id, name, premise, settings) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      // A new campaign starts on the latest version of its system's sheet.
+      `INSERT INTO campaigns (system_id, owner_id, name, premise, settings, sheet_version)
+       VALUES ($1, $2, $3, $4, $5, (SELECT sheet_version FROM game_systems WHERE id = $1)) RETURNING id`,
       [
         c.systemId,
         c.ownerId,

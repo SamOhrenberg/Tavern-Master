@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { q, q1, tx, type Queryable } from './db/pool.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { carrySheets } from './sheet-versions.js';
 
 /**
  * Rewinding play. The game state is saved before every turn is resolved and
@@ -37,6 +38,7 @@ export async function snapshotState(
        jsonb_build_object(
          'version', ${SNAPSHOT_VERSION},
          'scene', (SELECT scene FROM campaigns WHERE id = $1),
+         'sheetVersion', (SELECT sheet_version FROM campaigns WHERE id = $1),
          'characters', (SELECT coalesce(jsonb_agg(jsonb_build_object(
              'id', id, 'hp', hp, 'max_hp', max_hp, 'temp_hp', temp_hp, 'conditions', conditions,
              'inventory', inventory, 'sheet', sheet, 'whereabouts', whereabouts)), '[]')
@@ -61,6 +63,22 @@ async function restore(c: pg.PoolClient, campaignId: string, state: Record<strin
     );
   }
   await q('UPDATE campaigns SET scene = $2 WHERE id = $1', [campaignId, state.scene ?? ''], c);
+  // Sheets saved before the host updated the campaign's sheet are carried to the version it is on now.
+  // Snapshots from before there were versions were all saved on the first.
+  const now = await q1<{ system_id: string; sheet_version: number }>(
+    'SELECT system_id, sheet_version FROM campaigns WHERE id = $1',
+    [campaignId],
+    c,
+  );
+  const characters = now
+    ? await carrySheets(
+        now.system_id,
+        (state.sheetVersion as number | undefined) ?? 1,
+        now.sheet_version,
+        (state.characters ?? []) as { sheet: Record<string, unknown> }[],
+        c,
+      )
+    : state.characters;
   // Characters made since are kept as they are: they belong to the players.
   await q(
     `UPDATE characters c SET hp = (s->>'hp')::int, max_hp = (s->>'max_hp')::int, temp_hp = (s->>'temp_hp')::int,
@@ -68,7 +86,7 @@ async function restore(c: pg.PoolClient, campaignId: string, state: Record<strin
             whereabouts = coalesce(s->>'whereabouts', ''), updated_at = now()
        FROM jsonb_array_elements($2::jsonb) s
       WHERE c.campaign_id = $1 AND c.id = (s->>'id')::uuid`,
-    [campaignId, JSON.stringify(state.characters ?? [])],
+    [campaignId, JSON.stringify(characters ?? [])],
     c,
   );
   for (const t of ROW_TABLES) {

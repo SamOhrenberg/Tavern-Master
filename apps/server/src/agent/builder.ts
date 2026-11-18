@@ -7,7 +7,7 @@ import type { Message } from '../llm/types.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
 import { applyDraft, type Control, type DraftPatch, type DraftResult, type Viewer } from '../party.js';
 import { runAgentTurn } from './loop.js';
-import { schemaGuide, toSchema } from '../sheet-schema.js';
+import { CAMPAIGN_SHEET_SQL, schemaGuide, toSchema } from '../sheet-schema.js';
 import { draftSchema } from './sheets.js';
 import { pgStore, type TurnContext } from './store.js';
 import { tool, ToolError, TOOLS, type ToolSpec } from './tools.js';
@@ -57,7 +57,7 @@ const INJECTION_NOTE =
 /** The campaign as the guide sees it: public premise, rules system and sheet template. */
 export async function loadBuilderCampaign(campaignId: string): Promise<BuilderCampaign | undefined> {
   return q1<BuilderCampaign>(
-    `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id, s.name AS system_name, s.sheet_template,
+    `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id, s.name AS system_name, ${CAMPAIGN_SHEET_SQL} AS sheet_template,
             (SELECT count(*)::int FROM documents d
               WHERE d.campaign_id = c.id AND d.status = 'ready' AND d.audience = 'table') AS docs
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,

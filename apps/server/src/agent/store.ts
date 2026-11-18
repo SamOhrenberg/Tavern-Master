@@ -130,7 +130,7 @@ export interface GameStore {
   saveCharacter(c: CharRow): Promise<void>;
   /** Writes the sheet fields and maximum hit points: edit_sheet when the GM keeps the sheets, and adjust_track. */
   saveSheet(c: CharRow): Promise<void>;
-  /** What a character sheet holds in this campaign. */
+  /** What a character sheet holds in this campaign: the version of its system's sheet it is on. */
   sheetSchema(campaignId: string): Promise<SheetSchema>;
   /** Set where party members are. An empty place puts them back with the party. */
   setWhereabouts(campaignId: string, places: { id: string; place: string }[]): Promise<void>;

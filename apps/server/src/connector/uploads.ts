@@ -13,7 +13,7 @@ import { q, q1 } from '../db/pool.js';
 import { log } from '../log.js';
 import { CATALOGUE_INSTRUCTIONS, CATALOGUE_KINDS, catalogueInput } from '../rules/catalogue.js';
 import { searchRules } from '../rules/retrieve.js';
-import { EMPTY_SCHEMA, toSchema } from '../sheet-schema.js';
+import { CAMPAIGN_SHEET_SQL, EMPTY_SCHEMA, toSchema } from '../sheet-schema.js';
 import { uploadPath } from '../storage.js';
 import { heldRequest } from './guide.js';
 import { registerWork } from './handlers.js';
@@ -59,7 +59,7 @@ export function toPendingSheet(
 
 async function template(campaignId: string) {
   const row = await q1<{ system_id: string; system_name: string; sheet_template: unknown }>(
-    `SELECT s.id AS system_id, s.name AS system_name, s.sheet_template
+    `SELECT s.id AS system_id, s.name AS system_name, ${CAMPAIGN_SHEET_SQL} AS sheet_template
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id
       WHERE c.id = $1`,
     [campaignId],

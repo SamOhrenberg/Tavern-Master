@@ -88,6 +88,29 @@ export interface SheetDraftView {
   draftedAt: string | null;
 }
 
+/** A field replaced by another in a new version of a sheet: its values move to the new name. */
+export interface SheetRename {
+  from: string;
+  to: string;
+}
+
+/**
+ * What updating a campaign to a newer version of its system's sheet would
+ * do: the changes to the sheet, and for each character what moves.
+ */
+export interface SheetUpdate {
+  from: number;
+  to: number;
+  changes: SheetProposal[];
+  characters: {
+    name: string;
+    /** Values carried to a field's new name. */
+    moved: SheetRename[];
+    /** Values that do not fit their field's new kind, kept beside it under another name. */
+    kept: { field: string; as: string }[];
+  }[];
+}
+
 /** Another AI the GM can ask for help with ask_ai, as admins see it. The key is never sent. */
 export interface OutsideAi {
   id: string;

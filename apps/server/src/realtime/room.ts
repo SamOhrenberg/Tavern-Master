@@ -39,7 +39,7 @@ import { log } from '../log.js';
 import { conflict } from '../errors.js';
 import { notifyMessage, notifyWaiting, seenCampaign, type Holdout } from '../notify/notify.js';
 import { snapshotState } from '../rewind.js';
-import { gmSheetGuide } from '../sheet-schema.js';
+import { CAMPAIGN_SHEET_SQL, gmSheetGuide } from '../sheet-schema.js';
 import { guideText } from '../gm-guide.js';
 import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll } from './rolls.js';
@@ -153,7 +153,7 @@ function playerLines(input: TurnInput): string[] {
 export async function loadCampaign(campaignId: string): Promise<CampaignRow> {
   const row = await q1<CampaignRow>(
     `SELECT c.name, c.premise, c.settings, c.owner_id, c.system_id,
-            s.name AS system_name, s.lore, s.lore_status, s.homebrew, s.gm_instructions, s.sheet_template, s.gm_guide,
+            s.name AS system_name, s.lore, s.lore_status, s.homebrew, s.gm_instructions, ${CAMPAIGN_SHEET_SQL} AS sheet_template, s.gm_guide,
             (SELECT coalesce(json_agg(json_build_object('name', a.name, 'note', a.note) ORDER BY lower(a.name)), '[]')
                FROM outside_ais a) AS outside_ais
        FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,

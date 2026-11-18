@@ -6,6 +6,7 @@ import { q1, tx, closeDb, waitForDb } from './db/pool.js';
 import { migrate } from './db/migrate.js';
 import { enqueue } from './jobs/queue.js';
 import { log } from './log.js';
+import { publishSheet } from './sheet-versions.js';
 import { SRD_SHEET, SRD_TEMPLATE_V1 } from './srd-sheet.js';
 import { ensureDataDirs, newStorageName, uploadPath, uploadsDir } from './storage.js';
 
@@ -65,11 +66,14 @@ export async function seedSrdSystem(): Promise<boolean> {
  */
 export async function upgradeSrdSheet(): Promise<boolean> {
   const row = await q1<{ id: string }>(
-    'UPDATE game_systems SET sheet_template = $2 WHERE slug = $1 AND sheet_template = $3::jsonb RETURNING id',
-    [SRD_SLUG, JSON.stringify(SRD_SHEET), JSON.stringify(SRD_TEMPLATE_V1)],
+    'SELECT id FROM game_systems WHERE slug = $1 AND sheet_template = $2::jsonb',
+    [SRD_SLUG, JSON.stringify(SRD_TEMPLATE_V1)],
   );
-  if (row) log().info('gave the starter system its full character sheet');
-  return !!row;
+  if (!row) return false;
+  // A new version like any other: campaigns already playing move to it when their host chooses.
+  await publishSheet(row.id, SRD_SHEET);
+  log().info('gave the starter system its full character sheet');
+  return true;
 }
 
 /** First boot only: seed when the library is completely empty. Every boot: bring the starter sheet up to date. */

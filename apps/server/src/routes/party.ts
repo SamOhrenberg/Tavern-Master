@@ -42,7 +42,7 @@ import {
 import { getRoom } from '../realtime/room.js';
 import { parseDocument, sniff, sniffImage } from '../rules/parse.js';
 import { searchRules } from '../rules/retrieve.js';
-import { toSchema } from '../sheet-schema.js';
+import { CAMPAIGN_SHEET_SQL, toSchema } from '../sheet-schema.js';
 import { uploadPath } from '../storage.js';
 
 const uuid = z.string().uuid();
@@ -280,7 +280,7 @@ export async function partyRoutes(app: FastifyInstance): Promise<void> {
         system_name: string;
         sheet_template: unknown;
       }>(
-        `SELECT c.owner_id, c.system_id, s.name AS system_name, s.sheet_template
+        `SELECT c.owner_id, c.system_id, s.name AS system_name, ${CAMPAIGN_SHEET_SQL} AS sheet_template
            FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
         [campaignId],
       );

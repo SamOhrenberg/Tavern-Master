@@ -188,16 +188,19 @@ export function parseSchema(raw: unknown): SheetSchema {
   return parsed.data as SheetSchema;
 }
 
-export async function systemSchema(systemId: string): Promise<SheetSchema> {
-  const row = await q1<{ sheet_template: unknown }>('SELECT sheet_template FROM game_systems WHERE id = $1', [
-    systemId,
-  ]);
-  return toSchema(row?.sheet_template);
-}
+/**
+ * SQL for the sheet a campaign uses: the version of its system's sheet it is
+ * on. A system that has never published a version has only the sheet it was
+ * made with. Needs `campaigns c` and `game_systems s` in the query.
+ */
+export const CAMPAIGN_SHEET_SQL = `coalesce(
+  (SELECT v.schema FROM sheet_versions v WHERE v.system_id = c.system_id AND v.version = c.sheet_version),
+  s.sheet_template)`;
 
 export async function campaignSchema(campaignId: string): Promise<SheetSchema> {
   const row = await q1<{ sheet_template: unknown }>(
-    `SELECT s.sheet_template FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
+    `SELECT ${CAMPAIGN_SHEET_SQL} AS sheet_template
+       FROM campaigns c JOIN game_systems s ON s.id = c.system_id WHERE c.id = $1`,
     [campaignId],
   );
   return toSchema(row?.sheet_template);
@@ -395,7 +398,7 @@ const KIND_OF: Record<SheetFieldType, string> = {
 };
 
 /** Nothing was written: an empty string, an empty list. Such values are left off the sheet. */
-const blank = (v: unknown) =>
+export const blank = (v: unknown) =>
   v === undefined || v === null || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length);
 
 /**

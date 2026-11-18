@@ -1,4 +1,4 @@
-import type { SheetField, SheetProposal, SheetSchema, SheetSection } from '@tavern/protocol';
+import type { SheetField, SheetProposal, SheetRename, SheetSchema, SheetSection } from '@tavern/protocol';
 import { parseSchema } from './sheet-schema.js';
 
 /**
@@ -195,4 +195,29 @@ export function applyProposals(current: SheetSchema, draft: SheetSchema, accept:
     createSteps:
       ok.has('steps') && chosen.some((p) => p.kind === 'steps') ? draft.createSteps : current.createSteps,
   });
+}
+
+const plain = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/**
+ * Fields the draft seems to replace with a new one: a field it removes and a
+ * field it adds under the same label (or the same name but for spelling).
+ * Usually a drafter that named a field afresh, whose values should follow.
+ */
+export function suggestRenames(proposals: SheetProposal[]): SheetRename[] {
+  const removed = proposals.filter((p) => p.kind === 'remove');
+  const added = proposals.filter((p) => p.kind === 'add');
+  const out: SheetRename[] = [];
+  const used = new Set<string>();
+  for (const r of removed) {
+    const match = added.find(
+      (a) =>
+        !used.has(a.field.key) &&
+        (plain(a.field.label) === plain(r.field.label) || plain(a.field.key) === plain(r.field.key)),
+    );
+    if (!match) continue;
+    used.add(match.field.key);
+    out.push({ from: r.field.key, to: match.field.key });
+  }
+  return out;
 }
