@@ -27,6 +27,7 @@ import { partyRoutes } from './routes/party.js';
 import { rulesRoutes } from './routes/rules.js';
 import { summonRoutes } from './routes/summon.js';
 import { systemRoutes } from './routes/systems.js';
+import { workshopRoutes } from './routes/workshop.js';
 import { securityHeaders } from './security/headers.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(adminRoutes);
   await app.register(friendRoutes);
   await app.register(systemRoutes);
+  await app.register(workshopRoutes);
   await app.register(campaignRoutes);
   await app.register(partyRoutes);
   await app.register(rulesRoutes);

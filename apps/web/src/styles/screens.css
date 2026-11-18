@@ -1294,3 +1294,16 @@ button.code-box {
   height: 18px;
   color: var(--gold);
 }
+
+/* ---------- the workshop ---------- */
+.guide-topic .guide-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+.workshop-reset {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}

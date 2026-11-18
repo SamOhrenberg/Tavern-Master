@@ -656,6 +656,44 @@ export type RulesEvent =
   | { type: 'queued' }
   | { type: 'error'; message: string };
 
+// ---------- the workshop (shaping a game system before play) ----------
+
+/** The topics of a system's GM guide, in the order the GM reads them. */
+export type GuideTopicId = 'resolution' | 'rolls' | 'harm' | 'advancement' | 'scenes' | 'other';
+
+/**
+ * How to run a game system, written in the workshop: what the GM of every
+ * table on the system reads before it plays, beside the rulebooks.
+ */
+export interface GmGuide {
+  version: 1;
+  topics: { id: GuideTopicId; text: string }[];
+  /** Answers to questions the rulebooks leave open. Every table on the system follows them. */
+  rulings: { id: string; text: string; createdAt: string }[];
+}
+
+export interface WorkshopMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  /** Who said it; null for the AI. */
+  author: UserRef | null;
+  createdAt: string;
+}
+
+export interface Workshop {
+  messages: WorkshopMessage[];
+  guide: GmGuide;
+  /** The AI is answering someone's message right now. */
+  answering: boolean;
+}
+
+export type WorkshopEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool'; tool: string; summary: string }
+  | { type: 'done'; message: WorkshopMessage }
+  | { type: 'error'; message: string };
+
 export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
 
 export interface Entity {

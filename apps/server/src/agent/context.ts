@@ -40,6 +40,8 @@ export interface CampaignInfo {
   gmInstructions?: string;
   /** What this system's character sheets hold, with the notes written for the GM. Empty for a free-form sheet. */
   sheetGuide?: string;
+  /** How to run this system and the rulings every table follows, from the workshop. Empty when none is written. */
+  gmGuide?: string;
   /** Other AIs the GM can ask with ask_ai, and what each is good for. */
   outsideAis?: { name: string; note: string }[];
   /** The outside AI that rewrites the GM's narration for style before players see it, if any. */
@@ -59,6 +61,11 @@ ${list}`);
   if (c.polishWith?.trim()) {
     parts.push(`## Your narration is polished
 Before the players see it, each piece of narration you write is rewritten for style by another writer (${c.polishWith.trim()}), who keeps every event and fact you wrote. Write the substance well and leave the flourishes to them. When a player character speaks in your narration, quote the player's words exactly as they wrote them, in quotation marks: those quotes, codex links and rule citations reach the table untouched.`);
+  }
+  if (c.gmGuide?.trim()) {
+    parts.push(`## Running ${c.systemName}
+Your server's admins worked out how to run this system, with its rulebooks in hand. Follow it: it settles questions the rulebooks leave open, and its rulings apply at every table on this system. The house rulings of this table, if it has any, come on top of it.
+${c.gmGuide.trim()}`);
   }
   if (c.sheetGuide?.trim()) {
     parts.push(`## Character sheets in ${c.systemName}

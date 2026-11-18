@@ -47,19 +47,19 @@ const itemField = z.object({
   ...fieldProps,
   type: z.enum(['number', 'text', 'longtext', 'select', 'checkbox', 'derived']),
 });
+/** One field as a model writes it. Loose on purpose: tidySchema and parseSchema settle the rest. */
+export const draftField = z.object({
+  ...fieldProps,
+  type: z.enum(FIELD_TYPES),
+  itemFields: z.array(itemField).optional().describe('For a list: the fields of each row'),
+});
 const saveArgs = z.object({
   hp: z.object({ label: z.string().describe('What this system calls hit points') }),
   sections: z.array(
     z.object({
       id: z.string().describe('Short lower-case id, e.g. "abilities"'),
       label: z.string(),
-      fields: z.array(
-        z.object({
-          ...fieldProps,
-          type: z.enum(FIELD_TYPES),
-          itemFields: z.array(itemField).optional().describe('For a list: the fields of each row'),
-        }),
-      ),
+      fields: z.array(draftField),
     }),
   ),
   createSteps: z.array(z.string()).describe('The steps of character creation, in order, one short line each'),

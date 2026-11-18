@@ -15,6 +15,7 @@ import {
 } from '../icons';
 import { ConfirmButton, Empty, Field, PageHead, Segmented, Sheet, Skeletons, ruleSource } from '../ui';
 import { SheetSchemaPanel } from './sheet-schema';
+import { WorkshopSheet } from './workshop';
 
 const DEFAULT_ABILITIES = 'Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma';
 
@@ -597,6 +598,7 @@ export function SystemScreen() {
 
   const [uploadKind, setUploadKind] = useState<'rules' | 'setting'>('rules');
   const [editingLore, setEditingLore] = useState(false);
+  const [workshop, setWorkshop] = useState(false);
   const system = systems.data?.systems.find((s) => s.id === id);
   const list = docs.data?.documents ?? [];
   const loreBusy = LORE[system?.loreStatus ?? 'none'].live;
@@ -746,6 +748,29 @@ export function SystemScreen() {
             rulebooks={rulebooks.filter((d) => d.status === 'ready').length}
             onSaved={() => void reloadSystems()}
           />
+        </Group>
+      )}
+
+      {system && admin && !locked && (
+        <Group systemId={id} name="workshop" title="Workshop" count={0}>
+          <div className="card stack">
+            <p className="small muted">
+              Talk {system.name} over with the AI before anyone plays it: what the sheet needs, how the game
+              is run, and what to rule where the rulebooks are silent. It proposes sheet changes for you to
+              review above, and writes the GM guide every table on this system follows.
+            </p>
+            <button type="button" className="btn primary block" onClick={() => setWorkshop(true)}>
+              <IconBook /> Open the workshop
+            </button>
+          </div>
+          {workshop && (
+            <WorkshopSheet
+              systemId={id}
+              systemName={system.name}
+              onChanged={() => void reloadSystems()}
+              onClose={() => setWorkshop(false)}
+            />
+          )}
         </Group>
       )}
 
