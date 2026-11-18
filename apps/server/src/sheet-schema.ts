@@ -623,7 +623,13 @@ export function schemaGuide(schema: SheetSchema, opts: { forGm?: boolean; steps?
  */
 export function gmSheetGuide(raw: unknown): string {
   const schema = toSchema(raw);
-  return schemaFields(schema).length ? schemaGuide(schema, { forGm: true }) : '';
+  const fields = schemaFields(schema);
+  if (!fields.length) return '';
+  const tracks = fields.filter((f) => f.type === 'track');
+  const moving = tracks.length
+    ? `\nWhen play moves a track (${tracks.map((f) => f.label).join(', ')}), record it with adjust_track in the same turn, as you would hit points with update_character.`
+    : '';
+  return `${schemaGuide(schema, { forGm: true })}${moving}`;
 }
 
 // ---- tidying what a model wrote ----

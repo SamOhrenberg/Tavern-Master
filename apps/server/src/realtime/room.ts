@@ -60,6 +60,7 @@ export const STATE_TOOLS = new Set([
   'update_character',
   'modify_inventory',
   'edit_sheet',
+  'adjust_track',
   'upsert_entity',
   'reveal_secret',
   'set_flag',

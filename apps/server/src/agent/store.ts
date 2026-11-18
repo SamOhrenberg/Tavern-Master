@@ -128,7 +128,7 @@ export interface GameStore {
   characters(campaignId: string): Promise<CharRow[]>;
   /** Writes vitals and inventory only. Name, sheet and private notes are not writable here. */
   saveCharacter(c: CharRow): Promise<void>;
-  /** Writes the sheet fields and maximum hit points: edit_sheet, when the GM keeps the sheets. */
+  /** Writes the sheet fields and maximum hit points: edit_sheet when the GM keeps the sheets, and adjust_track. */
   saveSheet(c: CharRow): Promise<void>;
   /** What a character sheet holds in this campaign. */
   sheetSchema(campaignId: string): Promise<SheetSchema>;

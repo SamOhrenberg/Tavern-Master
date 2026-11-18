@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { HttpError } from '../errors.js';
 import { askOutsideAi, OutsideAiError } from '../llm/outside.js';
-import { checkSheet, fieldName, removeEntry, unknownNamesNote, valueInput } from '../sheet-schema.js';
+import type { TrackValue } from '@tavern/protocol';
+import {
+  checkSheet,
+  coerce,
+  fieldName,
+  removeEntry,
+  schemaFields,
+  unknownNamesNote,
+  valueInput,
+} from '../sheet-schema.js';
 import type { ToolDef } from '../llm/types.js';
 import { describeRoll, DiceError, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
@@ -273,6 +282,91 @@ export const TOOLS: ToolSpec[] = [
         else changes.push({ character: c.name, from: before.hp, to: c.hp, max: c.maxHp });
       }
       return summary + note;
+    },
+  }),
+
+  tool({
+    name: 'adjust_track',
+    description:
+      "Move one of a character's tracks: stress, sanity, spell slots, ammunition, anything this system's sheet " +
+      'counts as a current value against a maximum. `change` adds (negative takes away); `set` gives the new ' +
+      'value outright; `max` changes the maximum when the rules do. Hit points have update_character.',
+    schema: z.object({
+      character: name,
+      track: z
+        .string()
+        .trim()
+        .min(1)
+        .max(60)
+        .describe("The track's field name or label, as your sheet guide lists it"),
+      change: z
+        .number()
+        .int()
+        .min(-999)
+        .max(999)
+        .optional()
+        .describe('Add to the current value; negative to take away'),
+      set: z.number().int().min(0).max(99999).optional().describe('The new current value'),
+      max: z.number().int().min(0).max(99999).optional().describe('A new maximum'),
+      reason: z.string().trim().max(160).describe('Why, shown to the players'),
+    }),
+    async run(input, ctx, store) {
+      const c = await findCharacter(store, ctx, input.character);
+      const schema = await store.sheetSchema(ctx.campaignId);
+      const tracks = schemaFields(schema).filter((f) => f.type === 'track');
+      const key = fieldName(schema, input.track).toLowerCase();
+      const field = tracks.find((f) => f.key.toLowerCase() === key);
+      if (!field) {
+        if (key === schema.hp.label.toLowerCase() || /^(hp|hit ?points?|health)$/.test(key))
+          throw new ToolError(`${schema.hp.label} are hit points: change them with update_character.`);
+        throw new ToolError(
+          tracks.length
+            ? `"${input.track}" is not a track on this sheet. Its tracks: ${tracks.map((f) => (f.key === f.label ? f.key : `${f.label} ("${f.key}")`)).join(', ')}.`
+            : `This system's sheets have no tracks besides ${schema.hp.label.toLowerCase()}, which update_character changes.`,
+        );
+      }
+      if (input.change === undefined && input.set === undefined && input.max === undefined)
+        throw new ToolError('Say how it moves: change, set or max.');
+      if (input.change !== undefined && input.set !== undefined)
+        throw new ToolError('Give change or set, not both.');
+
+      const stored = Object.keys(c.sheet).filter((k) => k.toLowerCase() === field.key.toLowerCase());
+      const raw = stored.length ? c.sheet[stored[0]!] : undefined;
+      const before = raw === undefined ? undefined : (coerce(field, raw) as TrackValue | undefined);
+      if (!before && (input.set === undefined || (input.max ?? field.max) === undefined))
+        throw new ToolError(
+          `${c.name} has no ${field.label} on their sheet yet: give its value with set and its maximum with max.`,
+        );
+      const max = input.max ?? before?.max ?? field.max!;
+      const wanted = input.set ?? (before?.current ?? 0) + (input.change ?? 0);
+      const floor = Math.max(0, field.min ?? 0);
+      const current = Math.max(floor, Math.min(max, wanted));
+      const next: TrackValue = { current, max };
+      const clamped =
+        wanted > max ? ` (it stops at its maximum, ${max})` : wanted < floor ? ` (it stops at ${floor})` : '';
+
+      const sheet = { ...c.sheet };
+      for (const k of stored) delete sheet[k];
+      sheet[field.key] = next;
+      c.sheet = sheet;
+      await store.saveSheet(c);
+      ctx.stateChanged = true;
+      const was = before ? `${before.current}/${before.max}` : 'none';
+      const summary = `${c.name}'s ${field.label}: ${was} → ${current}/${max}${input.reason ? ` (${input.reason})` : ''}`;
+      await store.recordEvent(ctx, {
+        tool: 'adjust_track',
+        targetType: 'character',
+        targetId: c.id,
+        summary,
+        diff: { field: field.key, before: before ?? null, after: next },
+      });
+      // For the GM alone, after the line the players see: what the rules say happens at the limit.
+      const atLimit = current === max ? 'full' : current === floor ? 'empty' : '';
+      const note =
+        atLimit && field.gmNote && (before?.current ?? -1) !== current
+          ? `\n${field.label} is now ${atLimit}. Your note on it: ${field.gmNote}`
+          : '';
+      return summary + clamped + note;
     },
   }),
 
