@@ -1,4 +1,5 @@
 import type { SheetField, SheetSchema, TrackValue } from '@tavern/protocol';
+import { IconPlus, IconTrash } from '../icons';
 
 /**
  * Sheet values as the app reads and edits them. The system's sheet schema
@@ -132,4 +133,284 @@ export function sheetFromValues(
     }
   }
   return out;
+}
+
+// ---- inputs ----
+
+function Hint({ field, locked }: { field: SheetField; locked: boolean }) {
+  const parts = [
+    locked ? 'The GM keeps this.' : '',
+    field.type === 'derived' && field.derivedFrom ? `Worked out: ${field.derivedFrom}.` : '',
+    field.help ?? '',
+  ].filter(Boolean);
+  return parts.length ? <span className="hint">{parts.join(' ')}</span> : null;
+}
+
+function SelectInput({
+  field,
+  value,
+  locked,
+  onChange,
+}: {
+  field: SheetField;
+  value: string;
+  locked: boolean;
+  onChange: (v: string) => void;
+}) {
+  const options = field.options ?? [];
+  // A value from before the options changed stays choosable rather than vanishing.
+  const all = value && !options.includes(value) ? [value, ...options] : options;
+  return (
+    <select className="input" value={value} disabled={locked} onChange={(e) => onChange(e.target.value)}>
+      <option value="">—</option>
+      {all.map((o) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ListInput({
+  field,
+  rows,
+  locked,
+  onChange,
+}: {
+  field: SheetField;
+  rows: ListRow[];
+  locked: boolean;
+  onChange: (rows: ListRow[]) => void;
+}) {
+  const items = field.itemFields ?? [];
+  const setCell = (id: number, key: string, v: string | boolean) =>
+    onChange(rows.map((r) => (r.id === id ? { ...r, cells: { ...r.cells, [key]: v } } : r)));
+  return (
+    <div className="sheet-list">
+      <span className="label">{field.label}</span>
+      {rows.map((r) => (
+        <div key={r.id} className="sheet-list-row">
+          <div className="sheet-list-cells">
+            {items.map((item) =>
+              item.type === 'checkbox' ? (
+                <label key={item.key} className="sheet-check-cell">
+                  <input
+                    type="checkbox"
+                    checked={r.cells[item.key] === true}
+                    disabled={locked}
+                    onChange={(e) => setCell(r.id, item.key, e.target.checked)}
+                  />
+                  <span>{item.label}</span>
+                </label>
+              ) : (
+                // A caption over each cell: once a row is filled in, "1 4 1" means nothing without one.
+                <label
+                  key={item.key}
+                  className={`sheet-cell${item.type === 'number' ? ' num' : ''}`}
+                  title={item.help}
+                >
+                  <span>{item.label}</span>
+                  <input
+                    className="input"
+                    inputMode={item.type === 'number' ? 'numeric' : undefined}
+                    value={typeof r.cells[item.key] === 'string' ? (r.cells[item.key] as string) : ''}
+                    readOnly={locked}
+                    maxLength={300}
+                    onChange={(e) => setCell(r.id, item.key, e.target.value)}
+                  />
+                </label>
+              ),
+            )}
+          </div>
+          {!locked && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onChange(rows.filter((x) => x.id !== r.id))}
+              aria-label={`Remove from ${field.label}`}
+            >
+              <IconTrash />
+            </button>
+          )}
+        </div>
+      ))}
+      {!locked && rows.length < 50 && (
+        <button
+          type="button"
+          className="btn sm ghost add-item"
+          onClick={() => onChange([...rows, { id: Math.max(-1, ...rows.map((r) => r.id)) + 1, cells: {} }])}
+        >
+          <IconPlus /> Add to {field.label.toLowerCase()}
+        </button>
+      )}
+      <Hint field={field} locked={locked} />
+    </div>
+  );
+}
+
+function FieldInputView({
+  field,
+  value,
+  locked,
+  onChange,
+}: {
+  field: SheetField;
+  value: FieldInput | undefined;
+  locked: boolean;
+  onChange: (v: FieldInput) => void;
+}) {
+  if (field.type === 'list')
+    return (
+      <ListInput field={field} rows={Array.isArray(value) ? value : []} locked={locked} onChange={onChange} />
+    );
+  if (field.type === 'checkbox')
+    return (
+      <label className="sheet-toggle">
+        <span className="grow">
+          {field.label}
+          <Hint field={field} locked={locked} />
+        </span>
+        <input
+          type="checkbox"
+          checked={value === true}
+          disabled={locked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      </label>
+    );
+  if (field.type === 'track') {
+    const t = value && typeof value === 'object' && !Array.isArray(value) ? value : { current: '', max: '' };
+    return (
+      <div className="field">
+        <span>{field.label}</span>
+        <div className="row sheet-track">
+          <input
+            className="input"
+            inputMode="numeric"
+            value={t.current}
+            readOnly={locked}
+            aria-label={`${field.label} now`}
+            onChange={(e) => onChange({ ...t, current: e.target.value })}
+          />
+          <span className="muted">of</span>
+          <input
+            className="input"
+            inputMode="numeric"
+            value={t.max}
+            readOnly={locked}
+            aria-label={`${field.label} maximum`}
+            onChange={(e) => onChange({ ...t, max: e.target.value })}
+          />
+        </div>
+        <Hint field={field} locked={locked} />
+      </div>
+    );
+  }
+  const text = typeof value === 'string' ? value : '';
+  return (
+    <div className="field">
+      <span>{field.label}</span>
+      {field.type === 'select' ? (
+        <SelectInput field={field} value={text} locked={locked} onChange={onChange} />
+      ) : field.type === 'longtext' ? (
+        <textarea
+          className="textarea"
+          rows={3}
+          value={text}
+          readOnly={locked}
+          maxLength={1500}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      ) : (
+        <input
+          className="input"
+          inputMode={field.type === 'number' ? 'numeric' : undefined}
+          value={text}
+          readOnly={locked}
+          maxLength={field.type === 'text' ? 1500 : 60}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
+      <Hint field={field} locked={locked} />
+    </div>
+  );
+}
+
+const blankInput = (v: FieldInput | undefined) =>
+  v === undefined ||
+  v === false ||
+  (typeof v === 'string' && !v.trim()) ||
+  (Array.isArray(v) && !v.length) ||
+  (typeof v === 'object' && !Array.isArray(v) && !v.current.trim() && !v.max.trim());
+
+/**
+ * The schema's sections as a form. Numbers sit in a compact grid at the top of
+ * their section; everything else follows in order. A field the GM keeps is
+ * read-only once it holds a value, unless `newSheet` (a player may set its
+ * starting value).
+ */
+export function SheetSections({
+  schema,
+  values,
+  onChange,
+  newSheet,
+}: {
+  schema: SheetSchema | undefined;
+  values: FormValues;
+  onChange: (key: string, v: FieldInput) => void;
+  newSheet: boolean;
+}) {
+  const locked = (f: SheetField) => f.editableBy === 'gm' && !newSheet && !blankInput(values[f.key]);
+  return (
+    <>
+      {(schema?.sections ?? []).map((sec) => {
+        const nums = sec.fields.filter((f) => f.type === 'number');
+        const rest = sec.fields.filter((f) => f.type !== 'number');
+        // A lone number reads better as a full-width field than as a grid of one.
+        const grid = nums.length >= 2 ? nums : [];
+        return (
+          <section key={sec.id} className="sheet-section stack">
+            <h3 className="sheet-section-title">{sec.label}</h3>
+            {grid.length > 0 && (
+              <div className="ability-inputs">
+                {grid.map((f) => (
+                  <label key={f.key} className="ability-input" title={f.help}>
+                    <span>{f.label}</span>
+                    <input
+                      className="input"
+                      inputMode="numeric"
+                      value={typeof values[f.key] === 'string' ? (values[f.key] as string) : ''}
+                      readOnly={locked(f)}
+                      onChange={(e) => onChange(f.key, e.target.value)}
+                      maxLength={8}
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            {grid.some(locked) && (
+              <span className="small faint">
+                The GM keeps{' '}
+                {grid
+                  .filter(locked)
+                  .map((f) => f.label.toLowerCase())
+                  .join(' and ')}
+                .
+              </span>
+            )}
+            {(grid.length ? rest : sec.fields).map((f) => (
+              <FieldInputView
+                key={f.key}
+                field={f}
+                value={values[f.key]}
+                locked={locked(f)}
+                onChange={(v) => onChange(f.key, v)}
+              />
+            ))}
+          </section>
+        );
+      })}
+    </>
+  );
 }
