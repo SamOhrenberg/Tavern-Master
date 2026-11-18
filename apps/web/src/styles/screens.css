@@ -1331,3 +1331,13 @@ div.proposal {
   justify-content: center;
   padding: 8px 0 4px;
 }
+.workshop-answerer {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.workshop-answerer .segmented {
+  flex: none;
+}
+.workshop-claude-hint {
+  margin: 6px 0 0;
+}

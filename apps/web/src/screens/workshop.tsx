@@ -222,6 +222,28 @@ export function WorkshopSheet({
     void load();
   }, [load]);
 
+  // Claude answers through the connector, out of sight: look again now and then until it has.
+  const waiting = !!workshop?.waiting;
+  const wasWaiting = useRef(false);
+  // The screen behind re-renders often (it polls while documents index), handing a new callback each
+  // time: keep the latest in a ref, so the poll below is not restarted before it ever fires.
+  const changedRef = useRef(onChanged);
+  changedRef.current = onChanged;
+  useEffect(() => {
+    // Claude may have proposed sheet changes along with its answer: the panel behind fetches them.
+    if (wasWaiting.current && !waiting) changedRef.current();
+    wasWaiting.current = waiting;
+    if (!waiting) return;
+    const tick = window.setInterval(() => document.visibilityState === 'visible' && void load(), 5000);
+    return () => window.clearInterval(tick);
+  }, [waiting, load]);
+
+  const setAnswerer = (answeredBy: Workshop['answeredBy']) =>
+    run(async () => {
+      await api(`/systems/${systemId}/workshop`, { method: 'PATCH', body: { answeredBy } });
+      await load();
+    });
+
   useLayoutEffect(() => {
     if (tab !== 'talk') return;
     const el = body.current?.closest('.sheet-body');
@@ -247,7 +269,8 @@ export function WorkshopSheet({
       author: { id: me.id, username: me.username, displayName: me.displayName },
       createdAt: new Date().toISOString(),
     });
-    setWorking('Thinking');
+    const claude = workshop.answeredBy === 'claude';
+    if (!claude) setWorking('Thinking');
     let stored = false;
     let changed = false;
     try {
@@ -346,6 +369,21 @@ export function WorkshopSheet({
         <RulingsTab systemId={systemId} guide={guide} onSaved={setGuide} />
       ) : (
         <div className="guide" ref={body}>
+          <div className="row workshop-answerer">
+            <span className="small muted grow">Answered by</span>
+            {workshop.builtIn ? (
+              <Segmented
+                value={workshop.answeredBy}
+                onChange={(v) => void setAnswerer(v)}
+                options={[
+                  { value: 'server', label: 'Built-in AI' },
+                  { value: 'claude', label: 'Claude' },
+                ]}
+              />
+            ) : (
+              <span className="small">Claude</span>
+            )}
+          </div>
           {messages.length === 0 && (
             <div className="guide-intro">
               <IconBook />
@@ -396,6 +434,18 @@ export function WorkshopSheet({
                 <span className="live-dot" />
                 <span>{working ? `${working}…` : 'Someone else’s message is being answered…'}</span>
               </div>
+            </article>
+          )}
+          {waiting && !pending && (
+            <article className="msg guide-msg live" aria-live="polite">
+              <div className="dm-tool">
+                <span className="live-dot" />
+                <span>Waiting for Claude…</span>
+              </div>
+              <p className="small faint workshop-claude-hint">
+                Claude answers when an admin has it running. In Claude, with the Tavern Master connector, say:
+                &ldquo;Open the Tavern Master workshop for {systemName} and answer it.&rdquo;
+              </p>
             </article>
           )}
           {messages.length > 0 && !answering && (
