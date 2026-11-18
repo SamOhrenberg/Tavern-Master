@@ -134,7 +134,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (dat
     expect((await as.get('/api/summon')).status).toBe(401);
 
     const { token } = (await createToken(host, 'launcher'))!;
-    type Listed = { id: string; folder: string; wanted: boolean; players: number; dm: { state: string } };
+    type Listed = {
+      id: string;
+      folder: string;
+      wanted: boolean;
+      players: number;
+      quietMinutes: number | null;
+      dm: { state: string };
+    };
     const list = async () => (await call('/api/summon', token)).json<{ campaigns: Listed[] }>().campaigns;
     const mine = await list();
     expect(mine.some((c) => c.id === builtIn)).toBe(false);
@@ -149,7 +156,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude campaigns over HTTP (dat
     const room = await openRoom(claudeRun);
     const seat = {} as WebSocket;
     room.sockets.set(seat, { id: host, username: 'host', displayName: 'Host' });
-    expect((await list()).find((c) => c.id === claudeRun)).toMatchObject({ wanted: true, players: 1 });
+    // Connected, but nothing has ever happened there: the launcher may let Claude go.
+    expect((await list()).find((c) => c.id === claudeRun)).toMatchObject({
+      wanted: true,
+      players: 1,
+      quietMinutes: null,
+    });
+    // Opening the table on screen counts as something happening.
+    room.heard(seat, true);
+    expect((await list()).find((c) => c.id === claudeRun)?.quietMinutes).toBe(0);
     room.sockets.delete(seat);
 
     const kit = (await call(`/api/summon/${claudeRun}/kit`, token)).json<{

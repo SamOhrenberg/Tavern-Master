@@ -282,6 +282,8 @@ export class Room {
   readonly sockets = new Map<WebSocket, UserRef>();
   /** Whether each socket's app is on screen, and when it was last heard from. */
   private views = new WeakMap<WebSocket, { visible: boolean; heardAt: number }>();
+  /** When a player last brought the table on screen: opened it, or came back to the app. */
+  private arrivedAt = 0;
   readonly collector: TurnCollector;
   private turn: ActiveTurn | null = null;
   private chain: Promise<void> = Promise.resolve();
@@ -609,7 +611,15 @@ export class Room {
     // Back at the table: notifications held during quiet hours are old news now.
     // A socket that opened in the background has not shown anyone anything yet.
     const user = this.sockets.get(ws);
-    if (user && view.visible && (fresh || visible === true)) void seenCampaign(user.id, this.campaignId);
+    if (user && view.visible && (fresh || visible === true)) {
+      this.arrivedAt = Date.now();
+      void seenCampaign(user.id, this.campaignId);
+    }
+  }
+
+  /** When a player last brought the table on screen (0: not since the room opened). */
+  get lastArrivalAt(): number {
+    return this.arrivedAt;
   }
 
   /** Seats the current turn is still waiting on. */

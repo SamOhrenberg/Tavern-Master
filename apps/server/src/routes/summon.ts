@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { kitFiles, slugOf } from '../connector/kit.js';
+import { quietMinutes } from '../connector/tools.js';
 import { resolveToken, type ConnectorUser } from '../connector/tokens.js';
 import { q, q1 } from '../db/pool.js';
 import { notFound, parse, unauthorized } from '../errors.js';
@@ -34,6 +35,12 @@ export interface SummonCampaign {
   wanted: boolean;
   /** Players connected right now. */
   players: number;
+  /**
+   * Minutes since anything happened at the table: someone acted or chatted,
+   * Claude finished a request, or a player opened the table. Null when nothing
+   * has. The launcher lets a run go when this grows long and nothing waits.
+   */
+  quietMinutes: number | null;
   dm: DmStatus;
 }
 
@@ -108,13 +115,19 @@ export async function summonRoutes(app: FastifyInstance): Promise<void> {
     );
     const campaigns: SummonCampaign[] = await Promise.all(
       rows.map(async (c) => {
-        const players = getRoom(c.id)?.present().length ?? 0;
+        const room = getRoom(c.id);
+        const players = room?.present().length ?? 0;
+        const arrived = room?.lastArrivalAt
+          ? Math.floor((Date.now() - room.lastArrivalAt) / 60_000)
+          : Infinity;
+        const quiet = Math.min(await quietMinutes(c.id), arrived);
         return {
           id: c.id,
           name: c.name,
           folder: slugOf(c.name),
           wanted: players > 0,
           players,
+          quietMinutes: Number.isFinite(quiet) ? quiet : null,
           dm: await dmStatusOf(c.id, 'claude'),
         };
       }),

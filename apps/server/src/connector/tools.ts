@@ -161,7 +161,8 @@ function describeWait(room: Room): string {
 }
 
 /** Minutes since the table last did anything: a player spoke, or Claude finished a request. */
-async function quietMinutes(campaignId: string): Promise<number> {
+/** Minutes since anyone acted or chatted at the table, or Claude finished a request. Infinity: never. */
+export async function quietMinutes(campaignId: string): Promise<number> {
   const row = await q1<{ at: Date | null }>(
     `SELECT max(created_at) AS at FROM messages WHERE campaign_id = $1 AND kind IN ('action', 'ooc')`,
     [campaignId],

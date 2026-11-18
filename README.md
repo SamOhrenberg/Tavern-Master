@@ -205,9 +205,13 @@ node scripts/dm-launcher.mjs status       # who is at each table, and where Clau
 ```
 
 Settings live in `~/.tavern-dm/config.json` (`dir` for the campaign
-folders, `idleMinutes`, `pollSeconds`, `claude` for the executable's path,
-`claudeBackupToken`); `TAVERN_URL`, `TAVERN_TOKEN` and
-`CLAUDE_CODE_OAUTH_TOKEN_BACKUP` override them. Run logs are in
+folders, `idleMinutes`, `quietMinutes`, `pollSeconds`, `claude` for the
+executable's path, `claudeBackupToken`); `TAVERN_URL`, `TAVERN_TOKEN`,
+`TAVERN_IDLE_MINUTES`, `TAVERN_QUIET_MINUTES` and
+`CLAUDE_CODE_OAUTH_TOKEN_BACKUP` override them. A table with players
+connected but nothing happening for `quietMinutes` (30 by default) lets
+Claude go, since every minute it waits costs usage; it comes back as soon
+as someone opens the table, acts or asks for something. Run logs are in
 `~/.tavern-dm/logs`. To talk with Claude as your co-DM, open the folder in
 Claude Code as usual, but do not start `/dm` there while the launcher runs
 it too.

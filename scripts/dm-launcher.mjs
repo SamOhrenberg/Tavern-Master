@@ -3,9 +3,10 @@
  * Brings Claude to the table on its own. It runs on the computer where Claude
  * Code is signed in, asks the Tavern Master server which campaigns run by
  * Claude have players at the table, and starts Claude Code in the background
- * for each one (`claude -p /dm`). When a table empties, or Claude goes quiet
- * while players wait, it stops that run. The next player to sit down starts a
- * new one.
+ * for each one (`claude -p /dm`). When a table empties, goes quiet with
+ * nothing waiting for Claude (an app left open all night), or Claude goes
+ * quiet while players wait, it stops that run. The next player to open the
+ * table, act or ask for something starts a new one.
  *
  * For an admin's token it answers the game system workshop too: when an admin
  * writes in a workshop that Claude answers, it starts a run (`claude -p
@@ -18,7 +19,7 @@
  *
  * Make the token in the app under You → Claude → Use a token instead. Settings
  * live in ~/.tavern-dm/config.json; TAVERN_URL, TAVERN_TOKEN, TAVERN_IDLE_MINUTES,
- * TAVERN_ECHO (also print what Claude does to the console) and
+ * TAVERN_QUIET_MINUTES, TAVERN_ECHO (also print what Claude does to the console) and
  * CLAUDE_CODE_OAUTH_TOKEN_BACKUP (a second Claude Code sign-in, used while the
  * main one is out of usage or failing) override them.
  * No dependencies: Node 20 or later.
@@ -55,6 +56,12 @@ const DEFAULTS = {
   dir: join(homedir(), 'Tavern'),
   /** Stop a run after this long with nobody at the table, or with no word from Claude while players wait. */
   idleMinutes: 15,
+  /**
+   * Let a run go after this long with nothing happening at the table and nothing
+   * waiting for Claude, even with players connected. Every minute Claude waits it
+   * re-reads its whole conversation, so an idle table still costs usage.
+   */
+  quietMinutes: 30,
   pollSeconds: 15,
   /** The claude executable; found on PATH when empty. */
   claude: '',
@@ -92,10 +99,12 @@ function settings(f) {
   if (process.env.TAVERN_TOKEN) s.token = process.env.TAVERN_TOKEN;
   if (process.env.TAVERN_ECHO) s.echo = process.env.TAVERN_ECHO;
   if (process.env.TAVERN_IDLE_MINUTES) s.idleMinutes = process.env.TAVERN_IDLE_MINUTES;
+  if (process.env.TAVERN_QUIET_MINUTES) s.quietMinutes = process.env.TAVERN_QUIET_MINUTES;
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN_BACKUP)
     s.claudeBackupToken = process.env.CLAUDE_CODE_OAUTH_TOKEN_BACKUP;
   for (const k of Object.keys(DEFAULTS)) if (f[k] !== undefined) s[k] = f[k];
   s.idleMinutes = Number(s.idleMinutes) || DEFAULTS.idleMinutes;
+  s.quietMinutes = Math.max(5, Number(s.quietMinutes) || DEFAULTS.quietMinutes);
   s.echo = ['1', 'true', 'yes', true].includes(s.echo);
   s.pollSeconds = Math.max(5, Number(s.pollSeconds) || DEFAULTS.pollSeconds);
   s.server = String(s.server).replace(/\/+$/, '');
@@ -553,6 +562,15 @@ function tendWorkshop(s, w, now, idleMs) {
   }
 }
 
+/**
+ * Players are connected, but nothing has happened for a while and nothing waits
+ * for Claude: no reason to keep it there. False against a server too old to say.
+ */
+function dozing(s, c) {
+  if (c.quietMinutes === undefined || c.dm.waiting > 0 || c.dm.state === 'working') return false;
+  return c.quietMinutes === null || c.quietMinutes >= s.quietMinutes;
+}
+
 async function tick(s) {
   let campaigns;
   let workshops;
@@ -573,6 +591,7 @@ async function tick(s) {
     const t = tables.get(c.id) ?? { holdUntil: 0 };
     tables.set(c.id, t);
     t.c = c;
+    const asleep = c.wanted && dozing(s, c);
     if (t.proc) {
       t.preparing = false;
       const busy = c.dm.state === 'working';
@@ -582,10 +601,29 @@ async function tick(s) {
         stopRun(c, t, `nobody at the table for ${s.idleMinutes} min`);
       else if (t.quietSince && now - t.quietSince > idleMs)
         stopRun(c, t, `no word from Claude for ${s.idleMinutes} min while players wait`);
+      else if (asleep) {
+        t.dozing = true;
+        stopRun(
+          c,
+          t,
+          `nothing has happened for ${c.quietMinutes ?? s.quietMinutes} min. It comes back when someone ` +
+            'opens the table, acts or asks for something',
+        );
+      }
+    } else if (asleep) {
+      t.preparing = false;
+      if (!t.dozing)
+        log(
+          c,
+          `Players are connected, but the table has been quiet for ${c.quietMinutes ?? '?'} min; waiting.`,
+        );
+      t.dozing = true;
     } else if (c.wanted && !t.preparing && now >= t.holdUntil) {
+      t.dozing = false;
       startRun(s, c, t);
     } else if (!c.wanted) {
       t.preparing = false;
+      t.dozing = false;
     }
   }
   for (const raw of workshops) {
