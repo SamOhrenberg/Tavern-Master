@@ -336,7 +336,8 @@ export function CharacterSheet({
             ref={picker}
             type="file"
             className="sr-only"
-            accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
+            // The extensions too: Windows does not always know HEIC's type, and would hide the files.
+            accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif"
             onChange={(e) => choosePicture(e.target.files?.[0])}
             tabIndex={-1}
             aria-hidden="true"

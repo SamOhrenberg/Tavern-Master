@@ -36,6 +36,12 @@ type Gesture =
   | { kind: 'resize'; crop: Crop; x: number; y: number; sx: number; sy: number }
   | { kind: 'pinch'; crop: Crop; dist: number; mx: number; my: number };
 
+/**
+ * The iPhone's own photo format. Every browser on an iPhone or a Mac (they are all Safari underneath)
+ * opens it; Chrome, Edge and Firefox elsewhere do not.
+ */
+export const isHeic = (file: File) => /^image\/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** The middle of the picture (a little above centre on a tall one, where a face usually is). */
@@ -117,7 +123,12 @@ export function PortraitCropper({
     };
     el.onerror = () => {
       if (!live) return;
-      notifyRef.current('That picture could not be read. Try a PNG or JPEG.', 'error');
+      notifyRef.current(
+        isHeic(file)
+          ? 'This browser cannot open HEIC pictures, the iPhone’s own format. Safari can; elsewhere, save it as a JPEG first.'
+          : 'That picture could not be read. Try a JPEG, PNG or WebP.',
+        'error',
+      );
       cancelRef.current();
     };
     el.src = url;
