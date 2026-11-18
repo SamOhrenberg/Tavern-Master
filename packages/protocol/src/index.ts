@@ -51,6 +51,41 @@ export interface GameSystem {
    * which other AI to ask for what. Sent to admins only.
    */
   gmInstructions?: string;
+  /** Where the AI's draft of this system's sheet stands. Sent to admins only. */
+  sheetDraftStatus?: SheetDraftStatus;
+}
+
+export type SheetDraftStatus = 'none' | 'queued' | 'drafting' | 'ready' | 'failed';
+
+/**
+ * One change a draft proposes to a system's sheet, for an admin to apply or
+ * ignore. `section` is the label of the section the field is (or would be) in.
+ */
+export type SheetProposal =
+  | { id: string; kind: 'add'; section: string; field: SheetField }
+  | {
+      id: string;
+      kind: 'change';
+      section: string;
+      field: SheetField;
+      before: SheetField;
+      /** What changes, one short line each ("kind: text → number"). */
+      changes: string[];
+    }
+  | { id: string; kind: 'remove'; section: string; field: SheetField }
+  | { id: string; kind: 'hp'; before: string; after: string }
+  | { id: string; kind: 'steps'; before: string[]; after: string[] }
+  /** The sections' names and order. */
+  | { id: string; kind: 'sections'; before: string[]; after: string[] };
+
+/** A system's sheet draft, as the review screen shows it. */
+export interface SheetDraftView {
+  status: SheetDraftStatus;
+  error: string | null;
+  /** What the drafter could not settle from the documents. */
+  notes: string[];
+  proposals: SheetProposal[];
+  draftedAt: string | null;
 }
 
 /** Another AI the GM can ask for help with ask_ai, as admins see it. The key is never sent. */
