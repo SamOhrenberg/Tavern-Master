@@ -10,7 +10,9 @@ export function securityHeaders(cfg: Pick<Config, 'baseUrl' | 'cookieSecure'>): 
     "default-src 'none'",
     "script-src 'self'",
     "style-src 'self'",
-    "img-src 'self' data:",
+    // blob: shows a picture chosen on the device (a portrait being cropped) before it is uploaded.
+    // Only this page's own scripts can make one, so it lets in nothing from elsewhere.
+    "img-src 'self' data: blob:",
     "font-src 'self'",
     // 'self' does not cover websockets in every browser, so name them.
     `connect-src 'self' ${wsScheme}//${cfg.baseUrl.host}`,
