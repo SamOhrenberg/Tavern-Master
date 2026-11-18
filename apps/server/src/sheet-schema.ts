@@ -436,6 +436,113 @@ export function checkSheet(schema: SheetSchema, sheet: Record<string, unknown>):
   return out;
 }
 
+// ---- names a writer used ----
+
+/**
+ * The schema's own name for what a writer called a field: matched by name,
+ * then by label, whatever the capitalisation, so "Armor Class" finds "ac".
+ * A name the schema does not know comes back as written.
+ */
+export function fieldName(schema: SheetSchema, name: string): string {
+  const want = name.trim().toLowerCase();
+  const fields = schemaFields(schema);
+  return (
+    fields.find((f) => f.key.toLowerCase() === want)?.key ??
+    fields.find((f) => f.label.toLowerCase() === want)?.key ??
+    name
+  );
+}
+
+/**
+ * Take an entry off a sheet, in place, and return the key it was under. An
+ * entry stored under exactly that name goes first, so an extra entry written
+ * under a field's label ("Armor Class" beside "ac") is what goes, not the
+ * field; otherwise the system's field by that name or label goes.
+ */
+export function removeEntry(
+  schema: SheetSchema,
+  sheet: Record<string, unknown>,
+  name: string,
+): string | undefined {
+  const find = (n: string) =>
+    Object.keys(sheet).find((k) => k.trim().toLowerCase() === n.trim().toLowerCase());
+  const key = find(name) ?? find(fieldName(schema, name));
+  if (key !== undefined) delete sheet[key];
+  return key;
+}
+
+/** Edits between two short strings, giving up past `most`. */
+function distance(a: string, b: string, most: number): number {
+  if (Math.abs(a.length - b.length) > most) return most + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++)
+      row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+/** The field a name not in the schema most likely meant, if one is close. */
+function nearest(schema: SheetSchema, name: string): SheetField | undefined {
+  const want = name
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ');
+  const most = want.length <= 4 ? 1 : 2;
+  let best: { f: SheetField; d: number } | undefined;
+  for (const f of schemaFields(schema)) {
+    for (const said of [f.key, f.label]) {
+      const s = said.toLowerCase().replace(/[_\s]+/g, ' ');
+      const d =
+        s === want || (want.length >= 4 && (s.includes(want) || want.includes(s)))
+          ? 0
+          : distance(want, s, most);
+      if (d <= most && (!best || d < best.d)) best = { f, d };
+    }
+  }
+  return best?.f;
+}
+
+/**
+ * What a writer should hear about the names it used: those the system's
+ * sheets do not define, each with the field it most likely meant. They are
+ * kept as extra entries, which is right for something the rules need and the
+ * schema lacks, and wrong for a slip of the pen. Empty when every name is
+ * known, or the system's sheets are free-form.
+ */
+export function unknownNamesNote(schema: SheetSchema, names: string[], removeWith: string): string {
+  const fields = schemaFields(schema);
+  if (!fields.length) return '';
+  const known = new Set(fields.flatMap((f) => [f.key.toLowerCase(), f.label.toLowerCase()]));
+  const unknown = [...new Set(names.map((n) => n.trim()).filter((n) => !known.has(n.toLowerCase())))];
+  if (!unknown.length) return '';
+  const said = unknown.map((n) => {
+    const near = nearest(schema, n);
+    return near ? `"${n}" (did you mean "${near.key}"?)` : `"${n}"`;
+  });
+  return (
+    `Not fields of this system, so kept as extra entries on the sheet: ${said.join(', ')}. ` +
+    `If one was a slip, drop it with ${removeWith} and write the value under the right name.`
+  );
+}
+
+/**
+ * The names among those written that the GM keeps and that already hold a
+ * value, so a player's save left them as they were (see {@link keepGmFields}).
+ */
+export function gmKeptNames(schema: SheetSchema, before: Record<string, unknown>, names: string[]): string[] {
+  const written = new Set(names.map((n) => fieldName(schema, n).toLowerCase()));
+  return schemaFields(schema)
+    .filter((f) => f.editableBy === 'gm' && written.has(f.key.toLowerCase()))
+    .filter((f) => {
+      const was = Object.entries(before).find(([k]) => k.toLowerCase() === f.key.toLowerCase());
+      return !!was && !blank(was[1]);
+    })
+    .map((f) => f.key);
+}
+
 /**
  * Fields the GM keeps: once one holds a value, a player's save (or the
  * guide's, made for a player) leaves it as it was. An empty one may be filled

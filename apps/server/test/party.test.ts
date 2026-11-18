@@ -11,7 +11,7 @@ import {
   knownEntries,
 } from '../src/agent/companion.js';
 import { COMPANION_LABEL, renderTurn, stateSnapshot, systemPrompt } from '../src/agent/context.js';
-import { runAgentTurn } from '../src/agent/loop.js';
+import { publicSummary, runAgentTurn } from '../src/agent/loop.js';
 import { placeKey } from '../src/agent/places.js';
 import type { EntityRow } from '../src/agent/store.js';
 import { draftFromRecord, readSheet, suggestionsFromChanges, validateSheet } from '../src/agent/sheets.js';
@@ -659,6 +659,34 @@ describe('sheets kept by the DM', () => {
     expect(store.chars[0]!.name).toBe('Thorn');
     expect(store.events[0]!.summary).toContain('reached level 2');
     expect(ctx.stateChanged).toBe(true);
+  });
+
+  it('writes under the system’s field names and tells the GM, not the table, about the rest', async () => {
+    const store = new FakeStore();
+    store.schema = fromTemplate({ abilities: [], fields: [{ key: 'ac', label: 'Armor Class' }] });
+    store.chars = [character({ id: 'c1', name: 'Thorn', playerIds: ['u-ann'], sheet: {} })];
+    const input = {
+      character: 'Thorn',
+      set: [
+        { field: 'armor class', value: 16 },
+        { field: 'Armour Clas', value: 'oops' },
+      ],
+      reason: 'new shield',
+    };
+    const out = await dispatchTool(
+      'edit_sheet',
+      input,
+      context(),
+      store,
+      undefined,
+      gmTools({ sheets: true }),
+    );
+    expect(store.chars[0]!.sheet).toEqual({ ac: 16, 'Armour Clas': 'oops' });
+    const [summary, note] = out.content.split('\n');
+    expect(summary).toBe("Thorn's sheet: ac, Armour Clas (new shield)");
+    expect(note).toContain('"Armour Clas" (did you mean "ac"?)');
+    expect(store.events[0]!.summary).toBe(summary);
+    expect(publicSummary('edit_sheet', input, out.content)).toBe(summary);
   });
 });
 

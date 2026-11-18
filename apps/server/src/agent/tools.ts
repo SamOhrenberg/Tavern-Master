@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { HttpError } from '../errors.js';
 import { askOutsideAi, OutsideAiError } from '../llm/outside.js';
-import { checkSheet, valueInput } from '../sheet-schema.js';
+import { checkSheet, fieldName, removeEntry, unknownNamesNote, valueInput } from '../sheet-schema.js';
 import type { ToolDef } from '../llm/types.js';
 import { describeRoll, DiceError, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
@@ -692,23 +692,26 @@ export const EDIT_SHEET = tool({
   }),
   async run(input, ctx, store) {
     const c = await findCharacter(store, ctx, input.character);
+    const schema = await store.sheetSchema(ctx.campaignId);
+    // The system's own name for a field, by name or label: "Armor Class" finds "ac".
+    const named = (field: string) => fieldName(schema, field);
     const sheet = { ...c.sheet };
     // Match an existing field whatever its capitalisation, so "level" updates "Level".
     const keyFor = (field: string) =>
       Object.keys(sheet).find((k) => k.toLowerCase() === field.toLowerCase()) ?? field;
-    for (const field of input.remove ?? []) delete sheet[keyFor(field)];
-    for (const { field, value } of input.set ?? []) sheet[keyFor(field)] = value;
+    const removed = (input.remove ?? []).map((field) => removeEntry(schema, sheet, field) ?? named(field));
+    for (const { field, value } of input.set ?? []) sheet[keyFor(named(field))] = value;
     // The GM may change any field, GM-kept ones included, but each in its own shape.
     let checked: Record<string, unknown>;
     try {
-      checked = checkSheet(await store.sheetSchema(ctx.systemId), sheet);
+      checked = checkSheet(schema, sheet);
     } catch (err) {
       if (err instanceof HttpError) throw new ToolError(err.message);
       throw err;
     }
     const changed = [
-      ...(input.set ?? []).map((s) => s.field),
-      ...(input.remove ?? []).map((f) => `-${f}`),
+      ...(input.set ?? []).map((s) => named(s.field)),
+      ...removed.map((f) => `-${f}`),
       ...(input.max_hp && input.max_hp !== c.maxHp ? [`max HP ${c.maxHp}→${input.max_hp}`] : []),
     ];
     if (!changed.length) throw new ToolError('Nothing to change.');
@@ -721,7 +724,13 @@ export const EDIT_SHEET = tool({
     ctx.stateChanged = true;
     const summary = `${c.name}'s sheet: ${changed.join(', ')}${input.reason ? ` (${input.reason})` : ''}`;
     await store.recordEvent(ctx, { tool: 'edit_sheet', targetType: 'character', targetId: c.id, summary });
-    return summary;
+    // For the GM alone: the players see the summary. Only what was written stays on the sheet.
+    const note = unknownNamesNote(
+      schema,
+      (input.set ?? []).map((s) => s.field),
+      'remove',
+    );
+    return note ? `${summary}\n${note}` : summary;
   },
 });
 

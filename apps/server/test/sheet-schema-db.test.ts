@@ -21,6 +21,7 @@ const schema: SheetSchema = {
         { key: 'Grit', label: 'Grit', type: 'number' },
         { key: 'stress', label: 'Stress', type: 'track' },
         { key: 'heat', label: 'Heat', type: 'number', editableBy: 'gm' },
+        { key: 'ac', label: 'Armor Class', type: 'number' },
         {
           key: 'gear',
           label: 'Gear',
@@ -117,8 +118,56 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('sheet schemas (database)', () =
     await updateCharacter(camp, id, annViewer(), { name: 'Marlo', maxHp: 8, sheet: { heat: 0, Grit: 2 } });
     expect(await sheetOf(id)).toEqual({ heat: 1, Grit: 2 });
     // The character guide saves as the player, so it is held to the same rule.
-    await applyDraft(camp, id, annViewer(), { fields: [{ field: 'heat', value: 5 }] });
+    const saved = await applyDraft(camp, id, annViewer(), { fields: [{ field: 'heat', value: 5 }] });
     expect((await sheetOf(id)).heat).toBe(1);
+    // ...and is told so, rather than left to think it saved.
+    expect(saved.notes).toEqual(['"heat" is kept by the GM, so it was left as it was.']);
+    // The GM itself may change it.
+    const asGm = await applyDraft(
+      camp,
+      id,
+      annViewer(),
+      { fields: [{ field: 'Heat', value: 4 }] },
+      undefined,
+      {
+        asGm: true,
+      },
+    );
+    expect((await sheetOf(id)).heat).toBe(4);
+    expect(asGm.notes).toEqual([]);
+  });
+
+  it('writes under the system’s own field names, and says which names it does not define', async () => {
+    const id = await createCharacter(camp, annViewer(), { name: 'Oriel', maxHp: 8, sheet: {} });
+    const out = await applyDraft(camp, id, annViewer(), {
+      fields: [
+        { field: 'Gritt', value: 2 },
+        { field: 'STRESS', value: '1/9' },
+        { field: 'Gear', value: 'Rope' },
+      ],
+    });
+    expect(out.changed).toEqual(['Gritt', 'stress', 'gear']);
+    expect(out.notes).toHaveLength(1);
+    expect(out.notes[0]).toContain('"Gritt" (did you mean "Grit"?)');
+    expect(out.notes[0]).toContain('remove_fields');
+    expect(await sheetOf(id)).toEqual({ Gritt: 2, stress: { current: 1, max: 9 }, gear: [{ name: 'Rope' }] });
+  });
+
+  it('removes the entry by the name given, and has no note about names it removed', async () => {
+    // Extra entries from before names were matched by label: "Armor Class" beside the real "ac".
+    const gm = { userId: admin, role: 'owner' as const };
+    const id = await createCharacter(camp, gm, {
+      name: 'Tamsin',
+      maxHp: 8,
+      sheet: { ac: 12, 'Armor Class': 14, Gritt: 1 },
+    });
+    const out = await applyDraft(camp, id, gm, { remove_fields: ['Armor Class', 'gritt'] });
+    expect(await sheetOf(id)).toEqual({ ac: 12 });
+    expect(out.changed).toEqual(['-Armor Class', '-Gritt']);
+    expect(out.notes).toEqual([]);
+    // With no entry of its own, a label still reaches its field.
+    await applyDraft(camp, id, gm, { remove_fields: ['armor class'] });
+    expect(await sheetOf(id)).toEqual({});
   });
 
   it('sends the schema with the system and lets only an admin replace it', async () => {

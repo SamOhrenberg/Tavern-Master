@@ -5,7 +5,7 @@ import { conflict, HttpError, notFound } from '../errors.js';
 import { resolveLlm } from '../llm/index.js';
 import type { Message } from '../llm/types.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
-import { applyDraft, type Control, type DraftPatch, type Viewer } from '../party.js';
+import { applyDraft, type Control, type DraftPatch, type DraftResult, type Viewer } from '../party.js';
 import { runAgentTurn } from './loop.js';
 import { schemaGuide, toSchema } from '../sheet-schema.js';
 import { draftSchema } from './sheets.js';
@@ -132,10 +132,7 @@ export function controlOf(intent: Partial<Control>, userId: string): Control {
  * character. Used by the built-in guide and by Claude acting as the guide.
  * Limits and permissions come back as ToolErrors to explain or work around.
  */
-export async function saveFromThread(
-  threadId: string,
-  patch: DraftPatch,
-): Promise<{ id: string; created: boolean; changed: string[] }> {
+export async function saveFromThread(threadId: string, patch: DraftPatch): Promise<DraftResult> {
   const thread = await q1<{
     campaign_id: string;
     user_id: string;
@@ -169,8 +166,11 @@ export async function saveFromThread(
   }
 }
 
-export const savedLine = (out: { created: boolean; changed: string[] }) =>
-  `${out.created ? 'Character created' : 'Sheet updated'}: ${out.changed.join(', ')}.`;
+export const savedLine = (out: { created: boolean; changed: string[]; notes?: string[] }) =>
+  [
+    `${out.created ? 'Character created' : 'Sheet updated'}: ${out.changed.join(', ')}.`,
+    ...(out.notes ?? []),
+  ].join('\n');
 
 function builderTools(session: BuilderSession): ToolSpec[] {
   const save = tool({

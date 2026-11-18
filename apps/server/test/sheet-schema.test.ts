@@ -4,7 +4,9 @@ import {
   checkSheet,
   coerce,
   EMPTY_SCHEMA,
+  fieldName,
   formatValue,
+  gmKeptNames,
   gmSheetGuide,
   fromTemplate,
   keepGmFields,
@@ -12,6 +14,7 @@ import {
   schemaGuide,
   schemaSchema,
   toSchema,
+  unknownNamesNote,
 } from '../src/sheet-schema.js';
 import { SRD_SHEET, SRD_TEMPLATE_V1 } from '../src/srd-sheet.js';
 
@@ -148,5 +151,31 @@ describe('the GM’s view of the sheet', () => {
     expect(gmSheetGuide(undefined)).toBe('');
     expect(gmSheetGuide({ abilities: [], fields: [] })).toBe('');
     expect(gmSheetGuide(SRD_SHEET)).toContain('GM: Award after encounters');
+  });
+});
+
+describe('the names a writer uses', () => {
+  it('finds a field by its name or its label, whatever the capitalisation', () => {
+    expect(fieldName(schema, 'insight')).toBe('Insight');
+    expect(fieldName(schema, 'Special Abilities')).toBe('abilities');
+    expect(fieldName(schema, 'Mood')).toBe('Mood');
+  });
+
+  it('says which names the system does not define, and what was likely meant', () => {
+    expect(unknownNamesNote(schema, ['Insight', 'special abilities'], 'remove')).toBe('');
+    const note = unknownNamesNote(schema, ['Insigth', 'playbok', 'Mood'], 'remove');
+    expect(note).toContain('"Insigth" (did you mean "Insight"?)');
+    expect(note).toContain('"playbok" (did you mean "playbook"?)');
+    expect(note).toMatch(/"Mood"(?! \()/);
+    expect(note).toContain('drop it with remove');
+    // A free-form sheet takes any name, so there is nothing to say.
+    expect(unknownNamesNote(EMPTY_SCHEMA, ['Mood'], 'remove')).toBe('');
+  });
+
+  it('names the GM-kept fields a save would leave alone', () => {
+    expect(gmKeptNames(schema, { heat: 2 }, ['Heat', 'Insight'])).toEqual(['heat']);
+    // Empty, it may still be filled in.
+    expect(gmKeptNames(schema, { heat: '' }, ['heat'])).toEqual([]);
+    expect(gmKeptNames(schema, {}, ['heat'])).toEqual([]);
   });
 });

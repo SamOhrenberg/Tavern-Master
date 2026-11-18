@@ -3,7 +3,17 @@ import type { CharacterController, CharacterKind, InventoryItem } from '@tavern/
 import { z } from 'zod';
 import { q, q1, tx } from './db/pool.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
-import { campaignSchema, checkSheet, keepGmFields, LIMITS, valueInput } from './sheet-schema.js';
+import {
+  campaignSchema,
+  checkSheet,
+  fieldName,
+  gmKeptNames,
+  keepGmFields,
+  LIMITS,
+  removeEntry,
+  unknownNamesNote,
+  valueInput,
+} from './sheet-schema.js';
 import { uploadPath } from './storage.js';
 
 /**
@@ -308,10 +318,20 @@ export async function deleteCharacter(
   await dropPortrait(gone?.portrait);
 }
 
+export interface DraftResult {
+  id: string;
+  created: boolean;
+  /** The names of what changed. */
+  changed: string[];
+  /** What the writer should know about the save: names the system does not define, fields left as they were. */
+  notes: string[];
+}
+
 /**
  * Apply a partial change from the guide: create the character if there is
- * none yet, otherwise merge into the sheet that is there. Returns the id and
- * the names of what changed.
+ * none yet, otherwise merge into the sheet that is there. Field names are
+ * matched to the system's own, by name or label. `asGm` is the GM writing
+ * (Claude building with the host), who may change the fields the GM keeps.
  */
 export async function applyDraft(
   campaignId: string,
@@ -319,22 +339,35 @@ export async function applyDraft(
   viewer: Viewer,
   patch: DraftPatch,
   control?: Control,
-): Promise<{ id: string; created: boolean; changed: string[] }> {
-  const changed = [
+  opts: { asGm?: boolean } = {},
+): Promise<DraftResult> {
+  const schema = await campaignSchema(campaignId);
+  const named = (field: string) => fieldName(schema, field);
+  const notes: string[] = [];
+  // Only what was written stays on the sheet: a removed name needs no note.
+  const unknown = unknownNamesNote(
+    schema,
+    (patch.fields ?? []).map((f) => f.field),
+    'remove_fields',
+  );
+  if (unknown) notes.push(unknown);
+  // Removals are named by the key that went, once the sheet is known.
+  const changedWith = (removed: string[]) => [
     ...(patch.name ? ['name'] : []),
     ...(patch.max_hp ? ['hit points'] : []),
-    ...(patch.fields ?? []).map((f) => f.field),
-    ...(patch.remove_fields ?? []).map((f) => `-${f}`),
+    ...(patch.fields ?? []).map((f) => named(f.field)),
+    ...removed.map((f) => `-${f}`),
     ...(patch.inventory ? ['inventory'] : []),
     ...(patch.persona !== undefined ? ['persona'] : []),
   ];
+  const changed = changedWith((patch.remove_fields ?? []).map(named));
   if (!changed.length) throw badRequest('Nothing to save.');
 
   if (!characterId) {
     if (!patch.name) throw badRequest('A new character needs a name before it can be saved.');
     // createCharacter checks the values against the system's schema.
     const sheet: Record<string, unknown> = {};
-    for (const { field, value } of patch.fields ?? []) sheet[field] = value;
+    for (const { field, value } of patch.fields ?? []) sheet[named(field)] = value;
     const id = await createCharacter(
       campaignId,
       viewer,
@@ -347,7 +380,7 @@ export async function applyDraft(
       },
       control,
     );
-    return { id, created: true, changed };
+    return { id, created: true, changed, notes };
   }
 
   const access = await loadAccess(campaignId, characterId);
@@ -361,10 +394,23 @@ export async function applyDraft(
   // Match an existing field whatever its capitalisation, so "level" updates "Level".
   const keyFor = (field: string) =>
     Object.keys(sheet).find((k) => k.toLowerCase() === field.toLowerCase()) ?? field;
-  for (const field of patch.remove_fields ?? []) delete sheet[keyFor(field)];
-  for (const { field, value } of patch.fields ?? []) sheet[keyFor(field)] = value;
-  const schema = await campaignSchema(campaignId);
-  const checked = keepGmFields(schema, row?.sheet ?? {}, checkSheet(schema, sheet));
+  const removed = (patch.remove_fields ?? []).map(
+    (field) => removeEntry(schema, sheet, field) ?? named(field),
+  );
+  for (const { field, value } of patch.fields ?? []) sheet[keyFor(named(field))] = value;
+  let checked = checkSheet(schema, sheet);
+  if (!opts.asGm) {
+    const before = row?.sheet ?? {};
+    checked = keepGmFields(schema, before, checked);
+    const kept = gmKeptNames(schema, before, [
+      ...(patch.fields ?? []).map((f) => f.field),
+      ...(patch.remove_fields ?? []),
+    ]);
+    if (kept.length)
+      notes.push(
+        `${kept.map((k) => `"${k}"`).join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept by the GM, so ${kept.length === 1 ? 'it was' : 'they were'} left as ${kept.length === 1 ? 'it was' : 'they were'}.`,
+      );
+  }
   const maxHp = patch.max_hp ?? row?.max_hp ?? 10;
   // Someone at full health stays at full health when their maximum changes.
   const hp = row && row.hp >= row.max_hp ? maxHp : Math.min(row?.hp ?? maxHp, maxHp);
@@ -383,5 +429,5 @@ export async function applyDraft(
       patch.persona ?? null,
     ],
   );
-  return { id: characterId, created: false, changed };
+  return { id: characterId, created: false, changed: changedWith(removed), notes };
 }

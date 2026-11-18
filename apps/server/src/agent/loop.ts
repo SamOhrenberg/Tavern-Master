@@ -68,6 +68,9 @@ export function publicSummary(tool: string, input: unknown, result: string): str
       return 'Updated the story record';
     case 'request_roll':
       return `Asked ${String((input as { character?: unknown })?.character ?? 'a player').slice(0, 80)} for a roll`;
+    case 'edit_sheet':
+      // The first line is the change; anything after it is a note for the GM alone.
+      return result.split('\n')[0]!.slice(0, 160);
     case 'ask_ai':
       // The answer is the GM's to use in its narration, so it is not shown here.
       return `Asked ${String((input as { ai?: unknown })?.ai ?? 'another AI').slice(0, 40)} for help`;

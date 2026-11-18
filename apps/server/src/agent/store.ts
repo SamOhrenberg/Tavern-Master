@@ -11,7 +11,7 @@ import type {
   SheetSchema,
 } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
-import { systemSchema } from '../sheet-schema.js';
+import { campaignSchema } from '../sheet-schema.js';
 import { editMessage } from '../realtime/messages.js';
 import { redactSecrets } from './loop.js';
 import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
@@ -128,10 +128,10 @@ export interface GameStore {
   characters(campaignId: string): Promise<CharRow[]>;
   /** Writes vitals and inventory only. Name, sheet and private notes are not writable here. */
   saveCharacter(c: CharRow): Promise<void>;
-  /** Writes the sheet fields and maximum hit points. Only reachable when the GM keeps the sheets. */
+  /** Writes the sheet fields and maximum hit points: edit_sheet, when the GM keeps the sheets. */
   saveSheet(c: CharRow): Promise<void>;
-  /** What a character sheet holds in this system. */
-  sheetSchema(systemId: string): Promise<SheetSchema>;
+  /** What a character sheet holds in this campaign. */
+  sheetSchema(campaignId: string): Promise<SheetSchema>;
   /** Set where party members are. An empty place puts them back with the party. */
   setWhereabouts(campaignId: string, places: { id: string; place: string }[]): Promise<void>;
   entities(campaignId: string): Promise<EntityRow[]>;
@@ -194,7 +194,7 @@ export const pgStore: GameStore = {
   searchRules: (systemId, query, k, campaignId) => searchRules(systemId, query, k, undefined, campaignId),
   searchDocuments: (campaignId, query, k, tableOnly) => searchCampaignDocs(campaignId, query, k, tableOnly),
   searchSetting: (systemId, query, k) => searchSetting(systemId, query, k),
-  sheetSchema: (systemId) => systemSchema(systemId),
+  sheetSchema: (campaignId) => campaignSchema(campaignId),
 
   async characters(campaignId) {
     const rows = await q<CharDb>(

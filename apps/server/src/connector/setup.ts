@@ -70,7 +70,8 @@ setHostSave(async (input, t) => {
       control = { kind, controller: 'player', playerIds: [member.id] };
     }
   }
-  const out = await asTool(() => applyDraft(t.id, characterId, owner, patch, control));
+  // Claude is the GM here, so the fields the GM keeps are its to change.
+  const out = await asTool(() => applyDraft(t.id, characterId, owner, patch, control, { asGm: true }));
   t.room.partyChanged();
   return savedLine(out);
 });
