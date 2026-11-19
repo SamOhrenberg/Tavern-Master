@@ -239,10 +239,11 @@ function replyAsk(turn: TurnInput, name: string): string[] {
 
 /** Turn the model's reply into an action, or nothing when it passed or wandered off. */
 export function companionAction(raw: string): string | null {
-  const text = raw
-    .trim()
-    .replace(/^["“]|["”]$/g, '')
-    .trim();
+  const trimmed = raw.trim();
+  // Unwrap a reply the model put wholly in quotes, but only then: a line that
+  // merely ends with speech ('Kestrel squints. "A mast."') keeps its quotes.
+  const wrapped = /^["“]([^"“”]*)["”]$/.exec(trimmed);
+  const text = (wrapped ? wrapped[1]! : trimmed).trim();
   if (!text || /^pass\b/i.test(text)) return null;
   return text.length > MAX_ACTION ? `${text.slice(0, MAX_ACTION - 1).trimEnd()}…` : text;
 }

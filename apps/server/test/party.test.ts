@@ -572,6 +572,11 @@ describe('a companion with its own AI', () => {
     expect(companionAction('  pass. ')).toBeNull();
     expect(companionAction('')).toBeNull();
     expect(companionAction('"I nod and follow."')).toBe('I nod and follow.');
+    // Speech at either end of a line keeps its quotes.
+    expect(companionAction('Kestrel squints. "A mast, low in the water."')).toBe(
+      'Kestrel squints. "A mast, low in the water."',
+    );
+    expect(companionAction('"Down!" Gull shouts, and ducks.')).toBe('"Down!" Gull shouts, and ducks.');
     expect(companionAction('word '.repeat(400))!.length).toBeLessThanOrEqual(600);
   });
 
