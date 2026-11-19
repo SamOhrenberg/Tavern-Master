@@ -308,6 +308,8 @@ describe('a companion with its own AI', () => {
       secretRevealed: false,
       firstSeenAt: null,
       inCodex: true,
+      sheet: [],
+      hidden: false,
       ...over,
     });
     const known = knownEntries([

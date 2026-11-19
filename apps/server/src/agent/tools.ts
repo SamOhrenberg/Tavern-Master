@@ -34,7 +34,7 @@ export interface ToolSpec<S extends z.ZodType = z.ZodType> {
 export const tool = <S extends z.ZodType>(spec: ToolSpec<S>): ToolSpec => spec as unknown as ToolSpec;
 
 const name = z.string().trim().min(1).max(80);
-const kind = z.enum(['npc', 'location', 'quest', 'item', 'faction', 'event', 'term']);
+const kind = z.enum(['npc', 'creature', 'location', 'quest', 'item', 'faction', 'event', 'term']);
 
 async function findCharacter(store: GameStore, ctx: TurnContext, who: string): Promise<CharRow> {
   const chars = await store.characters(ctx.campaignId);
@@ -254,6 +254,14 @@ export const TOOLS: ToolSpec[] = [
             ? { secret: e.secret, secretStatus: e.secretRevealed ? 'revealed' : 'UNREVEALED' }
             : {}),
           ...(e.articleSecret ? { articleSecret: e.articleSecret } : {}),
+          ...(e.sheet.length
+            ? {
+                sheet: e.sheet.map(
+                  (l) => `${l.label}: ${l.value}${l.hidden ? ' (HIDDEN from players)' : ''}`,
+                ),
+              }
+            : {}),
+          ...(e.hidden ? { metYet: false } : {}),
         })),
         flags,
       });
@@ -482,10 +490,13 @@ export const TOOLS: ToolSpec[] = [
     name: 'upsert_entity',
     description:
       'Create or update something the story should remember and the players can browse in the campaign codex: an ' +
-      'NPC, location, quest, item, faction, notable `event`, or a `term` (any other proper noun — a god, a ship, a ' +
-      'spell). `summary` and `article` are player-visible, so put only what the characters could plausibly know ' +
-      'there; `secret`/`article_secret` hold hidden truths (a traitor’s identity, a trap) that players never ' +
-      'see until you call reveal_secret. `aliases` are other names you may narrate it by.',
+      'NPC, a `creature` (a monster or kind of mob the party fights or meets), location, quest, item, faction, ' +
+      'notable `event`, or a `term` (any other proper noun — a god, a ship, a spell). `summary` and `article` are ' +
+      'player-visible, so put only what the characters could plausibly know there; `secret`/`article_secret` hold ' +
+      'hidden truths (a traitor’s identity, a trap) that players never see until you call reveal_secret. ' +
+      '`aliases` are other names you may narrate it by. People and creatures keep a `sheet`, a stat block of ' +
+      'labelled lines; mark a line hidden when the party has not learned it (exact hit points, a power not yet ' +
+      'seen, a true motive). Set `hidden` on an entry the party has not met yet; naming it in narration shows it.',
     schema: z.object({
       kind,
       name,
@@ -508,6 +519,20 @@ export const TOOLS: ToolSpec[] = [
         .optional()
         .describe('Short state, e.g. "hostile", "active", "completed"'),
       secret: z.string().trim().max(600).optional(),
+      sheet: z
+        .array(
+          z.object({
+            label: z.string().trim().min(1).max(60).describe('e.g. "Armor Class", "Hit Points", "Attacks"'),
+            value: z.string().trim().max(400).describe('The value; empty removes the line'),
+            hidden: z.boolean().optional().describe('True while the party has not learned this line'),
+          }),
+        )
+        .max(30)
+        .optional()
+        .describe(
+          'Stat block lines for a person or creature, set by label; lines you leave out stay as they are',
+        ),
+      hidden: z.boolean().optional().describe('True for an entry the party has not met yet'),
       article_secret: z
         .string()
         .trim()
@@ -534,10 +559,32 @@ export const TOOLS: ToolSpec[] = [
   tool({
     name: 'reveal_secret',
     description:
-      "Mark an entity's secret as discovered by the party. Call this at the moment the story reveals it; only " +
-      'then may you narrate it.',
-    schema: z.object({ kind, name }),
+      "Mark an entity's secret as discovered by the party, or with `line`, one hidden line of its stat block. " +
+      'Call this at the moment the story reveals it; only then may you narrate it.',
+    schema: z.object({
+      kind,
+      name,
+      line: z
+        .string()
+        .trim()
+        .min(1)
+        .max(60)
+        .optional()
+        .describe('The label of a hidden stat block line to reveal'),
+    }),
     async run(input, ctx, store) {
+      if (input.line) {
+        const value = await store.revealLine(ctx.campaignId, input.kind, input.name, input.line);
+        if (value === undefined)
+          throw new ToolError(`${input.name} has no hidden line called "${input.line}".`);
+        ctx.stateChanged = true;
+        await store.recordEvent(ctx, {
+          tool: 'reveal_secret',
+          targetType: input.kind,
+          summary: `Learned about ${input.name}: ${input.line}`,
+        });
+        return `Revealed. The players now see ${input.line}: ${value}`;
+      }
       const secret = await store.revealSecret(ctx.campaignId, input.kind, input.name);
       if (secret === undefined) throw new ToolError(`No ${input.kind} named "${input.name}" has a secret.`);
       ctx.stateChanged = true;

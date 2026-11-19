@@ -13,7 +13,7 @@ import type {
 import { rm } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { entityMatches, scopeEntity } from '../agent/codex.js';
+import { entityMatches, playerVisible, scopeEntity } from '../agent/codex.js';
 import { audit } from '../audit.js';
 import { redactSecrets } from '../agent/loop.js';
 import { pgStore } from '../agent/store.js';
@@ -716,7 +716,8 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           scene,
           characters,
           // Unrevealed secrets never leave the server, not even for the owner, who is usually a player too.
-          entities: entities.map(scopeEntity),
+          // Planned entries the party has not met are not sent, to anyone.
+          entities: entities.filter((e) => !e.hidden).map(scopeEntity),
           flags,
           events: events.map((e) => ({
             id: e.id,
@@ -748,12 +749,15 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     async (req): Promise<{ entries: Entity[] }> => {
       const { campaignId } = await requireMember(req);
       const kind = req.query.kind
-        ? parse(z.enum(['npc', 'location', 'quest', 'item', 'faction', 'event', 'term']), req.query.kind)
+        ? parse(
+            z.enum(['npc', 'creature', 'location', 'quest', 'item', 'faction', 'event', 'term']),
+            req.query.kind,
+          )
         : null;
       const query = typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : '';
       const rows = await pgStore.entities(campaignId);
       const entries = rows
-        .filter((e) => e.inCodex && (!kind || e.kind === kind) && entityMatches(e, query))
+        .filter((e) => playerVisible(e) && (!kind || e.kind === kind) && entityMatches(e, query))
         .map(scopeEntity);
       return { entries };
     },
@@ -765,7 +769,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       const { campaignId } = await requireMember(req);
       const entityId = parse(uuid, req.params.entityId);
       const rows = await pgStore.entities(campaignId);
-      const found = rows.find((e) => e.id === entityId && e.inCodex);
+      const found = rows.find((e) => e.id === entityId && playerVisible(e));
       if (!found) throw notFound('No such codex entry');
       return { entry: scopeEntity(found) };
     },

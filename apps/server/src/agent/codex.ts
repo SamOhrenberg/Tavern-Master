@@ -1,4 +1,4 @@
-import type { Entity, EntityRef } from '@tavern/protocol';
+import type { Entity, EntityFull, EntityRef, StatLineFull } from '@tavern/protocol';
 import type { EntityRow } from './store.js';
 
 /**
@@ -20,7 +20,70 @@ export function scopeEntity(e: EntityRow): Entity {
     firstSeenAt: e.firstSeenAt,
     ...(revealed ? { secret: e.secret! } : {}),
     ...(revealed && e.articleSecret ? { articleSecret: e.articleSecret } : {}),
+    // Hidden lines are spoilers: they stay on the server until the DM reveals them.
+    sheet: e.sheet.filter((l) => !l.hidden).map(({ label, value }) => ({ label, value })),
   };
+}
+
+/** Everything about an entry, spoilers included: for the campaign's owners only. */
+export function fullEntity(e: EntityRow): EntityFull {
+  return {
+    id: e.id,
+    kind: e.kind,
+    name: e.name,
+    aliases: e.aliases,
+    summary: e.summary,
+    article: e.article,
+    status: e.status,
+    secret: e.secret ?? '',
+    articleSecret: e.articleSecret ?? '',
+    secretRevealed: e.secretRevealed,
+    firstSeenAt: e.firstSeenAt,
+    sheet: e.sheet,
+    hidden: e.hidden,
+  };
+}
+
+/** Entries players are sent: browsable, and met (not still planned). */
+export const playerVisible = (e: EntityRow) => e.inCodex && !e.hidden;
+
+const MAX_LINES = 40;
+
+/**
+ * Update a stat block line by line, as the DM writes it: a line whose label
+ * is already there (matched without regard to case) takes the new value, a
+ * new label is added at the end, and an empty value removes the line. A line
+ * keeps whether it is hidden unless the update says otherwise; a new one is
+ * shown unless marked hidden.
+ */
+export function mergeStatLines(
+  current: StatLineFull[],
+  changes: { label: string; value: string; hidden?: boolean }[],
+): StatLineFull[] {
+  const out = current.map((l) => ({ ...l }));
+  for (const c of changes) {
+    const label = c.label.trim();
+    if (!label) continue;
+    const at = out.findIndex((l) => l.label.toLowerCase() === label.toLowerCase());
+    const value = c.value.trim();
+    if (!value) {
+      if (at >= 0) out.splice(at, 1);
+      continue;
+    }
+    if (at >= 0) out[at] = { label, value, hidden: c.hidden ?? out[at]!.hidden };
+    else out.push({ label, value, hidden: c.hidden ?? false });
+  }
+  return out.slice(0, MAX_LINES);
+}
+
+/** Read a stat block from the database, dropping anything malformed. */
+export function readStatLines(raw: unknown): StatLineFull[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((l) =>
+    l && typeof l === 'object' && typeof l.label === 'string' && typeof l.value === 'string'
+      ? [{ label: l.label, value: l.value, hidden: l.hidden === true }]
+      : [],
+  );
 }
 
 /**

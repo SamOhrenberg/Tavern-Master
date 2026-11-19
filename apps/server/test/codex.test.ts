@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { entityMatches, resolveRefs, scopeEntity } from '../src/agent/codex.js';
+import {
+  entityMatches,
+  fullEntity,
+  mergeStatLines,
+  playerVisible,
+  resolveRefs,
+  scopeEntity,
+} from '../src/agent/codex.js';
 import type { EntityRow } from '../src/agent/store.js';
 
 const row = (over: Partial<EntityRow> = {}): EntityRow => ({
@@ -15,6 +22,8 @@ const row = (over: Partial<EntityRow> = {}): EntityRow => ({
   secretRevealed: false,
   firstSeenAt: '2026-11-12T00:00:00.000Z',
   inCodex: true,
+  sheet: [],
+  hidden: false,
   ...over,
 });
 
@@ -102,5 +111,39 @@ describe('resolveRefs', () => {
     const { content, refs } = resolveRefs('[[Captain Vane]] nods. [[Captain Vane]] leaves.', world);
     expect(content).toBe('[[Captain Vane]] nods. [[Captain Vane]] leaves.');
     expect(refs).toHaveLength(1);
+  });
+});
+
+describe('stat blocks for people and creatures', () => {
+  const sheet = [
+    { label: 'Armor Class', value: '13', hidden: false },
+    { label: 'True name', value: 'Mordath the Unbound', hidden: true },
+  ];
+
+  it('sends players only the lines they have learned, and owners everything', () => {
+    expect(scopeEntity(row({ sheet })).sheet).toEqual([{ label: 'Armor Class', value: '13' }]);
+    const full = fullEntity(row({ sheet, hidden: true }));
+    expect(full.sheet).toEqual(sheet);
+    expect(full).toMatchObject({ hidden: true, secret: 'Secretly working for the Syndicate.' });
+  });
+
+  it('keeps planned entries the party has not met away from players', () => {
+    expect(playerVisible(row())).toBe(true);
+    expect(playerVisible(row({ hidden: true }))).toBe(false);
+    expect(playerVisible(row({ inCodex: false }))).toBe(false);
+  });
+
+  it('merges changes by label: replaces, adds, removes, and keeps whether a line is hidden', () => {
+    expect(
+      mergeStatLines(sheet, [
+        { label: 'true NAME', value: 'Mordath' },
+        { label: 'Armor Class', value: '' },
+        { label: 'Speed', value: '30 ft.' },
+        { label: '  ', value: 'ignored' },
+      ]),
+    ).toEqual([
+      { label: 'true NAME', value: 'Mordath', hidden: true },
+      { label: 'Speed', value: '30 ft.', hidden: false },
+    ]);
   });
 });

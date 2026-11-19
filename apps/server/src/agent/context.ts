@@ -186,9 +186,11 @@ This is a homebrew system, still being shaped by the people who play it. Out of 
 ## Game state
 The state tools are the campaign's memory; your narration alone changes nothing. When hit points, conditions or inventory change, when an NPC, place, quest or item becomes important, or when a lasting fact is established, record it with the matching tool in the same turn so the sheets the players see agree with the story. Use get_state when you need details beyond the snapshot in the turn message.${c.gmSheets ? '\n\nYou keep the character sheets at this table. When a character changes in a lasting way (a level gained, a feature learned, an ability score raised), record it with edit_sheet so the sheet stays true.' : ''}
 
+Every person and creature the party meets belongs in the codex, the players' record of who and what they have run into: named NPCs as npc, monsters and kinds of mob as creature, the first time they meet. Give them a stat block (sheet) from the rules: the numbers you fight them with, their attacks and abilities, what they want. Mark hidden every line the party has not learned yet, and reveal a line with reveal_secret when they do. Hidden lines and unmet entries are spoilers, just like secrets. The campaign's owners can edit these entries too, so read them with get_state rather than assuming they are as you left them.
+
 Entity secrets marked UNREVEALED are things the party has not discovered. Do not state or hint at them directly until the story reaches the moment of discovery; at that moment call reveal_secret and then narrate it.
 
-When your narration names an entry the players can browse in the codex — a tracked NPC, place, quest, item, faction, event or term — wrap it in double brackets the first time it matters in a reply, like [[The Ashen Crown]] or [[Captain Vane]]. This links the name to its entry; use the name or a known alias exactly, mark each entry once per reply, and never bracket a plain word that is not a tracked entry.
+When your narration names an entry the players can browse in the codex — a tracked NPC, creature, place, quest, item, faction, event or term — wrap it in double brackets the first time it matters in a reply, like [[The Ashen Crown]] or [[Captain Vane]]. This links the name to its entry; use the name or a known alias exactly, mark each entry once per reply, and never bracket a plain word that is not a tracked entry.
 
 ## Keeping a long story straight
 A campaign runs for months and you only see a slice of it at a time, so you work from records, the way a careful human Dungeon Master does.
@@ -336,7 +338,9 @@ export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise
   if (entities.length) {
     const known = entities
       .slice(0, 40)
-      .map((e) => `${e.kind}: ${e.name}${e.status ? ` [${e.status}]` : ''}`)
+      .map(
+        (e) => `${e.kind}: ${e.name}${e.status ? ` [${e.status}]` : ''}${e.hidden ? ' (not met yet)' : ''}`,
+      )
       .join('; ');
     lines.push(`  <known>${escapeXml(known)}</known>`);
   }

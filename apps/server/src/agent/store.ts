@@ -9,11 +9,13 @@ import type {
   RollKind,
   RuleHit,
   SheetSchema,
+  StatLineFull,
 } from '@tavern/protocol';
 import { q, q1 } from '../db/pool.js';
 import { campaignSchema, inventoryOf } from '../sheet-schema.js';
 import { editMessage } from '../realtime/messages.js';
 import { redactSecrets } from './loop.js';
+import { mergeStatLines, readStatLines } from './codex.js';
 import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
 
 /** A player taking part in the turn being resolved. Built by the server, never by the model. */
@@ -78,6 +80,10 @@ export interface EntityRow {
   secretRevealed: boolean;
   firstSeenAt: string | null;
   inCodex: boolean;
+  /** The stat block of a person or creature; hidden lines are spoilers. */
+  sheet: StatLineFull[];
+  /** Planned: the party has not met it yet. */
+  hidden: boolean;
 }
 
 export interface EntityInput {
@@ -89,6 +95,9 @@ export interface EntityInput {
   status?: string;
   secret?: string;
   articleSecret?: string;
+  /** Stat block lines to set, add or (with an empty value) remove, by label. */
+  sheet?: { label: string; value: string; hidden?: boolean }[];
+  hidden?: boolean;
 }
 
 export interface StateEventInput {
@@ -143,6 +152,8 @@ export interface GameStore {
   entities(campaignId: string): Promise<EntityRow[]>;
   upsertEntity(campaignId: string, e: EntityInput): Promise<{ id: string; created: boolean }>;
   revealSecret(campaignId: string, kind: EntityKind, name: string): Promise<string | undefined>;
+  /** Show the players one hidden line of an entry's stat block. Returns its value, or undefined if there is no such hidden line. */
+  revealLine(campaignId: string, kind: EntityKind, name: string, label: string): Promise<string | undefined>;
   /** Remove an entry. False when there is none by that name. */
   deleteEntity(campaignId: string, kind: EntityKind, name: string): Promise<boolean>;
   /** Remove a story flag. False when it was not set. */
@@ -260,7 +271,7 @@ export const pgStore: GameStore = {
   async entities(campaignId) {
     const rows = await q(
       `SELECT id, kind, name, aliases, summary, article, status, secret, article_secret,
-              secret_revealed, first_seen_message_id, in_codex,
+              secret_revealed, first_seen_message_id, in_codex, sheet, hidden,
               (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at
          FROM entities
         WHERE campaign_id = $1 ORDER BY kind, name`,
@@ -279,17 +290,30 @@ export const pgStore: GameStore = {
       secretRevealed: r.secret_revealed,
       firstSeenAt: r.first_seen_at ? r.first_seen_at.toISOString() : null,
       inCodex: r.in_codex,
+      sheet: readStatLines(r.sheet),
+      hidden: r.hidden,
     }));
   },
 
   async upsertEntity(campaignId, e) {
+    // Stat block lines merge into what is there, so the DM can change one line at a time.
+    let sheet: StatLineFull[] | null = null;
+    if (e.sheet) {
+      const had = await q1<{ sheet: unknown }>(
+        'SELECT sheet FROM entities WHERE campaign_id = $1 AND kind = $2 AND lower(name) = lower($3)',
+        [campaignId, e.kind, e.name],
+      );
+      sheet = mergeStatLines(readStatLines(had?.sheet), e.sheet);
+    }
     const row = await q1<{ id: string; created: boolean }>(
-      `INSERT INTO entities (campaign_id, kind, name, aliases, summary, article, status, secret, article_secret)
-       VALUES ($1, $2, $3, coalesce($4, '[]'::jsonb), coalesce($5, ''), coalesce($6, ''), coalesce($7, ''), $8, $9)
+      `INSERT INTO entities (campaign_id, kind, name, aliases, summary, article, status, secret, article_secret, sheet, hidden)
+       VALUES ($1, $2, $3, coalesce($4, '[]'::jsonb), coalesce($5, ''), coalesce($6, ''), coalesce($7, ''), $8, $9,
+               coalesce($10, '[]'::jsonb), coalesce($11, false))
        ON CONFLICT (campaign_id, kind, lower(name)) DO UPDATE
          SET aliases = coalesce($4, entities.aliases), summary = coalesce($5, entities.summary),
              article = coalesce($6, entities.article), status = coalesce($7, entities.status),
              secret = coalesce($8, entities.secret), article_secret = coalesce($9, entities.article_secret),
+             sheet = coalesce($10, entities.sheet), hidden = coalesce($11, entities.hidden),
              updated_at = now()
        RETURNING id, (xmax = 0) AS created`,
       [
@@ -302,9 +326,28 @@ export const pgStore: GameStore = {
         e.status ?? null,
         e.secret ?? null,
         e.articleSecret ?? null,
+        sheet ? JSON.stringify(sheet) : null,
+        e.hidden ?? null,
       ],
     );
     return row!;
+  },
+
+  async revealLine(campaignId, kind, name, label) {
+    const row = await q1<{ id: string; sheet: unknown }>(
+      'SELECT id, sheet FROM entities WHERE campaign_id = $1 AND kind = $2 AND lower(name) = lower($3)',
+      [campaignId, kind, name],
+    );
+    if (!row) return undefined;
+    const lines = readStatLines(row.sheet);
+    const line = lines.find((l) => l.hidden && l.label.toLowerCase() === label.trim().toLowerCase());
+    if (!line) return undefined;
+    line.hidden = false;
+    await q('UPDATE entities SET sheet = $2, updated_at = now() WHERE id = $1', [
+      row.id,
+      JSON.stringify(lines),
+    ]);
+    return line.value;
   },
 
   async revealSecret(campaignId, kind, name) {
@@ -319,8 +362,10 @@ export const pgStore: GameStore = {
   async markFirstSeen(campaignId, entityIds, messageId) {
     if (entityIds.length === 0) return;
     await q(
-      `UPDATE entities SET first_seen_message_id = $3
-        WHERE campaign_id = $1 AND id = ANY($2::uuid[]) AND first_seen_message_id IS NULL`,
+      // Named in narration: the party has met it, so a planned entry is shown from now on.
+      `UPDATE entities SET first_seen_message_id = coalesce(first_seen_message_id, $3), hidden = false
+        WHERE campaign_id = $1 AND id = ANY($2::uuid[])
+          AND (first_seen_message_id IS NULL OR hidden)`,
       [campaignId, entityIds, messageId],
     );
   },

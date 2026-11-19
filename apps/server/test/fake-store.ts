@@ -1,4 +1,5 @@
 import type { RuleHit, SheetSchema } from '@tavern/protocol';
+import { mergeStatLines } from '../src/agent/codex.js';
 import { EMPTY_SCHEMA, inventoryOf } from '../src/sheet-schema.js';
 import type {
   CharRow,
@@ -87,6 +88,8 @@ export class FakeStore implements GameStore {
       status?: string;
       secret?: string;
       articleSecret?: string;
+      sheet?: { label: string; value: string; hidden?: boolean }[];
+      hidden?: boolean;
     },
   ) {
     const found = this.ents.find((x) => x.kind === e.kind && x.name.toLowerCase() === e.name.toLowerCase());
@@ -98,6 +101,8 @@ export class FakeStore implements GameStore {
         status: e.status ?? found.status,
         secret: e.secret ?? found.secret,
         articleSecret: e.articleSecret ?? found.articleSecret,
+        sheet: e.sheet ? mergeStatLines(found.sheet, e.sheet) : found.sheet,
+        hidden: e.hidden ?? found.hidden,
       });
       return { id: found.id, created: false };
     }
@@ -115,12 +120,24 @@ export class FakeStore implements GameStore {
       secretRevealed: false,
       firstSeenAt: null,
       inCodex: true,
+      sheet: mergeStatLines([], e.sheet ?? []),
+      hidden: e.hidden ?? false,
     });
     return { id, created: true };
   }
   async markFirstSeen(_campaignId: string, entityIds: string[], _messageId: number) {
     for (const e of this.ents)
-      if (entityIds.includes(e.id) && !e.firstSeenAt) e.firstSeenAt = '2026-01-01T00:00:00.000Z';
+      if (entityIds.includes(e.id)) {
+        e.firstSeenAt ??= '2026-01-01T00:00:00.000Z';
+        e.hidden = false;
+      }
+  }
+  async revealLine(_campaignId: string, kind: EntityRow['kind'], name: string, label: string) {
+    const found = this.ents.find((x) => x.kind === kind && x.name.toLowerCase() === name.toLowerCase());
+    const line = found?.sheet.find((l) => l.hidden && l.label.toLowerCase() === label.toLowerCase());
+    if (!line) return undefined;
+    line.hidden = false;
+    return line.value;
   }
   async revealSecret(_campaignId: string, kind: EntityRow['kind'], name: string) {
     const found = this.ents.find(

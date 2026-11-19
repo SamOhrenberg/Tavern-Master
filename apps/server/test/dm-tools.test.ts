@@ -19,6 +19,47 @@ describe('the DM’s tools for keeping the record straight', () => {
     expect(store.events.at(-1)?.tool).toBe('correct_narration');
   });
 
+  it('keeps a creature’s stat block line by line, and reveals a hidden line when the party learns it', async () => {
+    const store = new FakeStore();
+    const ctx = context();
+    const roach = { kind: 'creature', name: 'Dumpster Roach' };
+    await dispatchTool(
+      'upsert_entity',
+      {
+        ...roach,
+        summary: 'A dog-sized cockroach that nests in the alley bins.',
+        sheet: [
+          { label: 'Armor Class', value: '12' },
+          { label: 'Hit Points', value: '9 (2d8)', hidden: true },
+          { label: 'Bite', value: '+2 to hit, 1d4+1 piercing' },
+        ],
+      },
+      ctx,
+      store,
+    );
+    // One line changes; the rest stay as they were, hidden or not.
+    await dispatchTool(
+      'upsert_entity',
+      { ...roach, sheet: [{ label: 'armor class', value: '13' }] },
+      ctx,
+      store,
+    );
+    expect(store.ents[0]!.sheet).toEqual([
+      { label: 'armor class', value: '13', hidden: false },
+      { label: 'Hit Points', value: '9 (2d8)', hidden: true },
+      { label: 'Bite', value: '+2 to hit, 1d4+1 piercing', hidden: false },
+    ]);
+
+    const out = await dispatchTool('reveal_secret', { ...roach, line: 'hit points' }, ctx, store);
+    expect(out.isError).toBe(false);
+    expect(out.content).toContain('9 (2d8)');
+    expect(store.ents[0]!.sheet[1]!.hidden).toBe(false);
+    expect(store.events.at(-1)?.summary).toBe('Learned about Dumpster Roach: hit points');
+    expect((await dispatchTool('reveal_secret', { ...roach, line: 'Hit Points' }, ctx, store)).isError).toBe(
+      true,
+    );
+  });
+
   it('removes a codex entry made by mistake, and says so when there is none', async () => {
     const store = new FakeStore();
     await store.upsertEntity('camp-1', { kind: 'npc', name: 'Vane' });

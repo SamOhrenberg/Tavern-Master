@@ -36,16 +36,19 @@ export interface KnownEntry {
  * revealed one is in the story already.
  */
 export function knownEntries(entities: EntityRow[]): KnownEntry[] {
-  return entities
-    .filter((e) => e.inCodex)
-    .sort((a, b) => (b.firstSeenAt ?? '').localeCompare(a.firstSeenAt ?? ''))
-    .slice(0, MAX_KNOWN)
-    .map((e) => ({
-      kind: e.kind,
-      name: e.name,
-      summary: e.summary.replace(/\s+/g, ' ').trim().slice(0, 200),
-      status: e.status,
-    }));
+  return (
+    entities
+      // Only what the party has met: a planned entry is unknown to them.
+      .filter((e) => e.inCodex && !e.hidden)
+      .sort((a, b) => (b.firstSeenAt ?? '').localeCompare(a.firstSeenAt ?? ''))
+      .slice(0, MAX_KNOWN)
+      .map((e) => ({
+        kind: e.kind,
+        name: e.name,
+        summary: e.summary.replace(/\s+/g, ' ').trim().slice(0, 200),
+        status: e.status,
+      }))
+  );
 }
 
 function knownBlock(known: KnownEntry[]): string {

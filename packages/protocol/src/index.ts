@@ -761,7 +761,18 @@ export type WorkshopEvent =
   | { type: 'queued' }
   | { type: 'error'; message: string };
 
-export type EntityKind = 'npc' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
+export type EntityKind = 'npc' | 'creature' | 'location' | 'quest' | 'item' | 'faction' | 'event' | 'term';
+
+/** One line of a person's or creature's stat block, e.g. "Armor Class: 13". */
+export interface StatLine {
+  label: string;
+  value: string;
+}
+
+/** A stat block line as the owners edit it: `hidden` lines are spoilers players are not sent. */
+export interface StatLineFull extends StatLine {
+  hidden: boolean;
+}
 
 export interface Entity {
   id: string;
@@ -781,6 +792,36 @@ export interface Entity {
   secretRevealed: boolean;
   /** ISO time players first met this entry, or null if not yet recorded. */
   firstSeenAt: string | null;
+  /** The stat block, for people and creatures: only the lines the party may know. */
+  sheet: StatLine[];
+}
+
+/**
+ * An entry with everything in it, spoilers included, as only the campaign's
+ * owners are sent it, and only when they ask (to edit, or to look behind the curtain).
+ */
+export interface EntityFull extends Omit<Entity, 'sheet' | 'secret' | 'articleSecret'> {
+  sheet: StatLineFull[];
+  /** '' when there is none. */
+  secret: string;
+  articleSecret: string;
+  /** Planned: the party has not met it, and players are not sent it. */
+  hidden: boolean;
+}
+
+/** What an owner sends to create or change an entry. */
+export interface EntityEdit {
+  kind: EntityKind;
+  name: string;
+  aliases: string[];
+  summary: string;
+  article: string;
+  status: string;
+  sheet: StatLineFull[];
+  secret: string;
+  articleSecret: string;
+  secretRevealed: boolean;
+  hidden: boolean;
 }
 
 export interface StateEvent {

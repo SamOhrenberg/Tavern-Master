@@ -4,6 +4,7 @@ import { Sheet } from '../ui';
 
 const KIND_LABEL: Record<EntityKind, string> = {
   npc: 'Person',
+  creature: 'Creature',
   location: 'Place',
   quest: 'Quest',
   item: 'Item',
