@@ -39,6 +39,8 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
   const c = campaign.data!.campaign;
   const game = state.data?.state;
   const owner = c.role === 'owner';
+  // Owners share the host's controls, but only the host is exempt from the ready check.
+  const isHost = c.ownerId === me.id;
 
   const [cast, setCast] = useState<CastPanel>(null);
   const [guideSignal, setGuideSignal] = useState(0);
@@ -362,40 +364,7 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
       </div>
 
       <footer className="play-foot">
-        {owner && waitingOn.length > 0 ? (
-          <div className="stack tight">
-            <button type="button" className="btn primary block" disabled>
-              Begin the adventure
-            </button>
-            <p className="small faint center">
-              Waiting for {nameList(waitingOn.map((m) => m.displayName))} to ready up.
-            </p>
-          </div>
-        ) : owner ? (
-          <div className="stack tight">
-            <ConfirmButton
-              className="btn primary block"
-              confirmLabel={
-                claude && dm.state === 'never'
-                  ? 'Claude has not joined yet. Begin anyway? Tap again'
-                  : characters.length === 0
-                    ? 'Begin with no characters? Tap again'
-                    : without.length > 0
-                      ? `${without.length === 1 ? without[0]!.displayName + ' has' : without.length + ' players have'} no character. Tap again`
-                      : 'Tap again to begin'
-              }
-              disabled={busy}
-              onConfirm={() => void begin()}
-            >
-              Begin the adventure
-            </ConfirmButton>
-            <p className="small faint center">
-              {claude
-                ? 'Claude plans the story and writes the opening scene when it is at the table.'
-                : 'The DM plans the story, then sets the opening scene.'}
-            </p>
-          </div>
-        ) : (
+        {!isHost && (
           <div className="stack tight">
             <button
               type="button"
@@ -412,17 +381,55 @@ export function Prep({ id, campaign, state, schema }: TableProps) {
                 "I'm ready"
               )}
             </button>
-            <p className="small faint center">
-              {!iAmReady && mine.length === 0
-                ? 'Create your character first, then ready up.'
-                : !iAmReady
-                  ? `${host?.displayName ?? 'The host'} can begin once everyone is ready.`
-                  : othersWaiting.length > 0
-                    ? `Waiting for ${nameList(othersWaiting.map((m) => m.displayName))} to ready up.`
-                    : `Everyone is ready. Waiting for ${host?.displayName ?? 'the host'} to begin.`}
-            </p>
+            {!owner && (
+              <p className="small faint center">
+                {!iAmReady && mine.length === 0
+                  ? 'Create your character first, then ready up.'
+                  : !iAmReady
+                    ? `${host?.displayName ?? 'The host'} can begin once everyone is ready.`
+                    : othersWaiting.length > 0
+                      ? `Waiting for ${nameList(othersWaiting.map((m) => m.displayName))} to ready up.`
+                      : `Everyone is ready. Waiting for ${host?.displayName ?? 'the host'} to begin.`}
+              </p>
+            )}
           </div>
         )}
+        {owner &&
+          (waitingOn.length > 0 ? (
+            <div className="stack tight">
+              <button type="button" className="btn primary block" disabled>
+                Begin the adventure
+              </button>
+              <p className="small faint center">
+                Waiting for {nameList(waitingOn.map((m) => (m.id === me.id ? 'you' : m.displayName)))} to
+                ready up.
+              </p>
+            </div>
+          ) : (
+            <div className="stack tight">
+              <ConfirmButton
+                className="btn primary block"
+                confirmLabel={
+                  claude && dm.state === 'never'
+                    ? 'Claude has not joined yet. Begin anyway? Tap again'
+                    : characters.length === 0
+                      ? 'Begin with no characters? Tap again'
+                      : without.length > 0
+                        ? `${without.length === 1 ? without[0]!.displayName + ' has' : without.length + ' players have'} no character. Tap again`
+                        : 'Tap again to begin'
+                }
+                disabled={busy}
+                onConfirm={() => void begin()}
+              >
+                Begin the adventure
+              </ConfirmButton>
+              <p className="small faint center">
+                {claude
+                  ? 'Claude plans the story and writes the opening scene when it is at the table.'
+                  : 'The DM plans the story, then sets the opening scene.'}
+              </p>
+            </div>
+          ))}
       </footer>
 
       <CastPanels

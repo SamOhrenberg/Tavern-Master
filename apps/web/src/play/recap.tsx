@@ -60,6 +60,8 @@ export function RecapView({
   const recap = useQuery(() => api<Recap>(`/campaigns/${c.id}/recap`), [c.id, c.restingSince]);
   const [busy, run] = useAction();
   const owner = c.role === 'owner';
+  // Owners share the host's controls, but only the host is exempt from the ready check.
+  const isHost = c.ownerId === meId;
   const sessions = recap.data?.sessions ?? [];
   const arcs = recap.data?.arcs ?? [];
   const latest = sessions[sessions.length - 1];
@@ -169,33 +171,7 @@ export function RecapView({
 
       <footer className="play-foot">
         <TalkBox onTalk={onTalk} />
-        {owner ? (
-          <div className="stack tight">
-            <button
-              type="button"
-              className="btn primary block"
-              disabled={busy || waitingOn.length > 0}
-              onClick={() => void resume()}
-            >
-              Start session {next}
-            </button>
-            <p className="small faint center">
-              {waitingOn.length > 0
-                ? `Waiting for ${nameList(waitingOn.map((m) => m.displayName))} to ready up.`
-                : 'Everyone is ready.'}
-            </p>
-            {waitingOn.length > 0 && (
-              <button
-                type="button"
-                className="btn sm ghost block"
-                disabled={busy}
-                onClick={() => void resume(true)}
-              >
-                Start without {nameList(waitingOn.map((m) => m.displayName))}
-              </button>
-            )}
-          </div>
-        ) : (
+        {!isHost && (
           <div className="stack tight">
             <button
               type="button"
@@ -212,13 +188,42 @@ export function RecapView({
                 "I'm ready for the next session"
               )}
             </button>
+            {!owner && (
+              <p className="small faint center">
+                {!iAmReady
+                  ? `${host} starts the next session once everyone is ready.`
+                  : othersWaiting.length > 0
+                    ? `Waiting for ${nameList(othersWaiting.map((m) => m.displayName))} to ready up.`
+                    : `Everyone is ready. Waiting for ${host} to start.`}
+              </p>
+            )}
+          </div>
+        )}
+        {owner && (
+          <div className="stack tight">
+            <button
+              type="button"
+              className="btn primary block"
+              disabled={busy || waitingOn.length > 0}
+              onClick={() => void resume()}
+            >
+              Start session {next}
+            </button>
             <p className="small faint center">
-              {!iAmReady
-                ? `${host} starts the next session once everyone is ready.`
-                : othersWaiting.length > 0
-                  ? `Waiting for ${nameList(othersWaiting.map((m) => m.displayName))} to ready up.`
-                  : `Everyone is ready. Waiting for ${host} to start.`}
+              {waitingOn.length > 0
+                ? `Waiting for ${nameList(waitingOn.map((m) => (m.id === meId ? 'you' : m.displayName)))} to ready up.`
+                : 'Everyone is ready.'}
             </p>
+            {othersWaiting.length > 0 && (
+              <button
+                type="button"
+                className="btn sm ghost block"
+                disabled={busy}
+                onClick={() => void resume(true)}
+              >
+                Start without {nameList(othersWaiting.map((m) => m.displayName))}
+              </button>
+            )}
           </div>
         )}
       </footer>
