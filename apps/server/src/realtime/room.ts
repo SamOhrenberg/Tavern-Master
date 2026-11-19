@@ -704,6 +704,30 @@ export class Room {
     return out;
   }
 
+  /** Send a message to everyone but one person. */
+  tellOthers(userId: string, msg: ServerMessage): void {
+    const data = JSON.stringify(msg);
+    for (const [ws, u] of this.sockets) if (u.id !== userId && ws.readyState === ws.OPEN) ws.send(data);
+  }
+
+  /**
+   * A player is writing, or stopped. The rest of the table sees who, as the
+   * character they write as when it is one of the party; the name is looked
+   * up here, so a client cannot make anyone else seem to type.
+   */
+  async typing(user: UserRef, typing: boolean, characterId?: string): Promise<void> {
+    let name = user.displayName;
+    let as: string | null = null;
+    if (characterId) {
+      const ch = (await pgStore.characters(this.campaignId)).find((c) => c.id === characterId);
+      if (ch) {
+        name = ch.name;
+        as = ch.id;
+      }
+    }
+    this.tellOthers(user.id, { type: 'typing', who: { id: user.id, name, characterId: as }, typing });
+  }
+
   /** Send a message to one person's connections only. */
   tellUser(userId: string, msg: ServerMessage): void {
     const data = JSON.stringify(msg);

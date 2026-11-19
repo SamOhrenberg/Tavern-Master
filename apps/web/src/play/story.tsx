@@ -1,4 +1,4 @@
-import type { ChatMessage, Citation, DiceRoll, EntityRef, HpChange } from '@tavern/protocol';
+import type { ChatMessage, Citation, DiceRoll, EntityRef, HpChange, Typist } from '@tavern/protocol';
 import { Fragment, memo, type ReactNode } from 'react';
 import { IconAlert, IconD20, IconDots } from '../icons';
 import { Avatar, ruleSource } from '../ui';
@@ -419,3 +419,46 @@ export const MessageItem = memo(function MessageItem({
     </div>
   );
 });
+
+/**
+ * Who else is writing right now, as a chat bubble of bouncing dots under the
+ * newest line: a player as the character they are writing as, or a
+ * companion whose AI is composing a reply.
+ */
+export function Typing({
+  typists,
+  characters,
+}: {
+  typists: Typist[];
+  characters?: { id: string; portrait?: string }[];
+}) {
+  if (!typists.length) return null;
+  const names = typists.map((t) => t.name);
+  const label =
+    names.length === 1
+      ? `${names[0]} is typing`
+      : names.length === 2
+        ? `${names[0]} and ${names[1]} are typing`
+        : `${names[0]} and ${names.length - 1} others are typing`;
+  const first = typists[0]!;
+  const portrait = first.characterId
+    ? characters?.find((c) => c.id === first.characterId)?.portrait
+    : undefined;
+  return (
+    <div className="msg action typing" role="status" aria-label={label}>
+      <div className="action-avatar">
+        <Avatar name={first.name} seed={first.characterId ?? first.id} src={portrait} small />
+      </div>
+      <div className="action-body">
+        <div className="action-who">
+          <span>{label}</span>
+        </div>
+        <div className="bubble typing-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -22,6 +22,7 @@ export function Composer({
   draft,
   onDraft,
   onSend,
+  onTyping,
 }: {
   /** The characters this player runs. */
   characters: Character[];
@@ -38,6 +39,8 @@ export function Composer({
   draft: string;
   onDraft: (text: string) => void;
   onSend: (mode: Mode, text: string) => boolean;
+  /** Tell the table this player is writing (as whom), or has stopped. Called on every change; the caller throttles. */
+  onTyping?: (typing: boolean, characterId?: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>('act');
   const characterName = actingAs?.name ?? null;
@@ -130,7 +133,11 @@ export function Composer({
           className="composer-field"
           rows={1}
           value={draft}
-          onChange={(e) => onDraft(e.target.value)}
+          onChange={(e) => {
+            onDraft(e.target.value);
+            onTyping?.(!!e.target.value.trim(), mode === 'act' ? actingAs?.id : undefined);
+          }}
+          onBlur={() => onTyping?.(false)}
           onKeyDown={onKey}
           placeholder={placeholder}
           disabled={locked}

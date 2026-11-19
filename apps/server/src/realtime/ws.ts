@@ -18,6 +18,7 @@ const clientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('force') }),
   z.object({ type: z.literal('ping') }),
   z.object({ type: z.literal('visible'), visible: z.boolean() }),
+  z.object({ type: z.literal('typing'), typing: z.boolean(), characterId: z.string().uuid().optional() }),
 ]);
 
 /**
@@ -87,6 +88,11 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
           const member = await membership(room.campaignId, auth.sessionId);
           if (!member) return socket.close(4403, 'access removed');
           const { role } = member;
+          if (msg.type === 'typing') {
+            // Cheap, but cut off if a broken client floods it.
+            if (!rateLimiters().api.take(`typing:${user.id}`, 0.2).ok) return;
+            return room.typing(user, msg.typing, msg.characterId);
+          }
           // The lobby has table talk, but the story has not begun.
           if (member.phase === 'prep' && msg.type !== 'ooc') {
             return send({

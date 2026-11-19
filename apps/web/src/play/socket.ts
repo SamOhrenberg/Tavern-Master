@@ -6,6 +6,7 @@ import type {
   PendingSheet,
   ServerMessage,
   TurnState,
+  Typist,
   UserRef,
 } from '@tavern/protocol';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,6 +27,8 @@ export interface Table {
   stream: DmStream | null;
   /** Where the campaign's AI is; null until the table has said hello. */
   dm: DmStatus | null;
+  /** Who else is writing a message right now. */
+  typists: Typist[];
   /** Returns false when the socket is not open and nothing was sent. */
   send: (msg: ClientMessage) => boolean;
 }
@@ -49,6 +52,9 @@ interface Handlers {
   onSheet?: (id: string, status: PendingSheet['status']) => void;
 }
 
+/** A typing notice lapses unless it is sent again within this long. */
+const TYPING_LAPSE_MS = 6000;
+
 const IDLE: TurnState = {
   status: 'idle',
   number: null,
@@ -71,6 +77,7 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
   const [turn, setTurn] = useState<TurnState>(IDLE);
   const [stream, setStream] = useState<DmStream | null>(null);
   const [dm, setDm] = useState<DmStatus | null>(null);
+  const [typing, setTyping] = useState<(Typist & { until: number })[]>([]);
   const socket = useRef<WebSocket | null>(null);
   const h = useRef(handlers);
   h.current = handlers;
@@ -102,9 +109,22 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
         case 'turn':
           setTurn(msg.turn);
           break;
-        case 'message':
+        case 'message': {
           if (msg.message.kind === 'dm') setStream(null);
+          // Whoever posted it has stopped writing it.
+          const from = msg.message.user?.id;
+          const as = msg.message.characterName;
+          setTyping((list) =>
+            list.filter((t) => t.id !== from && !(msg.message.ai && t.characterId && t.name === as)),
+          );
           h.current.onMessage(msg.message);
+          break;
+        }
+        case 'typing':
+          setTyping((list) => [
+            ...list.filter((t) => t.id !== msg.who.id),
+            ...(msg.typing ? [{ ...msg.who, until: Date.now() + TYPING_LAPSE_MS }] : []),
+          ]);
           break;
         case 'roll':
           h.current.onRoll(msg.roll);
@@ -233,6 +253,17 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
     };
   }, [campaignId, enabled]);
 
+  // Typing notices lapse on their own, so a writer who closed the app does not type forever.
+  const anyTyping = typing.length > 0;
+  useEffect(() => {
+    if (!anyTyping) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setTyping((list) => (list.some((t) => t.until <= now) ? list.filter((t) => t.until > now) : list));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [anyTyping]);
+
   const send = useCallback((msg: ClientMessage) => {
     const ws = socket.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -240,5 +271,5 @@ export function useTable(campaignId: string, enabled: boolean, handlers: Handler
     return true;
   }, []);
 
-  return { link, present, turn, stream, dm, send };
+  return { link, present, turn, stream, dm, typists: typing, send };
 }

@@ -24,7 +24,7 @@ import { RulesSheet } from '../play/rules';
 import { PartySheet } from '../play/party';
 import { ClaudeSetupSheet, dmAbsent, dmLine } from '../play/claude';
 import { useTable } from '../play/socket';
-import { LiveDm, MessageItem, sameSpeaker } from '../play/story';
+import { LiveDm, MessageItem, sameSpeaker, Typing } from '../play/story';
 import { Empty, Loading, Sheet, ruleSource } from '../ui';
 import { PushNudge } from './notifications';
 import { Prep } from './prep';
@@ -246,7 +246,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
     } else if (pinned.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, rolls, table.stream, table.turn.status, loaded]);
+  }, [messages, rolls, table.stream, table.turn.status, table.typists.length, loaded]);
 
   useEffect(() => {
     // The keyboard opening shrinks the feed; keep the newest line in view.
@@ -312,8 +312,25 @@ function Play({ id, campaign, state, schema }: TableProps) {
     else {
       toBottom();
       setSentOnce(true);
+      // Posting it ends the typing notice on the other screens.
+      typedAt.current = null;
     }
     return ok;
+  };
+
+  // Tell the table someone is writing: once when it starts, again every few
+  // seconds while it goes on (the notice lapses otherwise), and when it stops.
+  const typedAt = useRef<{ at: number; as?: string } | null>(null);
+  const typing = (on: boolean, characterId?: string) => {
+    const last = typedAt.current;
+    if (!on) {
+      if (last) table.send({ type: 'typing', typing: false });
+      typedAt.current = null;
+      return;
+    }
+    if (last && last.as === characterId && Date.now() - last.at < 3000) return;
+    if (table.send({ type: 'typing', typing: true, ...(characterId ? { characterId } : {}) }))
+      typedAt.current = { at: Date.now(), as: characterId };
   };
 
   // Rolls the DM asked for, for characters this player runs. Nobody else sees dice.
@@ -536,6 +553,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
                   })}
                 </>
               )}
+              <Typing typists={table.typists} characters={game?.characters} />
               {table.stream && <LiveDm stream={table.stream} />}
               {awaitingOpening && (
                 <LiveDm stream={{ turnId: 'opening', text: '', tools: [] }} waitingOn={openingWait}>
@@ -630,6 +648,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
                   draft={draft}
                   onDraft={setDraft}
                   onSend={send}
+                  onTyping={typing}
                 />
               </>
             )}

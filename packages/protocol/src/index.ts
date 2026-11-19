@@ -943,7 +943,21 @@ export type ClientMessage =
    * The app went to the background or came back. Someone looking at the table
    * gets no push notifications for it; a hidden tab or a phone in a pocket does.
    */
-  | { type: 'visible'; visible: boolean };
+  | { type: 'visible'; visible: boolean }
+  /**
+   * The player is writing (sent again every few seconds while they are), or
+   * stopped. `characterId` is who they are writing as, for an action.
+   */
+  | { type: 'typing'; typing: boolean; characterId?: string };
+
+/** Someone writing a message the table has not seen yet: a player, or an AI-run companion. */
+export interface Typist {
+  /** The person's id, or the companion's character id when its AI is writing. */
+  id: string;
+  name: string;
+  /** The character they write as, for its picture. */
+  characterId: string | null;
+}
 
 export type ServerMessage =
   | { type: 'hello'; you: UserRef; present: UserRef[]; turn: TurnState; dm: DmStatus }
@@ -968,6 +982,8 @@ export type ServerMessage =
   /** An uploaded sheet of yours moved on. Sent only to the uploader. */
   | { type: 'sheet'; id: string; status: PendingSheet['status'] }
   | { type: 'error'; code: string; message: string }
+  /** Someone started or stopped writing. Never sent to the writer. A start lapses on its own after a few seconds. */
+  | { type: 'typing'; who: Typist; typing: boolean }
   | { type: 'pong' };
 
 // ---------- usage ----------
