@@ -153,12 +153,29 @@ export function addressedBy(turn: TurnInput, name: string): string[] {
   const needles = nameNeedles(name);
   if (!needles.length) return [];
   const re = new RegExp(`\\b(${needles.map(escapeRegExp).join('|')})\\b`, 'i');
+  // Only what was said since the companion last spoke: anything before that it has answered already.
+  const since = turn.actions.slice(lastOwnLine(turn, name) + 1);
   const who = new Set<string>();
-  for (const a of turn.actions) {
-    if (a.characterName === name) continue; // the companion's own action, if present
+  for (const a of since) {
     if (re.test(a.text)) who.add(a.characterName ?? a.displayName);
   }
   return [...who];
+}
+
+/** Where this companion's own latest line is in the turn, or -1 when it has not spoken. */
+function lastOwnLine(turn: TurnInput, name: string): number {
+  return turn.actions.findLastIndex((a) => !a.userId && a.characterName === name);
+}
+
+/**
+ * For a companion that already answered someone earlier in the turn: what it
+ * said, and that its end-of-turn go is for something new or a PASS.
+ */
+function spokeAlready(turn: TurnInput, name: string): string {
+  const at = lastOwnLine(turn, name);
+  if (at < 0) return '';
+  const after = turn.actions.slice(at + 1).some((a) => a.userId);
+  return `${name} already spoke earlier this turn ("${turn.actions[at]!.text.slice(0, 200)}"). Do not say it again or repeat it in other words. ${after ? 'Add only what answers something said since, or something genuinely new' : `If ${name} has nothing new to add`}${after ? '; otherwise' : ','} reply with exactly PASS.`;
 }
 
 /** The one-line nudge appended to the turn: who addressed the companion, or that no one did. */
@@ -305,7 +322,12 @@ export function companionPrompt(run: CompanionView): { system: string; storySoFa
     here.split && here.with.length === 0 ? `${c.name} is on their own here.` : '',
     ...(run.replying
       ? replyAsk(turn, c.name)
-      : [wentBefore(turn, c.name), addressHint(turn, c.name), `What does ${c.name} do?`]),
+      : [
+          wentBefore(turn, c.name),
+          spokeAlready(turn, c.name),
+          addressHint(turn, c.name),
+          `What does ${c.name} do?`,
+        ]),
   ]
     .filter(Boolean)
     .join('\n\n');

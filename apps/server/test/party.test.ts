@@ -252,6 +252,45 @@ describe('a companion with its own AI', () => {
       expect(text).not.toContain('named Pip');
     });
 
+    const endOfTurn = (
+      actions: { userId: string; displayName: string; characterName: string | null; text: string }[],
+    ) =>
+      companionPrompt({
+        campaign,
+        character: pip,
+        story: { summaries: '', recent: '' },
+        scene: 'A crowded tavern.',
+        party: [thornPc, pip],
+        known: [],
+        turn: { number: 4, actions, passed: [] },
+      }).text;
+    const asked = {
+      userId: 'u-ann',
+      displayName: 'Ann',
+      characterName: 'Thorn',
+      text: '"Pip, seen this place before?"',
+    };
+    const answered = {
+      userId: '',
+      displayName: COMPANION_LABEL,
+      characterName: 'Pip',
+      text: '"Once. Bad ale."',
+    };
+
+    it('at the end of the turn, does not ask a companion to answer what it already answered', () => {
+      const text = endOfTurn([asked, answered]);
+      expect(text).toContain('Pip already spoke earlier this turn (""Once. Bad ale."")');
+      expect(text).toContain('If Pip has nothing new to add, reply with exactly PASS.');
+      expect(text).toContain('No one addressed Pip this turn');
+    });
+
+    it('still points out a question asked after the companion answered', () => {
+      const again = { ...asked, text: '"Pip, which room is safest?"' };
+      const text = endOfTurn([asked, answered, again]);
+      expect(text).toContain('Add only what answers something said since');
+      expect(text).toContain('Thorn addressed Pip this turn');
+    });
+
     it('says when the player named the companion', () => {
       expect(ask('"Pip, you have been here before, right?"')).toContain('Thorn named Pip.');
     });
