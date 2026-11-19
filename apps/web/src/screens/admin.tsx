@@ -331,6 +331,12 @@ function Players() {
   );
 }
 
+/** What a new AI's name and model start as, for each service. */
+const DEFAULTS: Record<OutsideAi['provider'], { name: string; model: string }> = {
+  gemini: { name: 'Gemini', model: 'gemini-2.5-pro' },
+  openai: { name: 'GPT-6 Astra', model: 'gpt-6-astra' },
+};
+
 const PROVIDERS: { value: OutsideAi['provider']; label: string }[] = [
   { value: 'gemini', label: 'Gemini' },
   { value: 'openai', label: 'OpenAI-compatible' },
@@ -395,7 +401,17 @@ function OutsideAiSheet({
           <select
             className="select"
             value={provider}
-            onChange={(e) => setProvider(e.target.value as OutsideAi['provider'])}
+            onChange={(e) => {
+              const next = e.target.value as OutsideAi['provider'];
+              setProvider(next);
+              // A new AI starts from that service's usual name and model, until they are typed over.
+              if (!ai) {
+                const from = DEFAULTS[provider];
+                const to = DEFAULTS[next];
+                if (name === from.name) setName(to.name);
+                if (model === from.model) setModel(to.model);
+              }
+            }}
           >
             {PROVIDERS.map((p) => (
               <option key={p.value} value={p.value}>
@@ -406,7 +422,11 @@ function OutsideAiSheet({
         </Field>
         <Field
           label="Model"
-          hint={provider === 'gemini' ? 'e.g. gemini-2.5-pro or gemini-2.5-flash' : undefined}
+          hint={
+            provider === 'gemini'
+              ? 'e.g. gemini-2.5-pro or gemini-2.5-flash'
+              : 'e.g. gpt-6-astra. Reasoning models are asked to think briefly, which suits polishing.'
+          }
         >
           <input
             className="input mono"

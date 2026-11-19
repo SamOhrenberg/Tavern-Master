@@ -109,6 +109,24 @@ describe('outside AI providers', () => {
     expect(otherBody.max_completion_tokens).toBeUndefined();
   });
 
+  it('asks OpenAI reasoning models to think briefly, with room for it, and leaves other models alone', async () => {
+    const body = async (model: string, baseUrl: string | null = null) => {
+      const f = fakeFetch({ choices: [{ message: { content: 'hi' } }] });
+      await callOutsideAi({ ...gemini, provider: 'openai', model, baseUrl }, 'Hi', f.impl);
+      return JSON.parse(String(f.seen[0]!.init.body)) as Record<string, unknown>;
+    };
+    for (const model of ['gpt-6-astra', 'gpt-5.4', 'o3', 'openai/gpt-6-astra']) {
+      const b = await body(model, model.includes('/') ? 'https://gateway.local/v1' : null);
+      expect(b.reasoning_effort, model).toBe('low');
+      expect(b.max_completion_tokens ?? b.max_tokens, model).toBe(16_384);
+    }
+    for (const model of ['gpt-4o', 'llama-3.3-70b', 'gpt-4.1-mini']) {
+      const b = await body(model);
+      expect(b.reasoning_effort, model).toBeUndefined();
+      expect(b.max_completion_tokens, model).toBe(8192);
+    }
+  });
+
   it('treats an empty answer as a failure', async () => {
     const f = fakeFetch({ candidates: [{ content: { parts: [] } }] });
     await expect(callOutsideAi(gemini, 'Write', f.impl)).rejects.toBeInstanceOf(OutsideAiError);

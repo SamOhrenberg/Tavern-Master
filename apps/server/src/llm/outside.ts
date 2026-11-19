@@ -33,6 +33,16 @@ const OPENAI_BASE = 'https://api.openai.com/v1';
  * models cannot turn it off, so the cap leaves room for both.
  */
 const MAX_OUTPUT_TOKENS = 8192;
+/**
+ * OpenAI's reasoning models (the o-series, GPT-5 and later, such as
+ * gpt-6-astra), by name, also behind a gateway that prefixes it ("openai/…").
+ * Their reasoning counts against the output cap, so they get more room and are
+ * asked to think briefly: polishing prose or writing an announcement needs
+ * little of it, and a long think is slow, costly and can crowd out the answer.
+ * "low" is the lowest effort every one of them accepts.
+ */
+const OPENAI_REASONING = /(^|\/)(o\d|gpt-([5-9]|\d{2,}))/i;
+const REASONING_OUTPUT_TOKENS = 16_384;
 /** Tokens Gemini may spend thinking. Pro models take a minimum of 128 and clamp lower values. */
 const GEMINI_THINKING_BUDGET = 1024;
 const TIMEOUT_MS = 90_000;
@@ -129,6 +139,7 @@ export async function callOutsideAi(
     const base = (ai.baseUrl || OPENAI_BASE).replace(/\/+$/, '');
     // OpenAI's own newer models reject max_tokens; other compatible servers mostly still want it.
     const cap = base === OPENAI_BASE ? 'max_completion_tokens' : 'max_tokens';
+    const reasoning = OPENAI_REASONING.test(ai.model);
     const res = await fetchImpl(`${base}/chat/completions`, {
       method: 'POST',
       signal,
@@ -139,7 +150,8 @@ export async function callOutsideAi(
           { role: 'system', content: system },
           { role: 'user', content: request },
         ],
-        [cap]: MAX_OUTPUT_TOKENS,
+        [cap]: reasoning ? REASONING_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
+        ...(reasoning ? { reasoning_effort: 'low' } : {}),
       }),
     });
     if (!res.ok) throw await failure(res);
