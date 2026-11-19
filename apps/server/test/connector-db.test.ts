@@ -32,6 +32,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
   let claude: ReturnType<typeof mcpClient>;
   const annSocket = fakeSocket();
   const annRef = () => ({ id: ann, username: `ann-${tag}`, displayName: 'Ann' });
+  /**
+   * The next turn from wait_for_work. Once the party has companions, each
+   * player line first brings a mid-turn question (does a companion answer?);
+   * calling wait_for_work again lets it pass, as Claude does when nobody does.
+   */
+  const nextTurn = async () => {
+    let out = await claude.call('wait_for_work', { wait_seconds: 5 });
+    for (let i = 0; i < 3 && out.text.includes('Mid-turn,'); i++)
+      out = await claude.call('wait_for_work', { wait_seconds: 5 });
+    return out;
+  };
 
   const user = async (name: string) =>
     (await q1<{ id: string }>(
@@ -155,7 +166,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     await room.action(annRef(), 'I climb the bell tower');
     room.done(annRef());
 
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toContain('Turn 1 is yours to resolve');
     expect(turn.text).toContain('I climb the bell tower');
     expect(turn.text).toContain('character="Wren"');
@@ -187,7 +198,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     // Ann is connected and has not acted, so the table is still waiting on her.
     expect(sent.text).toContain('Waiting on: Wren');
     expect((await claude.call('close_turn')).text).toContain('closed');
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toContain('Turn 2 is yours to resolve');
     expect(turn.text).toContain('I ring the bell myself');
     // Asking again before narrating hands back the same turn.
@@ -204,7 +215,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     const room = await openRoom(camp);
     await room.action(annRef(), 'I dive for the bell');
     room.done(annRef());
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toContain('Turn 3 is yours');
     await claude.call('update_character', { character: 'Wren', hp_delta: -2 });
     expect(room.dmStatus().state).toBe('working');
@@ -237,7 +248,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     const room = await openRoom(camp);
     await room.action(annRef(), 'I signal the boat');
     room.done(annRef());
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toContain('Turn 4 is yours');
     // They go one at a time, in an order picked once for the turn.
     expect(turn.text).toMatch(
@@ -300,7 +311,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     await room.action(annRef(), 'I follow the gull’s cry');
     room.done(annRef());
 
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toContain('Turn 5 is yours');
     expect(turn.text).toContain('character="Gull" speaking_for="companion"');
     expect(turn.text).toContain('character="Wren"');
@@ -322,6 +333,52 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     await settle();
   });
 
+  it('asks Claude mid-turn whether a companion answers, and lets the players reply before the turn closes', async () => {
+    const room = await openRoom(camp);
+    const wren = (await q1<{ id: string }>(
+      `SELECT id FROM characters WHERE campaign_id = $1 AND name = 'Wren'`,
+      [camp],
+    ))!.id;
+    await room.action(annRef(), '"Kestrel, you have sharp eyes. What do you see on the water?"');
+    room.done(annRef());
+    // The turn waits for Claude's answer even though Ann is done.
+    const ask = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const n = /Mid-turn, turn (\d+) is still open\. Wren has just written the last line/.exec(ask.text)?.[1];
+    expect(n).toBeTruthy();
+    expect(ask.text).toContain('Companions who heard it: Gull');
+    expect(ask.text).toContain('Kestrel');
+    expect(room.turnState()).toMatchObject({ status: 'collecting', listening: true, done: [wren] });
+
+    // Only a companion who heard the line can answer.
+    expect(
+      (await claude.call('answer_in_turn', { answers: [{ character: 'Wren', says: 'Hm.' }] })).isError,
+    ).toBe(true);
+    const answered = await claude.call('answer_in_turn', {
+      answers: [{ character: 'kestrel', says: 'Kestrel squints. "A mast, low in the water."' }],
+    });
+    expect(answered.text).toContain('Posted Kestrel');
+    const line = await q1<{ content: string; ai: boolean }>(
+      `SELECT content, (meta->>'ai')::boolean AS ai FROM messages
+        WHERE campaign_id = $1 AND character_name = 'Kestrel' ORDER BY id DESC LIMIT 1`,
+      [camp],
+    );
+    expect(line).toEqual({ content: 'Kestrel squints. "A mast, low in the water."', ai: true });
+    // Ann is waited on again, so she can answer before the DM narrates.
+    expect(room.turnState()).toMatchObject({ status: 'collecting', listening: false });
+    expect(room.turnState().done).not.toContain(wren);
+    // Nothing more to answer.
+    expect((await claude.call('answer_in_turn', { answers: [] })).isError).toBe(true);
+
+    room.done(annRef());
+    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    expect(turn.text).toContain(`Turn ${n} is yours`);
+    expect(turn.text).toContain('A mast, low in the water.');
+    expect((await claude.call('narrate', { text: 'A wreck drifts closer.' })).text).toContain(
+      `Posted turn ${n}`,
+    );
+    await settle();
+  });
+
   it('lets the DM ask a player for a roll, which only that player can make, and hands the DM the result', async () => {
     const room = await openRoom(camp);
     const rolls = async () =>
@@ -329,7 +386,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
         .n;
     await room.action(annRef(), 'I creep toward the bell tower');
     room.done(annRef());
-    const first = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const first = await nextTurn();
     expect(first.text).toMatch(/Turn \d+ is yours/);
     // Not for a companion: nobody at the table plays it.
     const gull = await claude.call('request_roll', {
@@ -385,7 +442,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     expect(await rolls()).toBe(before + 1);
 
     room.done(annRef());
-    const next = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const next = await nextTurn();
     expect(next.text).toMatch(/Wren rolls Dexterity save: \d+ \(1d20\+3: \d+\)\./);
     expect(next.text).not.toContain('roll_not_made');
 
@@ -400,7 +457,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     await settle();
     await room.action(annRef(), 'I ignore it and climb');
     room.done(annRef());
-    const after = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const after = await nextTurn();
     expect(after.text).toContain('<roll_not_made character="Wren">Perception (1d20)</roll_not_made>');
     const pending = await q1<{ n: number }>(
       `SELECT count(*)::int AS n FROM roll_requests WHERE campaign_id = $1 AND status = 'pending'`,
@@ -416,7 +473,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     expect(room.turnState().status).toBe('idle');
     await room.pass(annRef());
 
-    const turn = await claude.call('wait_for_work', { wait_seconds: 5 });
+    const turn = await nextTurn();
     expect(turn.text).toMatch(/Turn \d+ is yours/);
     expect(turn.text).toContain('Wren does nothing this turn.');
     const posted = await q1<{ user_id: string | null; character_name: string | null }>(
