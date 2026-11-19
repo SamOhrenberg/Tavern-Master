@@ -19,17 +19,16 @@ import {
   IconSearch,
   IconShield,
   IconSparkle,
-  IconUsers,
 } from '../icons';
 import { Avatar, Empty, HpBar, Presence, Segmented, Sheet, timeAgo } from '../ui';
 import { CastActions, playedBy, runsIt, type CastPanel } from './cast';
+import { isNpc, NpcTab } from './npcs';
 import { fieldsOf, formatValue, isTrack, lookup } from './sheet-fields';
 
-type Tab = 'party' | 'world' | 'journal';
+type Tab = 'party' | 'npcs' | 'world' | 'journal';
 
 const KINDS: { kind: EntityKind; label: string; icon: ReactNode }[] = [
   { kind: 'quest', label: 'Quests', icon: <IconScroll /> },
-  { kind: 'npc', label: 'People', icon: <IconUsers /> },
   { kind: 'location', label: 'Places', icon: <IconMap /> },
   { kind: 'item', label: 'Items of note', icon: <IconBackpack /> },
   { kind: 'faction', label: 'Factions', icon: <IconShield /> },
@@ -280,10 +279,9 @@ export function PartySheet({
 }) {
   const [tab, setTab] = useState<Tab>('party');
   const [codexQuery, setCodexQuery] = useState('');
-  const matches = useMemo(
-    () => state.entities.filter((e) => entityMatches(e, codexQuery)),
-    [state.entities, codexQuery],
-  );
+  // People and creatures have their own tab.
+  const world = useMemo(() => state.entities.filter((e) => !isNpc(e)), [state.entities]);
+  const matches = useMemo(() => world.filter((e) => entityMatches(e, codexQuery)), [world, codexQuery]);
   const ordered = [...state.characters].sort((a, b) => Number(runsIt(b, meId)) - Number(runsIt(a, meId)));
   const without = campaign.members.filter(
     (m) => m.id !== meId && !state.characters.some((ch) => runsIt(ch, m.id)),
@@ -302,6 +300,7 @@ export function PartySheet({
             onChange={setTab}
             options={[
               { value: 'party', label: 'Party' },
+              { value: 'npcs', label: 'NPCs' },
               { value: 'world', label: 'World' },
               { value: 'journal', label: 'Journal' },
             ]}
@@ -341,6 +340,8 @@ export function PartySheet({
         </div>
       )}
 
+      {tab === 'npcs' && <NpcTab entities={state.entities} />}
+
       {tab === 'world' && (
         <div className="stack">
           {state.scene && (
@@ -349,7 +350,7 @@ export function PartySheet({
               <p className="scene">{state.scene}</p>
             </div>
           )}
-          {state.entities.length > 0 && (
+          {world.length > 0 && (
             <div className="codex-search">
               <IconSearch />
               <input
@@ -383,12 +384,12 @@ export function PartySheet({
               </section>
             );
           })}
-          {state.entities.length > 0 && matches.length === 0 && (
+          {world.length > 0 && matches.length === 0 && (
             <p className="small muted empty-hint">Nothing in the codex matches “{codexQuery}”.</p>
           )}
-          {!state.scene && state.entities.length === 0 && (
+          {!state.scene && world.length === 0 && (
             <Empty icon={<IconMap />} title="Uncharted">
-              People, places, events and lore appear here as the Dungeon Master brings them into the story.
+              Places, quests, events and lore appear here as the Dungeon Master brings them into the story.
             </Empty>
           )}
         </div>
