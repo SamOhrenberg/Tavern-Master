@@ -13,6 +13,7 @@ import type { WebSocket } from 'ws';
 import { refreshBrief } from '../agent/brief.js';
 import { resolveRefs } from '../agent/codex.js';
 import { companionOrder, companionTurn, knownEntries, publicStory } from '../agent/companion.js';
+import { placeKey } from '../agent/places.js';
 import {
   buildOpening,
   buildPrompt,
@@ -45,6 +46,18 @@ import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll } from './rolls.js';
 import { describeOutcome } from '../agent/dice.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
+
+/** Seat ids for a companion's own line, said mid-turn in answer to a player, start with this. */
+const ANSWER = 'ai:';
+/**
+ * How long after a player's line the companions wait before deciding whether
+ * to answer it, so a few lines sent in a row are answered together.
+ */
+const ANSWER_SETTLE_MS = 1_500;
+/** Longest one companion may take deciding whether to answer, and writing it. */
+const ANSWER_TIMEOUT_MS = 30_000;
+/** Most mid-turn answers in one turn, so a long back-and-forth still reaches the DM. */
+const MAX_ANSWERS_PER_TURN = 8;
 
 /** Seat ids for a line a player spoke for a companion start with this. */
 const VOICED = 'v:';
@@ -315,6 +328,18 @@ export class Room {
   /** Who has been nudged about the current turn: each person hears about it once. */
   private nudged = new Set<string>();
   private claimWatch: ReturnType<typeof setInterval> | null = null;
+  /** Mid-turn companion answers (see hearLine): the turn they are for, and where they stand. */
+  private answers = {
+    turnId: null as string | null,
+    /** The turn is held open for them. */
+    holding: false,
+    /** A round of asking is running. */
+    asking: false,
+    timer: undefined as ReturnType<typeof setTimeout> | undefined,
+    /** Player lines since the running round started. */
+    heard: 0,
+    given: 0,
+  };
   /** Called when an abandoned claim is released, so the connector can release its own claims too. */
   onClaimsReleased: (() => Promise<void>) | null = null;
 
@@ -831,7 +856,7 @@ export class Room {
    * player-run character is a seat whether its player is here or not: away
    * means not done yet, and leaving does not end anyone's turn. The owner can
    * still send the turn early with Go now. AI-run party members have no seat:
-   * they act when the turn closes.
+   * they act when the turn closes, and may answer a player mid-turn (see hearLine).
    */
   private async syncSeats(): Promise<void> {
     const here = this.present();
@@ -988,7 +1013,210 @@ export class Room {
       }
       if (!seat) return this.tell(user.id, 'Rejoin the table and try again.');
       await this.submit({ seat: seat.id, userId: user.id, text });
+      if (await this.mayAnswer()) this.hearLine();
     });
+  }
+
+  /**
+   * Whether the companions could answer a line now: the turn is gathering,
+   * the server runs the DM (an outside DM plays the companions itself), and
+   * the party has a member no player runs.
+   */
+  private async mayAnswer(): Promise<boolean> {
+    if (this.collector.phase !== 'collecting' || this.mode !== 'server') return false;
+    return (await pgStore.characters(this.campaignId)).some((c) => c.controller !== 'player');
+  }
+
+  /**
+   * A player said or did something mid-turn. Shortly after (so a few lines in
+   * a row are read together) the companions decide whether it calls for an
+   * answer right now, and the turn is held open until they have, so it cannot
+   * go to the DM before an answer the players may want to reply to. Only
+   * players' lines start a round: companions never answer each other in a loop.
+   */
+  private hearLine(): void {
+    const turn = this.turn;
+    if (!turn || this.collector.phase !== 'collecting') return;
+    const a = this.answers;
+    if (a.turnId !== turn.id) {
+      clearTimeout(a.timer);
+      this.answers = { turnId: turn.id, holding: false, asking: false, timer: undefined, heard: 0, given: 0 };
+    }
+    const now = this.answers;
+    if (now.given >= MAX_ANSWERS_PER_TURN) return;
+    now.heard++;
+    if (!now.holding) {
+      if (!this.collector.listen()) return;
+      now.holding = true;
+      this.broadcast({ type: 'turn', turn: this.turnState() });
+    }
+    // A round already running looks again when it ends.
+    if (now.asking) return;
+    clearTimeout(now.timer);
+    now.timer = setTimeout(() => void this.answerRound(turn), ANSWER_SETTLE_MS);
+  }
+
+  /** Ask the companions about what was said; then let the turn go, or go again if more was said meanwhile. */
+  private async answerRound(turn: ActiveTurn): Promise<void> {
+    const a = this.answers;
+    a.timer = undefined;
+    const live = () =>
+      this.turn?.id === turn.id && this.collector.phase === 'collecting' && this.answers === a;
+    if (!live()) return;
+    a.asking = true;
+    a.heard = 0;
+    try {
+      await this.answer(
+        turn,
+        () => live() && a.given < MAX_ANSWERS_PER_TURN,
+        () => a.given++,
+      );
+    } catch (err) {
+      log().warn({ err, campaignId: this.campaignId }, 'companions could not answer');
+    } finally {
+      a.asking = false;
+    }
+    if (!live()) return;
+    if (a.heard > 0 && a.given < MAX_ANSWERS_PER_TURN) {
+      a.timer = setTimeout(() => void this.answerRound(turn), ANSWER_SETTLE_MS);
+      return;
+    }
+    a.holding = false;
+    this.collector.stopListening();
+    if (this.collector.phase === 'collecting') this.broadcast({ type: 'turn', turn: this.turnState() });
+  }
+
+  /**
+   * Each companion that can hear the latest player line decides, in its own
+   * blind call, whether to answer it now. One that does is shown typing for a
+   * moment, its line joins the turn, and everyone who said they were done is
+   * waited on again, so the players can reply before the DM narrates.
+   */
+  private async answer(turn: ActiveTurn, open: () => boolean, counted: () => void): Promise<void> {
+    const campaign = await loadCampaign(this.campaignId);
+    if (dmModeOf(campaign.settings) !== 'server') return;
+    const chars = await pgStore.characters(this.campaignId);
+    const gathered = this.collector.gathered();
+    const voicedNow = new Set(
+      gathered.flatMap((g) => (g.seat.startsWith(VOICED) ? [this.known.get(g.seat)?.characterId ?? ''] : [])),
+    );
+    // A companion a player is speaking for this turn is theirs to voice for now.
+    const companions = chars.filter((c) => c.controller !== 'player' && !voicedNow.has(c.id));
+    const last = [...gathered].reverse().find((g) => g.userId);
+    if (!companions.length || !last) return;
+    const userIds = [...new Set(gathered.flatMap((g) => (g.userId ? [g.userId] : [])))];
+    if (await budgetBlock(this.campaignId, userIds)) return;
+
+    const names = new Map(
+      (
+        await q<{ id: string; display_name: string }>(
+          'SELECT id, display_name FROM users WHERE id = ANY($1::uuid[])',
+          [userIds],
+        )
+      ).map((u) => [u.id, u.display_name]),
+    );
+    const input: TurnInput = {
+      number: turn.number,
+      actions: gathered.map((g) => this.asTurnAction(g, names)),
+      passed: [],
+    };
+    // Only companions in the same place as whoever spoke heard it.
+    const speaker = chars.find((c) => c.id === this.known.get(last.seat)?.characterId);
+    const hears = (c: CharRow) => !speaker || placeKey(speaker.whereabouts) === placeKey(c.whereabouts);
+
+    const info = infoOf(this.campaignId, campaign);
+    const llm = await resolveLlm('companion', campaign.owner_id);
+    const [story, scene, entities] = await Promise.all([
+      publicStory(this.campaignId, turn.id),
+      pgStore.scene(this.campaignId),
+      pgStore.entities(this.campaignId),
+    ]);
+    const known = knownEntries(entities);
+    const said: TurnAction[] = [];
+    for (const character of companionOrder(input, companions.filter(hears))) {
+      if (!open()) return;
+      const text = await companionTurn({
+        llm,
+        campaign: info,
+        character,
+        story,
+        scene,
+        party: chars,
+        known,
+        turn: { ...input, actions: [...input.actions, ...said] },
+        replying: true,
+        signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS),
+        onUsage: (usage, model) =>
+          recordUsage({
+            task: 'companion',
+            provider: llm.provider.name,
+            model,
+            keySource: llm.keySource,
+            campaignId: this.campaignId,
+            userIds,
+            usage,
+          }),
+      }).catch((err) => {
+        log().warn(
+          { err, campaignId: this.campaignId, character: character.name },
+          'companion did not answer',
+        );
+        return null;
+      });
+      if (!text || !open()) continue;
+      const seat: TurnSeat = {
+        id: `${ANSWER}${character.id}`,
+        name: character.name,
+        userIds: [],
+        characterId: character.id,
+      };
+      // Typed out for a moment, as a person would, before the line lands.
+      const who = { id: seat.id, name: character.name, characterId: character.id };
+      this.broadcast({ type: 'typing', who, typing: true });
+      await new Promise((r) => setTimeout(r, Math.min(2_500, 600 + text.length * 15)));
+      const posted = await this.runFor(async () => {
+        if (!open()) return false;
+        const message = await insertMessage({
+          campaignId: this.campaignId,
+          sessionId: turn.sessionId,
+          turnId: turn.id,
+          kind: 'action',
+          userId: null,
+          characterName: character.name,
+          content: text,
+          meta: { ai: true },
+        });
+        this.known.set(seat.id, seat);
+        this.collector.submit({ seat: seat.id, userId: '', text, messageId: message.id });
+        // Something new was said: everyone gets the chance to answer it before the DM does.
+        this.collector.reopenAll();
+        this.collector.finish(seat.id);
+        this.post(message);
+        this.broadcast({ type: 'turn', turn: this.turnState() });
+        return true;
+      });
+      if (!posted) {
+        this.broadcast({ type: 'typing', who, typing: false });
+        return;
+      }
+      counted();
+      said.push({ userId: '', displayName: COMPANION_LABEL, characterName: character.name, text });
+    }
+  }
+
+  /** A gathered line as the turn shows it to the DM and the companions. */
+  private asTurnAction(g: CollectedAction, names: Map<string, string>): TurnAction {
+    const seat = this.known.get(g.seat);
+    // A companion's own answer, said earlier this turn.
+    if (!g.userId)
+      return { userId: '', displayName: COMPANION_LABEL, characterName: seat?.name ?? null, text: g.text };
+    return {
+      userId: g.userId,
+      displayName: names.get(g.userId) ?? 'A player',
+      characterName: seat?.characterId ? seat.name : null,
+      text: g.text,
+      ...(g.seat.startsWith(VOICED) ? { voiced: true } : {}),
+    };
   }
 
   /**
@@ -1290,7 +1518,8 @@ export class Room {
     const seatOf = (id: string) => this.known.get(id);
     const participantIds = [
       ...new Set([
-        ...closed.actions.map((a) => a.userId),
+        // A companion's answer said mid-turn has no person behind it.
+        ...closed.actions.flatMap((a) => (a.userId ? [a.userId] : [])),
         ...closed.passed.flatMap((id) => seatOf(id)?.userIds ?? []),
       ]),
     ];
@@ -1316,6 +1545,10 @@ export class Room {
       characterName: chars.find((c) => c.playerIds.includes(p.id))?.name ?? null,
     }));
     const actions: TurnAction[] = closed.actions.flatMap((a) => {
+      if (!a.userId && a.seat.startsWith(ANSWER)) {
+        const name = seatOf(a.seat)?.name;
+        return name ? [{ userId: '', displayName: COMPANION_LABEL, characterName: name, text: a.text }] : [];
+      }
       const p = byId.get(a.userId);
       if (!p) return [];
       const voiced = companionOf(a.seat);
@@ -1337,8 +1570,8 @@ export class Room {
     });
     // Companions a player already spoke for do not also act on their own this turn.
     const spokenFor = actions.flatMap((a) => (a.voiced && a.characterName ? [a.characterName] : []));
-    const actingIds = [...new Set(actions.map((a) => a.userId))];
-    if (!actions.length) return false;
+    const actingIds = [...new Set(actions.flatMap((a) => (a.userId ? [a.userId] : [])))];
+    if (!actingIds.length) return false;
 
     const external = dmModeOf(campaign.settings) === 'claude';
     // An outside DM spends none of the server's tokens.

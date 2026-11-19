@@ -245,7 +245,11 @@ export function TurnBar({
       : others.length
         ? 'The table is acting. Add yours, or pass.'
         : 'Everyone else is done. Your move.'
-    : `Waiting for ${others.map(nameOf).slice(0, 2).join(' and ')}${others.length > 2 ? ` +${others.length - 2}` : ''}`;
+    : others.length
+      ? `Waiting for ${others.map(nameOf).slice(0, 2).join(' and ')}${others.length > 2 ? ` +${others.length - 2}` : ''}`
+      : turn.listening
+        ? 'Seeing if anyone answers…'
+        : 'Everyone is done.';
   const clock =
     seconds === null ? '' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 

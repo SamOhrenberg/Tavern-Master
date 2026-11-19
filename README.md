@@ -324,6 +324,18 @@ spoke to goes first, the rest in a random order, and each sees what the ones
 before it did, so they play along with the table instead of each doing
 something of its own. Their actions then reach the DM like a player's.
 
+**Companions answer mid-turn.** While a turn is still gathering, each line a
+player writes is shown (a moment later, so a few lines in a row go together)
+to the companions no player runs who are in the same place. Each decides in
+its own call, built the same blind way, whether the line calls for an answer
+right now: it was spoken to, asked something, or is in a conversation. Most
+of the time it passes. One that answers is shown typing, its line joins the
+turn, and every player who had tapped Done is waited on again, so the table
+can talk with a companion before the DM narrates. The turn is held open while
+they decide, only players' lines start a round, and a turn takes a few
+answers at most. Players can also take back Done themselves. This needs the
+server's model, so a table whose AI is Claude skips it.
+
 **Polished narration.** A campaign can name one of the admin's other AIs to
 polish with. The DM's finished narration has secrets blacked out, then every
 line a player wrote, codex link and rule citation is swapped for a numbered
