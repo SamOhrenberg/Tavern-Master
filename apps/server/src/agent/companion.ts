@@ -204,6 +204,22 @@ function wentBefore(turn: TurnInput, name: string): string {
     : '';
 }
 
+/**
+ * The closing lines when the turn is still open and a player has just said or
+ * done something: answer now only if it calls for it. Most of the time it
+ * does not, and the companion takes its turn with everyone else at the end.
+ */
+function replyAsk(turn: TurnInput, name: string): string[] {
+  const last = [...turn.actions].reverse().find((a) => a.userId);
+  const who = last ? (last.characterName ?? last.displayName) : 'A player';
+  const addressed = addressedBy({ ...turn, actions: last ? [last] : [] }, name).length > 0;
+  return [
+    `The turn is still open. ${who} has just written the last line of <turn>, and the others can still answer before it goes to the Dungeon Master. ${name} will also get a normal turn at the end, so there is no need to act now.`,
+    addressed ? `${who} named ${name}.` : '',
+    `Decide whether that last line calls for ${name} to answer right now, the way a person at the table would answer at once: ${name} was spoken to or asked something, someone is in a conversation with ${name}, or a remark plainly invites ${name}'s reply. If so, write ${name}'s reply: usually what they say, in quotation marks, with a gesture at most, one or two sentences, conversational and in character. Do not take an action in the world or move the scene on; that waits for the end of the turn. Otherwise, and that is most of the time, reply with exactly PASS.`,
+  ];
+}
+
 /** Turn the model's reply into an action, or nothing when it passed or wandered off. */
 export function companionAction(raw: string): string | null {
   const text = raw
@@ -226,6 +242,12 @@ export interface CompanionRun {
   known: KnownEntry[];
   /** What the players are doing this turn. The companion acts alongside them. */
   turn: TurnInput;
+  /**
+   * The turn is still open and a player just said or did something: the
+   * companion answers only if it calls for an answer from them right now,
+   * and the players can reply before the turn goes to the DM.
+   */
+  replying?: boolean;
   onUsage?: (usage: Usage, model: string) => Promise<void> | void;
   signal?: AbortSignal;
 }
@@ -233,7 +255,7 @@ export interface CompanionRun {
 /** What a companion is shown, without asking anyone yet. */
 export type CompanionView = Pick<
   CompanionRun,
-  'campaign' | 'character' | 'story' | 'scene' | 'party' | 'known' | 'turn'
+  'campaign' | 'character' | 'story' | 'scene' | 'party' | 'known' | 'turn' | 'replying'
 >;
 
 /**
@@ -281,9 +303,9 @@ export function companionPrompt(run: CompanionView): { system: string; storySoFa
       ? `${unseen} party member${unseen > 1 ? 's' : ''} acted somewhere else this turn; ${c.name} cannot see or hear that.`
       : '',
     here.split && here.with.length === 0 ? `${c.name} is on their own here.` : '',
-    wentBefore(turn, c.name),
-    addressHint(turn, c.name),
-    `What does ${c.name} do?`,
+    ...(run.replying
+      ? replyAsk(turn, c.name)
+      : [wentBefore(turn, c.name), addressHint(turn, c.name), `What does ${c.name} do?`]),
   ]
     .filter(Boolean)
     .join('\n\n');

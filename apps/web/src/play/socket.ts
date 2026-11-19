@@ -64,6 +64,7 @@ const IDLE: TurnState = {
   done: [],
   passed: [],
   seats: [],
+  listening: false,
 };
 
 /**

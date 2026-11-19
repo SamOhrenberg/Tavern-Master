@@ -129,6 +129,37 @@ describe('turn aggregation', () => {
     expect(closed).toHaveLength(0);
   });
 
+  it('holds the turn open while the companions decide whether to answer', () => {
+    const { collector, closed } = setup(0);
+    collector.setPresent(['ann']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: '"Tomas, what do you make of this?"' });
+    expect(collector.listen()).toBe(true);
+    expect(collector.snapshot(1).listening).toBe(true);
+    collector.finish('ann');
+    expect(closed).toHaveLength(0);
+    // Tomas answers: his line joins the turn, and Ann is waited on again.
+    collector.submit({ seat: 'ai:tomas', userId: '', text: '"Smells like a trap."' });
+    collector.reopenAll();
+    collector.finish('ai:tomas');
+    collector.stopListening();
+    expect(closed).toHaveLength(0);
+    expect(collector.snapshot(1)).toMatchObject({ done: ['ai:tomas'], listening: false });
+    collector.finish('ann');
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.actions.map((a) => a.seat)).toEqual(['ann', 'ai:tomas']);
+  });
+
+  it('lets the turn go once the companions let a line pass', () => {
+    const { collector, closed } = setup(0);
+    collector.setPresent(['ann']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I check the lock' });
+    collector.listen();
+    collector.finish('ann');
+    expect(closed).toHaveLength(0);
+    collector.stopListening();
+    expect(closed).toHaveLength(1);
+  });
+
   it('does not wait for a player who leaves', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);

@@ -227,6 +227,36 @@ describe('a companion with its own AI', () => {
     });
   });
 
+  describe('when a player has just spoken mid-turn', () => {
+    const ask = (text: string) =>
+      companionPrompt({
+        campaign,
+        character: pip,
+        story: { summaries: '', recent: '' },
+        scene: 'A crowded tavern.',
+        party: [thornPc, pip],
+        known: [],
+        turn: {
+          number: 4,
+          actions: [{ userId: 'u-ann', displayName: 'Ann', characterName: 'Thorn', text }],
+          passed: [],
+        },
+        replying: true,
+      }).text;
+
+    it('asks whether the line calls for an answer now, and to PASS otherwise', () => {
+      const text = ask('I order a round of ale');
+      expect(text).toContain('The turn is still open. Thorn has just written the last line');
+      expect(text).toContain('reply with exactly PASS');
+      expect(text).not.toContain('What does Pip do?');
+      expect(text).not.toContain('named Pip');
+    });
+
+    it('says when the player named the companion', () => {
+      expect(ask('"Pip, you have been here before, right?"')).toContain('Thorn named Pip.');
+    });
+  });
+
   it('knows what the party has come across, as the players’ codex shows it', () => {
     const entity = (over: Partial<EntityRow> & Pick<EntityRow, 'id' | 'name'>): EntityRow => ({
       kind: 'npc',

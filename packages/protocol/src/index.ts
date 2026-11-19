@@ -920,6 +920,11 @@ export interface TurnState {
   done: string[];
   passed: string[];
   seats: TurnSeat[];
+  /**
+   * The AI companions are deciding whether to answer something said this
+   * turn; it does not go to the DM until they have.
+   */
+  listening: boolean;
 }
 
 // ---------- websocket ----------

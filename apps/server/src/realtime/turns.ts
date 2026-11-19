@@ -57,6 +57,8 @@ export class TurnCollector {
   /** Seats that acted and said they are done. */
   private done = new Set<string>();
   private queued: CollectedAction[] = [];
+  /** Companions deciding whether to answer something said this turn. The turn waits for them. */
+  private listening = 0;
   private timer: { cancel(): void } | undefined;
   private readonly now: () => number;
   private readonly setTimer: NonNullable<CollectorOptions['setTimer']>;
@@ -128,15 +130,43 @@ export class TurnCollector {
   }
 
   /**
-   * Everyone who said they were done or passed is waiting on again, as when
-   * something new was said that they may want to answer. Returns whether
-   * anything changed.
+   * Everyone the turn waits on who said they were done or passed is waited on
+   * again, as when something new was said that they may want to answer.
+   * Seats the turn never waits on (a line spoken for a companion, a
+   * companion's own answer) stay finished. Returns whether anything changed.
    */
   reopenAll(): boolean {
-    if (this.phase !== 'collecting' || (!this.done.size && !this.passed.size)) return false;
-    this.done = new Set();
-    this.passed = new Set();
+    if (this.phase !== 'collecting') return false;
+    let changed = false;
+    for (const seat of this.present) {
+      if (this.done.delete(seat)) changed = true;
+      if (this.passed.delete(seat)) changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Keep the turn open while the companions decide whether to answer what was
+   * just said, even if every seat says it is done meanwhile. Each call must be
+   * matched by stopListening. The gather window and the owner's Go now still
+   * close the turn.
+   */
+  listen(): boolean {
+    if (this.phase !== 'collecting') return false;
+    this.listening++;
     return true;
+  }
+
+  /** The companions have answered or let it pass. The turn closes now if everyone is done. */
+  stopListening(): void {
+    if (this.listening === 0) return;
+    this.listening--;
+    this.closeIfReady();
+  }
+
+  /** What has been gathered so far this turn, in the order it was said. */
+  gathered(): readonly CollectedAction[] {
+    return this.phase === 'collecting' ? [...this.actions] : [];
   }
 
   /** Close now with whatever has been gathered. */
@@ -160,6 +190,7 @@ export class TurnCollector {
   resolved(): CollectedAction[] {
     const held = this.queued;
     this.queued = [];
+    this.listening = 0;
     this.actions = [];
     this.passed = new Set();
     this.done = new Set();
@@ -173,6 +204,7 @@ export class TurnCollector {
     this.timer?.cancel();
     this.timer = undefined;
     this.queued = [];
+    this.listening = 0;
     this.actions = [];
     this.passed = new Set();
     this.done = new Set();
@@ -212,11 +244,12 @@ export class TurnCollector {
       acted: this.phase === 'idle' ? [] : acted,
       done: this.phase === 'idle' ? [] : [...this.done],
       passed: this.phase === 'idle' ? [] : [...this.passed],
+      listening: this.phase === 'collecting' && this.listening > 0,
     };
   }
 
   private closeIfReady(): void {
-    if (this.phase !== 'collecting' || this.actions.length === 0) return;
+    if (this.phase !== 'collecting' || this.actions.length === 0 || this.listening > 0) return;
     for (const seat of this.present) {
       if (!this.done.has(seat) && !this.passed.has(seat)) return;
     }
@@ -229,6 +262,7 @@ export class TurnCollector {
     this.timer = undefined;
     this.phase = 'resolving';
     this.deadline = null;
+    this.listening = 0;
     this.onClose({ actions: this.actions, passed: [...this.passed], reason });
   }
 }
