@@ -190,6 +190,7 @@ export function TurnBar({
   isOwner,
   dmWorking,
   onDone,
+  onUndone,
   onPass,
   onForce,
 }: {
@@ -201,6 +202,8 @@ export function TurnBar({
   /** The DM is writing, or the story is still waiting for its opening scene. */
   dmWorking: boolean;
   onDone: () => void;
+  /** Take back Done, to answer something said since. */
+  onUndone: () => void;
   onPass: () => void;
   onForce: () => void;
 }) {
@@ -234,6 +237,8 @@ export function TurnBar({
   // Written something this turn (as their own character or a companion), not done yet.
   const writing = turn.acted.some(isMine);
   const others = waiting.filter((id) => !isMine(id));
+  // Finished, but the turn is still gathering: they can take it back to say more.
+  const finished = !mineOpen && turn.expected.some(isMine);
   const status = mineOpen
     ? writing
       ? 'Add more, or tap Done when your turn is finished.'
@@ -278,6 +283,16 @@ export function TurnBar({
           onClick={writing ? onDone : onPass}
         >
           {writing ? 'Done' : 'Pass'}
+        </button>
+      )}
+      {finished && (
+        <button
+          type="button"
+          className="btn sm ghost"
+          onClick={onUndone}
+          aria-label="Take back Done to add more"
+        >
+          Undo
         </button>
       )}
       {isOwner && (

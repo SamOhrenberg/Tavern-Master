@@ -14,6 +14,7 @@ const clientMessage = z.discriminatedUnion('type', [
   // Players roll only what the DM asked for; the server knows the dice.
   z.object({ type: z.literal('roll'), requestId: z.string().uuid() }),
   z.object({ type: z.literal('done') }),
+  z.object({ type: z.literal('undone') }),
   z.object({ type: z.literal('pass') }),
   z.object({ type: z.literal('force') }),
   z.object({ type: z.literal('ping') }),
@@ -134,6 +135,8 @@ export async function realtimeRoutes(app: FastifyInstance): Promise<void> {
             await room.roll(user, msg.requestId);
           } else if (msg.type === 'done') {
             room.done(user);
+          } else if (msg.type === 'undone') {
+            room.undone(user);
           } else if (msg.type === 'pass') {
             // Passing writes a line into the turn and can open one, so it counts as an action.
             const limit = rateLimiters().llm.take(`user:${user.id}`);

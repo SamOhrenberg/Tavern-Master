@@ -1100,6 +1100,13 @@ export class Room {
     if (any) this.broadcast({ type: 'turn', turn: this.turnState() });
   }
 
+  /** This player takes back their Done (or pass), to say more before the turn goes to the DM. */
+  undone(user: UserRef): void {
+    let any = false;
+    for (const seat of this.seatsOf(user.id)) any = this.collector.reopen(seat.id) || any;
+    if (any) this.broadcast({ type: 'turn', turn: this.turnState() });
+  }
+
   /**
    * This player sits the turn out, and says so in the story: each of their
    * seats that has not acted gets "<name> does nothing this turn.", and then

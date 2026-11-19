@@ -116,6 +116,29 @@ export class TurnCollector {
     return true;
   }
 
+  /**
+   * A seat takes back its done or pass, to answer something said after it
+   * finished. The turn waits on it again. Only meaningful while collecting:
+   * once every seat is done the turn has gone to the DM.
+   */
+  reopen(seat: string): boolean {
+    if (this.phase !== 'collecting') return false;
+    const was = this.done.delete(seat);
+    return this.passed.delete(seat) || was;
+  }
+
+  /**
+   * Everyone who said they were done or passed is waiting on again, as when
+   * something new was said that they may want to answer. Returns whether
+   * anything changed.
+   */
+  reopenAll(): boolean {
+    if (this.phase !== 'collecting' || (!this.done.size && !this.passed.size)) return false;
+    this.done = new Set();
+    this.passed = new Set();
+    return true;
+  }
+
   /** Close now with whatever has been gathered. */
   force(): boolean {
     if (this.phase !== 'collecting') return false;

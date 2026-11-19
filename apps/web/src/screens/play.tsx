@@ -631,6 +631,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
                   isOwner={c.role === 'owner'}
                   dmWorking={!!table.stream || awaitingOpening}
                   onDone={() => table.send({ type: 'done' })}
+                  onUndone={() => table.send({ type: 'undone' })}
                   onPass={() => {
                     if (table.send({ type: 'pass' })) toBottom();
                     else notify('Not connected to the table. Reconnecting…', 'error');

@@ -931,6 +931,8 @@ export type ClientMessage =
   | { type: 'roll'; requestId: string }
   /** This player is finished with the turn: done if they acted, passing if not. */
   | { type: 'done' }
+  /** This player takes back their Done or pass, while the turn is still gathering, to say more. */
+  | { type: 'undone' }
   /**
    * This player sits the turn out: "<name> does nothing this turn." goes into
    * the story for each of their characters that has not acted, and they are

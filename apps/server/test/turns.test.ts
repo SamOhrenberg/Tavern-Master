@@ -102,6 +102,33 @@ describe('turn aggregation', () => {
     expect(closed[0]!.actions).toHaveLength(3);
   });
 
+  it('lets a seat take back its done and waits on it again', () => {
+    const { collector, closed } = setup(0);
+    collector.setPresent(['ann', 'bob']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'I ask the innkeeper about rooms' });
+    collector.finish('ann');
+    expect(collector.reopen('ann')).toBe(true);
+    expect(collector.reopen('ann')).toBe(false);
+    collector.submit({ seat: 'bob', userId: 'bob', text: 'I sit by the fire' });
+    collector.finish('bob');
+    expect(closed).toHaveLength(0);
+    collector.finish('ann');
+    expect(closed).toHaveLength(1);
+  });
+
+  it('reopens every finished seat at once', () => {
+    const { collector, closed } = setup(0);
+    collector.setPresent(['ann', 'bob', 'cy']);
+    collector.submit({ seat: 'ann', userId: 'ann', text: 'Hello?' });
+    collector.finish('ann');
+    collector.finish('bob');
+    expect(collector.snapshot(1)).toMatchObject({ done: ['ann'], passed: ['bob'] });
+    expect(collector.reopenAll()).toBe(true);
+    expect(collector.snapshot(1)).toMatchObject({ done: [], passed: [] });
+    expect(collector.reopenAll()).toBe(false);
+    expect(closed).toHaveLength(0);
+  });
+
   it('does not wait for a player who leaves', () => {
     const { collector, closed } = setup();
     collector.setPresent(['ann', 'bob']);
