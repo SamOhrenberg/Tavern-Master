@@ -130,6 +130,33 @@ async function renderClaimed(t: Table, turn: DeskTurn, note = ''): Promise<strin
     .join('\n\n');
 }
 
+/**
+ * The mid-turn question: a player just said something while the turn is
+ * still open, and Claude decides whether a companion who heard it answers
+ * now. The whole how-to is in the text, so a chat that opened the campaign
+ * before this existed still knows what to do.
+ */
+async function renderAnswerRequest(t: Table): Promise<string | null> {
+  const ask = await t.room.answerRequest();
+  if (!ask) return null;
+  const last = [...ask.turn.actions].reverse().find((a) => a.userId);
+  const who = last ? (last.characterName ?? last.displayName) : 'A player';
+  const heard = ask.companions
+    .map((c) =>
+      c.controller === 'agent'
+        ? `${c.name} (plays blind: answer only from what ${c.name} has seen and heard, nothing from your plans)`
+        : c.name,
+    )
+    .join(', ');
+  return [
+    `Mid-turn, turn ${ask.turn.number} is still open. ${who} has just written the last line below, and the players can still answer before the turn comes to you. Decide whether a companion who heard it answers right now.`,
+    renderTurn(ask.turn),
+    `Companions who heard it: ${heard}.`,
+    'A companion answers only the way a person at the table would at once: they were spoken to or asked something, they are in the conversation, or the line plainly invites their reply. Most of the time nobody answers. An answer is what they say, in quotation marks, with a gesture at most: one or two sentences, in the third person like a player writing for their character, in their voice. Do not act in the world, roll dice, change anything or move the scene on; all of that waits for the turn, which you resolve as usual.',
+    'If someone answers, call answer_in_turn with what they say. To let it pass, just call wait_for_work again. Do not narrate.',
+  ].join('\n\n');
+}
+
 /** The opening-scene instructions, for a campaign that has begun but has no opening yet. */
 async function openingText(t: Table): Promise<string> {
   const info = infoOf(t.id, await loadCampaign(t.id));
@@ -224,6 +251,11 @@ async function nextThing(t: Table): Promise<ToolOutput | null> {
   if (t.phase === 'active' && t.room.desk.turn) {
     const turn = t.room.claimForOutsideDm();
     if (turn) return { text: await renderClaimed(t, turn), isError: false };
+  }
+  // The players are mid-conversation and the turn is held open for this, so it goes before any request.
+  if (t.phase === 'active') {
+    const ask = await renderAnswerRequest(t);
+    if (ask) return { text: ask, isError: false };
   }
   // A moot request is dropped and the next one tried, a few times at most.
   for (let i = 0; i < 5; i++) {
@@ -410,6 +442,8 @@ export const SESSION_TOOLS: ConnectorTool[] = [
       const t = await openTable(call);
       const room = t.room;
       await releaseStale(t.id);
+      // Back without answering the mid-turn question it was shown: nobody answers.
+      room.passShownAsk();
 
       // Something already in hand comes back first, so nothing is left half done.
       const held = room.desk.turn;
@@ -530,6 +564,42 @@ export const SESSION_TOOLS: ConnectorTool[] = [
               : 'There is no turn to narrate. Call wait_for_work for the next one.',
           );
       }
+    },
+  }),
+
+  own({
+    name: 'answer_in_turn',
+    description:
+      'Answer the mid-turn question wait_for_work gave you: what each companion who answers the latest line ' +
+      'says, in order, or no answers to let it pass. Each answer joins the turn and the players can reply ' +
+      'before it comes to you.',
+    schema: z.object({
+      answers: z
+        .array(
+          z.object({
+            character: z.string().trim().min(1).max(80).describe('The companion who answers'),
+            says: z
+              .string()
+              .trim()
+              .min(1)
+              .max(600)
+              .describe('What they say, in quotation marks, with a gesture at most; third person'),
+          }),
+        )
+        .max(4)
+        .default([])
+        .describe('Leave empty to let the line pass'),
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    during: ['any'],
+    async run(input, call) {
+      const t = await openTable(call);
+      requirePlay(t);
+      const done = await t.room.answerFromOutside(input.answers);
+      if ('error' in done) throw new ToolError(`${done.error} Call wait_for_work.`);
+      return done.posted.length
+        ? `Posted ${done.posted.join(' and ')}. The players can reply before the turn comes to you. Call wait_for_work.`
+        : 'Let it pass. Call wait_for_work.';
     },
   }),
 

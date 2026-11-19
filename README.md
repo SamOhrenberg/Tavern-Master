@@ -333,8 +333,11 @@ of the time it passes. One that answers is shown typing, its line joins the
 turn, and every player who had tapped Done is waited on again, so the table
 can talk with a companion before the DM narrates. The turn is held open while
 they decide, only players' lines start a round, and a turn takes a few
-answers at most. Players can also take back Done themselves. This needs the
-server's model, so a table whose AI is Claude skips it.
+answers at most. Players can also take back Done themselves. When Claude runs
+the table, the question goes to Claude instead: `wait_for_work` shows it the
+turn so far and who heard the line, it answers with `answer_in_turn`, and
+calling `wait_for_work` again lets the line pass. The turn waits a minute at
+most, and only while Claude is listening.
 
 **Polished narration.** A campaign can name one of the admin's other AIs to
 polish with. The DM's finished narration has secrets blacked out, then every
