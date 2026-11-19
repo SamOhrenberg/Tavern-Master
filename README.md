@@ -42,6 +42,11 @@ screenshots in [portfolio.md](portfolio.md).
   the party out with companions that are played by a player (or several), by
   the DM, or by a separate AI that knows only what the character has seen.
   Any player can add a companion and choose who plays it.
+- **Everyone you have met.** The NPCs tab lists the people and creatures the
+  party has run into, with a search and the stat block the DM keeps for each.
+  Players see only what the party has learned: lines the DM marks hidden,
+  unrevealed secrets and anyone not met yet never leave the server for them.
+  Owners can add and edit entries, and can turn on the spoilers to see it all.
 - **A prep phase.** Before the first scene, build characters by hand, in a
   chat with a guide that knows the rules, or from an uploaded sheet; add
   campaign documents; and tell the DM what you hope the story holds, or leave

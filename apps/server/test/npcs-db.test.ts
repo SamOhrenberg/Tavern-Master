@@ -100,6 +100,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('NPCs and creatures (database)',
     expect((await asHost.get<{ entry: EntityFull }>(`${camp()}/entities/${id}`)).body.entry.hidden).toBe(
       true,
     );
+    // The owner's list has it, with the spoilers; players cannot ask for that list.
+    const list = await asHost.get<{ entries: EntityFull[] }>(`${camp()}/entities?kinds=npc,creature`);
+    expect(list.body.entries.map((e) => e.name).sort()).toEqual(['Dumpster Roach', 'The Landlord']);
+    expect(list.body.entries.find((e) => e.name === 'Dumpster Roach')!.secret).toBe(roach.secret);
+    expect((await asAnn.get(`${camp()}/entities`)).status).toBe(403);
   });
 
   it('lets an owner change and reveal what was hidden, and delete an entry', async () => {

@@ -70,6 +70,22 @@ async function loadFull(campaignId: string, entityId: string): Promise<EntityFul
 }
 
 export async function entityRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Every entry with everything in it, entries the party has not met
+   * included; `?kinds=npc,creature` narrows it. Bookkeeping entries are left out.
+   */
+  app.get<{ Params: { id: string }; Querystring: { kinds?: string } }>(
+    '/api/campaigns/:id/entities',
+    async (req): Promise<{ entries: EntityFull[] }> => {
+      const { campaignId } = await requireMember(req, 'owner');
+      const kinds = typeof req.query.kinds === 'string' ? req.query.kinds.split(',').filter(Boolean) : [];
+      const rows = await pgStore.entities(campaignId);
+      return {
+        entries: rows.filter((e) => e.inCodex && (!kinds.length || kinds.includes(e.kind))).map(fullEntity),
+      };
+    },
+  );
+
   /** One entry with everything in it, spoilers included. */
   app.get<{ Params: { id: string; entityId: string } }>(
     '/api/campaigns/:id/entities/:entityId',

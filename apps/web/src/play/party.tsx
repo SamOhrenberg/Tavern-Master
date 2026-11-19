@@ -340,7 +340,9 @@ export function PartySheet({
         </div>
       )}
 
-      {tab === 'npcs' && <NpcTab entities={state.entities} />}
+      {tab === 'npcs' && (
+        <NpcTab campaignId={campaign.id} entities={state.entities} owner={campaign.role === 'owner'} />
+      )}
 
       {tab === 'world' && (
         <div className="stack">
