@@ -179,6 +179,7 @@ function useCountdown(deadline: number | null): number | null {
 export function TurnBar({
   turn,
   meId,
+  portraits,
   isOwner,
   dmWorking,
   onDone,
@@ -187,6 +188,8 @@ export function TurnBar({
 }: {
   turn: TurnState;
   meId: string;
+  /** The party, for the pictures of the characters the seats are. */
+  portraits?: { id: string; portrait?: string }[];
   isOwner: boolean;
   /** The DM is writing, or the story is still waiting for its opening scene. */
   dmWorking: boolean;
@@ -213,6 +216,10 @@ export function TurnBar({
   // The table waits on seats: each player-run character, or a player without one.
   const seat = (id: string) => turn.seats.find((s) => s.id === id);
   const nameOf = (id: string) => seat(id)?.name ?? 'Someone';
+  const pictureOf = (id: string) => {
+    const characterId = seat(id)?.characterId;
+    return characterId ? portraits?.find((ch) => ch.id === characterId)?.portrait : undefined;
+  };
   const isMine = (id: string) => !!seat(id)?.userIds.includes(meId);
   const waiting = turn.expected.filter((id) => !turn.done.includes(id) && !turn.passed.includes(id));
   const mine = waiting.filter(isMine);
@@ -240,9 +247,10 @@ export function TurnBar({
           return (
             <span
               key={id}
+              title={nameOf(id)}
               className={`turn-person${done ? ' done' : passed ? ' passed' : acting ? ' acting' : ''}`}
             >
-              <Avatar name={nameOf(id)} seed={id} small />
+              <Avatar name={nameOf(id)} seed={id} src={pictureOf(id)} small />
               {done && (
                 <i>
                   <IconCheck />

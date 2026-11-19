@@ -609,6 +609,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
                 <TurnBar
                   turn={table.turn}
                   meId={me.id}
+                  portraits={game?.characters}
                   isOwner={c.role === 'owner'}
                   dmWorking={!!table.stream || awaitingOpening}
                   onDone={() => table.send({ type: 'done' })}
