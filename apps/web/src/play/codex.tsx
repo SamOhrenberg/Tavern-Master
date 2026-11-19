@@ -26,6 +26,16 @@ export function CodexSheet({ entity, onClose }: { entity: Entity; onClose: () =>
           <p className="small muted aliases">Also known as {entity.aliases.join(', ')}</p>
         )}
         {entity.summary && <p className="codex-summary">{entity.summary}</p>}
+        {entity.sheet.length > 0 && (
+          <dl className="kv card stat-block">
+            {entity.sheet.map((l, i) => (
+              <div key={i} className="kv-row">
+                <dt>{l.label}</dt>
+                <dd>{l.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
         {entity.article && <p className="codex-article">{entity.article}</p>}
         {entity.articleSecret && (
           <p className="secret">
@@ -37,7 +47,7 @@ export function CodexSheet({ entity, onClose }: { entity: Entity; onClose: () =>
             <IconSparkle /> {entity.secret}
           </p>
         )}
-        {!entity.summary && !entity.article && (
+        {!entity.summary && !entity.article && !entity.sheet.length && (
           <p className="small muted">The story has not recorded more about this yet.</p>
         )}
       </div>

@@ -295,8 +295,8 @@ function NpcDetail({
       {e.summary && <p className="codex-summary">{e.summary}</p>}
       {e.sheet.length > 0 && (
         <dl className="kv card stat-block">
-          {e.sheet.map((l) => (
-            <div key={l.label} className={`kv-row${l.hidden ? ' spoiler' : ''}`}>
+          {e.sheet.map((l, i) => (
+            <div key={i} className={`kv-row${l.hidden ? ' spoiler' : ''}`}>
               <dt>
                 {l.label}
                 {l.hidden && <Spoiler />}

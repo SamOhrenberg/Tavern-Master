@@ -496,7 +496,8 @@ export const TOOLS: ToolSpec[] = [
       'hidden truths (a traitor’s identity, a trap) that players never see until you call reveal_secret. ' +
       '`aliases` are other names you may narrate it by. People and creatures keep a `sheet`, a stat block of ' +
       'labelled lines; mark a line hidden when the party has not learned it (exact hit points, a power not yet ' +
-      'seen, a true motive). Set `hidden` on an entry the party has not met yet; naming it in narration shows it.',
+      'seen, a true motive). Set `hidden` on an entry the party has not met yet; it stays hidden until you set ' +
+      'hidden false or name it in [[double brackets]] in your narration.',
     schema: z.object({
       kind,
       name,
