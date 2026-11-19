@@ -117,6 +117,10 @@ export interface RollAsk {
   expression: string;
   reason: string;
   kind: RollKind;
+  /** What the roll must reach to succeed; null when it decides no pass or fail. */
+  target?: number | null;
+  /** Success means the target or lower. */
+  under?: boolean;
 }
 
 /** The persistence the GM's tools need. Tests swap in an in-memory version. */
@@ -462,9 +466,18 @@ export const pgStore: GameStore = {
     );
     const row = await q1<{ id: string }>(
       // Hidden until the narration that asks for it is posted (see Room.publish).
-      `INSERT INTO roll_requests (campaign_id, character_id, expression, reason, kind, turn_id, shown)
-       VALUES ($1, $2, $3, $4, $5, $6, false) RETURNING id`,
-      [ctx.campaignId, req.characterId, req.expression, req.reason, req.kind, ctx.turnId],
+      `INSERT INTO roll_requests (campaign_id, character_id, expression, reason, kind, turn_id, shown, target, roll_under)
+       VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8) RETURNING id`,
+      [
+        ctx.campaignId,
+        req.characterId,
+        req.expression,
+        req.reason,
+        req.kind,
+        ctx.turnId,
+        req.target ?? null,
+        req.under ?? false,
+      ],
     );
     return row!.id;
   },

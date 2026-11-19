@@ -78,3 +78,30 @@ export function describeRoll(r: RollResult): string {
   const mod = r.modifier ? ` ${r.modifier > 0 ? '+' : '-'}${Math.abs(r.modifier)}` : '';
   return `${r.expression} → [${faces}]${mod} = ${r.total}`;
 }
+
+/** What a roll had to reach, when it decides pass or fail. */
+export interface RollTarget {
+  target?: number | null;
+  under?: boolean | null;
+}
+
+/**
+ * The pass/fail fields a roll carries, from its total and what it had to
+ * reach: meet or beat the target, or roll it or lower when `under` is set.
+ * Nothing when the roll has no target.
+ */
+export function judgeRoll(
+  total: number,
+  t: RollTarget,
+): { target?: number; under?: true; success?: boolean } {
+  if (t.target === undefined || t.target === null) return {};
+  const success = t.under ? total <= t.target : total >= t.target;
+  return { target: t.target, ...(t.under ? { under: true as const } : {}), success };
+}
+
+/** " - SUCCESS (needed 15 or higher)", for the GM to read after a roll. */
+export function describeOutcome(r: { target?: number; under?: boolean; success?: boolean }): string {
+  if (r.target === undefined || r.success === undefined) return '';
+  const need = r.under ? `${r.target} or lower` : `${r.target} or higher`;
+  return ` - ${r.success ? 'SUCCESS' : 'FAILURE'} (needed ${need})`;
+}

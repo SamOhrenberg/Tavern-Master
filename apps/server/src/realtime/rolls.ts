@@ -1,5 +1,5 @@
 import type { DiceRoll, RollKind } from '@tavern/protocol';
-import { DiceError, roll as rollDice, systemRng, type Rng } from '../agent/dice.js';
+import { DiceError, judgeRoll, roll as rollDice, systemRng, type Rng } from '../agent/dice.js';
 import type { CharRow } from '../agent/store.js';
 
 export interface RollRequest {
@@ -7,6 +7,9 @@ export interface RollRequest {
   reason?: string;
   characterId?: string;
   kind?: RollKind;
+  /** What it must reach to succeed, when the DM set that. */
+  target?: number | null;
+  under?: boolean;
 }
 
 export type RollOutcome =
@@ -48,6 +51,7 @@ export function buildPlayerRoll(
       dice: result.dice,
       total: result.total,
       kind: req.kind ?? 'other',
+      ...judgeRoll(result.total, req),
     },
   };
 }

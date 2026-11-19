@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeRoll, DiceError, roll, systemRng } from '../src/agent/dice.js';
+import { describeOutcome, describeRoll, DiceError, judgeRoll, roll, systemRng } from '../src/agent/dice.js';
 
 /** Returns the given faces in order, so results are exact. */
 const fixed = (...values: number[]) => {
@@ -57,5 +57,29 @@ describe('dice', () => {
     }
     const seen = new Set(Array.from({ length: 400 }, () => roll('1d6').total));
     expect(seen.size).toBe(6);
+  });
+});
+
+describe('judging a roll against its target', () => {
+  it('succeeds on meeting or beating the target', () => {
+    expect(judgeRoll(15, { target: 15 })).toEqual({ target: 15, success: true });
+    expect(judgeRoll(14, { target: 15 })).toEqual({ target: 15, success: false });
+  });
+
+  it('succeeds at or under the target for a roll-under chance', () => {
+    expect(judgeRoll(66, { target: 66, under: true })).toEqual({ target: 66, under: true, success: true });
+    expect(judgeRoll(88, { target: 66, under: true })).toEqual({ target: 66, under: true, success: false });
+  });
+
+  it('judges nothing without a target', () => {
+    expect(judgeRoll(7, {})).toEqual({});
+    expect(judgeRoll(7, { target: null })).toEqual({});
+    expect(describeOutcome({})).toBe('');
+  });
+
+  it('tells the GM what was needed', () => {
+    expect(describeOutcome(judgeRoll(88, { target: 66, under: true }))).toBe(
+      ' - FAILURE (needed 66 or lower)',
+    );
   });
 });

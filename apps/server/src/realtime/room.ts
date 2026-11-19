@@ -43,6 +43,7 @@ import { CAMPAIGN_SHEET_SQL, gmSheetGuide } from '../sheet-schema.js';
 import { guideText } from '../gm-guide.js';
 import { getMessage, insertMessage } from './messages.js';
 import { buildPlayerRoll } from './rolls.js';
+import { describeOutcome } from '../agent/dice.js';
 import { TurnCollector, type ClosedTurn, type CollectedAction } from './turns.js';
 
 /** Seat ids for a line a player spoke for a companion start with this. */
@@ -727,15 +728,29 @@ export class Room {
   roll(user: UserRef, requestId: string): Promise<void> {
     return this.run(async () => {
       if (await this.resting(user)) return;
-      const ask = await q1<{ character_id: string; expression: string; reason: string; kind: RollKind }>(
-        `SELECT character_id, expression, reason, kind FROM roll_requests
+      const ask = await q1<{
+        character_id: string;
+        expression: string;
+        reason: string;
+        kind: RollKind;
+        target: number | null;
+        roll_under: boolean;
+      }>(
+        `SELECT character_id, expression, reason, kind, target, roll_under FROM roll_requests
           WHERE id = $1 AND campaign_id = $2 AND status = 'pending'`,
         [requestId, this.campaignId],
       );
       if (!ask) return this.tell(user.id, 'The DM is not waiting on that roll any more.');
       const chars = await pgStore.characters(this.campaignId);
       const outcome = buildPlayerRoll(
-        { expression: ask.expression, reason: ask.reason, kind: ask.kind, characterId: ask.character_id },
+        {
+          expression: ask.expression,
+          reason: ask.reason,
+          kind: ask.kind,
+          characterId: ask.character_id,
+          target: ask.target,
+          under: ask.roll_under,
+        },
         { userId: user.id, characters: chars },
       );
       if (!outcome.ok) return this.errorTo(user.id, outcome.code, outcome.message);
@@ -754,7 +769,7 @@ export class Room {
       await this.submit({
         seat: seat.id,
         userId: user.id,
-        text: `${seat.name} rolls ${r.reason || r.kind}: ${r.total} (${r.expression}: ${faces}).`,
+        text: `${seat.name} rolls ${r.reason || r.kind}: ${r.total} (${r.expression}: ${faces})${describeOutcome(r)}.`,
       });
       const ctx: TurnContext = {
         campaignId: this.campaignId,

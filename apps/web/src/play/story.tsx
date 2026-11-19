@@ -142,13 +142,18 @@ const ROLL_KIND_LABEL: Record<string, string> = {
   initiative: 'Initiative',
 };
 
-/** One roll the server made: what it was for, the faces, and the total. */
+/** "Hit" or "Miss" for an attack, "Success" or "Failure" for anything else. */
+const outcomeWord = (roll: DiceRoll) =>
+  roll.kind === 'attack' ? (roll.success ? 'Hit' : 'Miss') : roll.success ? 'Success' : 'Failure';
+
+/** One roll the server made: what it was for, the faces, whether it succeeded, and the total. */
 export function RollChip({ roll }: { roll: DiceRoll }) {
   const d20 = roll.dice.find((d) => d.kept && d.sides === 20);
   const tone = d20?.value === 20 ? ' crit' : d20?.value === 1 ? ' fumble' : '';
   const kindLabel = roll.kind ? ROLL_KIND_LABEL[roll.kind] : undefined;
+  const judged = roll.success === undefined ? '' : roll.success ? ' passed' : ' failed';
   return (
-    <div className={`roll${tone}`}>
+    <div className={`roll${tone}${judged}`}>
       <IconD20 />
       <div className="grow roll-body">
         <div className="roll-why">
@@ -163,6 +168,14 @@ export function RollChip({ roll }: { roll: DiceRoll }) {
               {d.value}
             </span>
           ))}
+          {roll.success !== undefined && roll.target !== undefined && (
+            <span className={`roll-outcome ${roll.success ? 'pass' : 'fail'}`}>
+              {outcomeWord(roll)}
+              <span className="roll-need">
+                {roll.under ? `≤ ${roll.target}` : `${roll.kind === 'attack' ? 'AC' : 'DC'} ${roll.target}`}
+              </span>
+            </span>
+          )}
         </div>
       </div>
       <span className="roll-total">{roll.total}</span>

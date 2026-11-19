@@ -17,7 +17,7 @@ import {
   writesMaxHp,
 } from '../sheet-schema.js';
 import type { ToolDef } from '../llm/types.js';
-import { describeRoll, DiceError, roll, systemRng, type Rng } from './dice.js';
+import { describeOutcome, describeRoll, DiceError, judgeRoll, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
 import { MAX_NOTES, type CharRow, type GameStore, type TurnContext } from './store.js';
 
@@ -87,6 +87,20 @@ export const TOOLS: ToolSpec[] = [
         .enum(['attack', 'damage', 'check', 'save', 'initiative', 'other'])
         .default('other')
         .describe('What the roll is for: attack=to hit, damage, check, save, initiative'),
+      target: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          'The number the roll must reach to succeed: the DC of a check or save, the armor class an attack must hit. ' +
+            'Set it whenever the roll decides pass or fail, so the table sees which; leave it out for damage and initiative.',
+        ),
+      under: z
+        .boolean()
+        .optional()
+        .describe(
+          'True when success means rolling the target or LOWER, as with a percentile chance (d100 under 66).',
+        ),
     }),
     async run(input, ctx, store, rng) {
       let result;
@@ -103,11 +117,12 @@ export const TOOLS: ToolSpec[] = [
         dice: result.dice,
         total: result.total,
         kind: input.kind,
+        ...judgeRoll(result.total, input),
       };
       const id = await store.recordRoll(ctx, record);
       ctx.rolls.push({ id, ...record });
       const who = record.character ? ` for ${record.character}` : '';
-      return `Rolled${who} (${input.reason}): ${describeRoll(result)}`;
+      return `Rolled${who} (${input.reason}): ${describeRoll(result)}${describeOutcome(record)}`;
     },
   }),
 
@@ -127,6 +142,20 @@ export const TOOLS: ToolSpec[] = [
         .enum(['attack', 'damage', 'check', 'save', 'initiative', 'other'])
         .default('check')
         .describe('attack=to hit, damage, check, save, initiative'),
+      target: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          'The number the roll must reach to succeed: the DC of a check or save, the armor class an attack must hit. ' +
+            'Set it whenever the roll decides pass or fail, so the table sees which; leave it out for damage and initiative.',
+        ),
+      under: z
+        .boolean()
+        .optional()
+        .describe(
+          'True when success means rolling the target or LOWER, as with a percentile chance (d100 under 66).',
+        ),
     }),
     async run(input, ctx, store) {
       try {
@@ -145,6 +174,7 @@ export const TOOLS: ToolSpec[] = [
         expression: input.expression,
         reason: input.reason,
         kind: input.kind,
+        ...(input.target !== undefined ? { target: input.target, under: input.under ?? false } : {}),
       });
       ctx.stateChanged = true;
       return (

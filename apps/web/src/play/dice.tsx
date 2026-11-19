@@ -47,8 +47,10 @@ export function AnimatedRoll({ roll }: { roll: DiceRoll }) {
   }
   // Show random faces while it tumbles; the real roll replaces them on settle.
   const faces = roll.dice.map((face) => ({ ...face, kept: true, value: d(face.sides) }));
+  // Whether it succeeded stays hidden until the dice settle.
+  const { target: _target, under: _under, success: _success, ...unjudged } = roll;
   const shown: DiceRoll = {
-    ...roll,
+    ...unjudged,
     dice: faces,
     total: faces.reduce((sum, f) => sum + f.value, 0),
   };

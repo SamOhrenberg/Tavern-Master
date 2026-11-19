@@ -845,6 +845,15 @@ export interface DiceRoll {
   total: number;
   /** What the roll is for. Defaults to 'other' for older rows / unspecified. */
   kind: RollKind;
+  /**
+   * The number the roll had to reach (a DC or armor class), when it decides
+   * pass or fail. Absent for rolls without one, such as damage.
+   */
+  target?: number;
+  /** Success meant rolling the target or lower, as with a percentile chance. */
+  under?: boolean;
+  /** Whether it succeeded. Set by the server whenever `target` is. */
+  success?: boolean;
 }
 
 /**
