@@ -1,8 +1,8 @@
 import type { CampaignDetail, DmStatus, Friend, UsageTotals, UserRef } from '@tavern/protocol';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import { useAction, useMe, useMeta, useQuery } from '../app';
+import { reloadMeta, useAction, useMe, useMeta, useQuery } from '../app';
 import { IconCrown } from '../icons';
 import { CampaignNotifyToggle } from '../screens/notifications';
 import { Avatar, ConfirmButton, Field, Presence, Sheet, formatTokens, formatUsd } from '../ui';
@@ -53,6 +53,10 @@ export function ManageSheet({
   onClose: () => void;
 }) {
   const meta = useMeta();
+  // The AIs to polish with change on the admin page, maybe on another device: ask again when settings open.
+  useEffect(() => {
+    void reloadMeta();
+  }, []);
   const claude = c.dm === 'claude';
   const status = dmStatus ?? c.dmStatus;
   const host = hostOf(c)?.displayName ?? 'the host';

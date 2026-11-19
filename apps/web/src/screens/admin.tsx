@@ -2,7 +2,7 @@ import type { OutsideAi, Role, UsageReport, UsageTotals } from '@tavern/protocol
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { useAction, useMe, useQuery, useToast } from '../app';
+import { reloadMeta, useAction, useMe, useQuery, useToast } from '../app';
 import { IconAlert, IconChevron, IconCopy, IconPlus, IconShareIos } from '../icons';
 import {
   Avatar,
@@ -534,7 +534,11 @@ function OutsideAis() {
         <OutsideAiSheet
           ai={open === 'new' ? null : open}
           onClose={() => setOpen(null)}
-          onChanged={() => void ais.reload()}
+          onChanged={() => {
+            void ais.reload();
+            // Campaign settings offer these to polish with; they read the list from the server's meta.
+            void reloadMeta();
+          }}
         />
       )}
     </>
