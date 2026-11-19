@@ -263,8 +263,14 @@
   flex: none;
   color: var(--muted);
 }
+.roll-body {
+  min-width: 0;
+}
+/* The reason wraps rather than truncates: it is the only place that says what the roll decides. */
 .roll-why {
   font-size: 13.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 .roll-why b {
   font-weight: 650;
@@ -357,6 +363,8 @@
   color: var(--faint);
 }
 .roll-total {
+  flex: none;
+  align-self: center;
   min-width: 34px;
   text-align: right;
   font-family: var(--font-display);

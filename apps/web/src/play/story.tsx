@@ -150,8 +150,8 @@ export function RollChip({ roll }: { roll: DiceRoll }) {
   return (
     <div className={`roll${tone}`}>
       <IconD20 />
-      <div className="grow">
-        <div className="roll-why truncate">
+      <div className="grow roll-body">
+        <div className="roll-why">
           {roll.character && <b>{roll.character} · </b>}
           {kindLabel && <span className={`roll-kind ${roll.kind}`}>{kindLabel}</span>}
           {roll.reason || 'Roll'}
