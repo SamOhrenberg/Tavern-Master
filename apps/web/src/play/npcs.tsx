@@ -1,7 +1,8 @@
 import type { Entity, EntityEdit, EntityFull, StatLineFull } from '@tavern/protocol';
 import { useEffect, useMemo, useState } from 'react';
-import { api } from '../api';
-import { useAction } from '../app';
+import { createPortal } from 'react-dom';
+import { api, errorMessage } from '../api';
+import { useAction, useToast } from '../app';
 import {
   IconBack,
   IconChevron,
@@ -14,6 +15,7 @@ import {
   IconUsers,
 } from '../icons';
 import { Avatar, ConfirmButton, Empty, Field, Segmented } from '../ui';
+import { PortraitPick, usePortraitPick } from './portrait-pick';
 
 /** People and creatures: the entries the NPCs tab holds. */
 export const isNpc = (e: { kind: string }) => e.kind === 'npc' || e.kind === 'creature';
@@ -43,6 +45,8 @@ interface Npc {
   articleSecret: string;
   /** The party has not met them yet (shown to owners only). */
   hidden: boolean;
+  /** Where to load their picture from, if they have one. */
+  portrait?: string;
 }
 
 const fromEntity = (e: Entity): Npc => ({
@@ -218,7 +222,7 @@ export function NpcTab({
                       className="entity npc-row"
                       onClick={() => setView({ at: 'entry', id: e.id })}
                     >
-                      <Avatar name={e.name} seed={e.id} small />
+                      <Avatar name={e.name} seed={e.id} src={e.portrait} />
                       <span className="grow npc-row-text">
                         <span className="row">
                           <b className="grow truncate">{e.name}</b>
@@ -263,6 +267,7 @@ function NpcDetail({
   onBack: () => void;
   onEdit?: () => void;
 }) {
+  const kindLine = `${e.kind === 'creature' ? 'Creature' : 'Person'}${e.status ? ` · ${e.status}` : ''}`;
   return (
     <div className="stack npc-detail">
       <div className="row">
@@ -276,16 +281,21 @@ function NpcDetail({
           </button>
         )}
       </div>
-      <div className="row npc-head">
-        <Avatar name={e.name} seed={e.id} />
-        <div className="grow">
+      {e.portrait ? (
+        <div className="npc-hero">
+          <NpcPortrait src={e.portrait} name={e.name} />
           <h3>{e.name}</h3>
-          <p className="small muted">
-            {e.kind === 'creature' ? 'Creature' : 'Person'}
-            {e.status ? ` · ${e.status}` : ''}
-          </p>
+          <p className="small muted">{kindLine}</p>
         </div>
-      </div>
+      ) : (
+        <div className="row npc-head">
+          <Avatar name={e.name} seed={e.id} />
+          <div className="grow">
+            <h3>{e.name}</h3>
+            <p className="small muted">{kindLine}</p>
+          </div>
+        </div>
+      )}
       {spoilers && e.hidden && (
         <p className="small secret">
           <IconKey /> The party has not met them yet. Players do not see this entry.
@@ -326,6 +336,43 @@ function NpcDetail({
   );
 }
 
+/** A person's or creature's picture, large, opening full size when tapped. */
+export function NpcPortrait({ src, name }: { src: string; name: string }) {
+  const [viewing, setViewing] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        className="npc-hero-pic"
+        onClick={() => setViewing(true)}
+        aria-label={`See ${name}’s picture full size`}
+      >
+        <img src={src} alt="" decoding="async" />
+      </button>
+      {viewing && <PictureView src={src} name={name} onClose={() => setViewing(false)} />}
+    </>
+  );
+}
+
+/** A picture on its own, as large as the screen allows. A tap anywhere closes it. */
+function PictureView({ src, name, onClose }: { src: string; name: string; onClose: () => void }) {
+  useEffect(() => {
+    const key = (ev: KeyboardEvent) => ev.key === 'Escape' && onClose();
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [onClose]);
+  return createPortal(
+    <div className="picture-view" role="dialog" aria-modal="true" aria-label={name} onClick={onClose}>
+      <button type="button" className="icon-btn picture-view-close" onClick={onClose} aria-label="Close">
+        <IconClose />
+      </button>
+      <img src={src} alt={name} />
+      <p className="picture-view-name">{name}</p>
+    </div>,
+    document.body,
+  );
+}
+
 /** An owner adding someone, or changing everything about an entry, spoilers included. */
 function NpcEditor({
   campaignId,
@@ -339,6 +386,9 @@ function NpcEditor({
   onDone: (id: string | null) => void;
 }) {
   const [busy, run] = useAction();
+  const notify = useToast();
+  // A picture chosen here goes up once the entry is saved; until then it is only previewed.
+  const pick = usePortraitPick(entry?.portrait);
   const [draft, setDraft] = useState<EntityEdit>(() =>
     entry
       ? {
@@ -382,6 +432,10 @@ function NpcEditor({
         entry ? `/campaigns/${campaignId}/entities/${entry.id}` : `/campaigns/${campaignId}/entities`,
         { method: entry ? 'PUT' : 'POST', body },
       );
+      // The entry is saved either way: a picture that fails to send must not lose the rest.
+      await pick
+        .save(`/campaigns/${campaignId}/entities/${saved.id}/portrait`)
+        .catch((err) => notify(`Saved, but the picture was not: ${errorMessage(err)}`, 'error'));
       onDone(saved.id);
     }, 'Saved');
 
@@ -402,6 +456,7 @@ function NpcEditor({
       <button type="button" className="btn sm ghost npc-back" onClick={() => onDone(entry?.id ?? null)}>
         <IconBack /> {entry ? 'Back without saving' : 'Cancel'}
       </button>
+      <PortraitPick pick={pick} name={draft.name} seed={entry?.id ?? draft.name} />
       <Segmented
         value={draft.kind === 'creature' ? 'creature' : 'npc'}
         onChange={(kind) => set('kind', kind)}

@@ -1,6 +1,7 @@
 import type { Entity, EntityKind } from '@tavern/protocol';
 import { IconSparkle } from '../icons';
 import { Sheet } from '../ui';
+import { NpcPortrait } from './npcs';
 
 const KIND_LABEL: Record<EntityKind, string> = {
   npc: 'Person',
@@ -18,6 +19,11 @@ export function CodexSheet({ entity, onClose }: { entity: Entity; onClose: () =>
   return (
     <Sheet title={entity.name} onClose={onClose}>
       <div className="codex-entry">
+        {entity.portrait && (
+          <div className="npc-hero">
+            <NpcPortrait src={entity.portrait} name={entity.name} />
+          </div>
+        )}
         <div className="row wrap">
           <span className="pill">{KIND_LABEL[entity.kind]}</span>
           {entity.status && <span className="pill">{entity.status}</span>}
