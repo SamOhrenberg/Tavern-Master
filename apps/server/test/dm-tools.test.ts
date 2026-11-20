@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { stateSnapshot } from '../src/agent/context.js';
 import { publicSummary } from '../src/agent/loop.js';
 import { dispatchTool } from '../src/agent/tools.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
@@ -86,5 +87,69 @@ describe('the DM’s tools for keeping the record straight', () => {
     expect(
       publicSummary('delete_entity', { kind: 'npc', name: 'The Traitor' }, 'Removed npc: The Traitor'),
     ).toBe('Tidied the codex');
+  });
+});
+
+describe('who is in the scene', () => {
+  const setup = async () => {
+    const store = new FakeStore();
+    const ctx = context();
+    for (const e of [
+      { kind: 'npc', name: 'Mara Voss', aliases: ['the fence'] },
+      { kind: 'creature', name: 'Dumpster Roach' },
+      { kind: 'location', name: 'The Gilded Rat' },
+    ])
+      await dispatchTool('upsert_entity', e, ctx, store);
+    const here = () => store.ents.filter((e) => e.inScene).map((e) => e.name);
+    return { store, ctx, here };
+  };
+
+  it('puts exactly the people and creatures named in the scene, by name or other name', async () => {
+    const { store, ctx, here } = await setup();
+    const out = await dispatchTool(
+      'set_scene',
+      { description: 'The back room of the Gilded Rat.', present: ['the fence', 'dumpster roach'] },
+      ctx,
+      store,
+    );
+    expect(out.isError).toBe(false);
+    expect(here()).toEqual(['Mara Voss', 'Dumpster Roach']);
+    expect(store.sceneText).toBe('The back room of the Gilded Rat.');
+    expect(out.content).toContain('Mara Voss, Dumpster Roach');
+
+    // Someone leaves mid-scene: the description stays.
+    await dispatchTool('set_scene', { present: ['Mara Voss'] }, ctx, store);
+    expect(here()).toEqual(['Mara Voss']);
+    expect(store.sceneText).toBe('The back room of the Gilded Rat.');
+
+    // A new place without `present` keeps who is there, and says so.
+    const moved = await dispatchTool('set_scene', { description: 'The river dock at night.' }, ctx, store);
+    expect(here()).toEqual(['Mara Voss']);
+    expect(moved.content).toContain('Mara Voss');
+
+    await dispatchTool('set_scene', { present: [] }, ctx, store);
+    expect(here()).toEqual([]);
+  });
+
+  it('changes nothing when a name is not a person or creature in the codex', async () => {
+    const { store, ctx, here } = await setup();
+    await dispatchTool('set_scene', { present: ['Mara Voss'] }, ctx, store);
+    const out = await dispatchTool(
+      'set_scene',
+      { present: ['Dumpster Roach', 'Pip', 'The Gilded Rat'] },
+      ctx,
+      store,
+    );
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('Pip, The Gilded Rat');
+    expect(here()).toEqual(['Mara Voss']);
+    expect((await dispatchTool('set_scene', {}, ctx, store)).isError).toBe(true);
+  });
+
+  it('tells the DM who is there every turn', async () => {
+    const { store, ctx } = await setup();
+    expect(await stateSnapshot(ctx, store)).toContain('<present>nobody but the party</present>');
+    await dispatchTool('set_scene', { present: ['Mara Voss'] }, ctx, store);
+    expect(await stateSnapshot(ctx, store)).toContain('<present>Mara Voss</present>');
   });
 });

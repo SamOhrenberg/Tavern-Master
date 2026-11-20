@@ -155,6 +155,26 @@ export async function entityRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /**
+   * Put someone in the current scene or take them out of it, for when the DM
+   * forgot. The DM sees the change in its next turn's state.
+   */
+  app.put<{ Params: { id: string; entityId: string } }>(
+    '/api/campaigns/:id/entities/:entityId/scene',
+    async (req): Promise<{ ok: true }> => {
+      const { campaignId } = await requireMember(req, 'owner');
+      const { inScene } = parse(z.object({ inScene: z.boolean() }), req.body);
+      const rows = await q(
+        `UPDATE entities SET in_scene = $3
+          WHERE campaign_id = $1 AND id = $2 AND kind IN ('npc', 'creature') RETURNING id`,
+        [campaignId, parse(uuid, req.params.entityId), inScene],
+      );
+      if (!rows.length) throw notFound('No such person or creature');
+      getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+      return { ok: true };
+    },
+  );
+
   // ---- pictures of people and creatures ----
 
   /** Set a person's or creature's picture: a PNG, JPEG or WebP image, replacing any it had. */

@@ -22,6 +22,7 @@ export function scopeEntity(e: EntityRow): Entity {
     ...(revealed && e.articleSecret ? { articleSecret: e.articleSecret } : {}),
     // Hidden lines are spoilers: they stay on the server until the DM reveals them.
     sheet: e.sheet.filter((l) => !l.hidden).map(({ label, value }) => ({ label, value })),
+    inScene: e.inScene,
     ...(e.portrait ? { portrait: e.portrait } : {}),
   };
 }
@@ -42,6 +43,7 @@ export function fullEntity(e: EntityRow): EntityFull {
     firstSeenAt: e.firstSeenAt,
     sheet: e.sheet,
     hidden: e.hidden,
+    inScene: e.inScene,
     ...(e.portrait ? { portrait: e.portrait } : {}),
   };
 }

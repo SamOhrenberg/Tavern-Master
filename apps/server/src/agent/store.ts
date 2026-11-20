@@ -85,6 +85,8 @@ export interface EntityRow {
   sheet: StatLineFull[];
   /** Planned: the party has not met it yet. */
   hidden: boolean;
+  /** A person or creature the DM says is in the current scene. */
+  inScene: boolean;
   /** Where to load its picture from; absent when it has none. */
   portrait?: string;
 }
@@ -173,6 +175,8 @@ export interface GameStore {
   setFlag(campaignId: string, key: string, value: unknown): Promise<void>;
   scene(campaignId: string): Promise<string>;
   setScene(campaignId: string, text: string): Promise<void>;
+  /** Exactly these people and creatures are in the scene now; everyone else is not. */
+  setPresent(campaignId: string, entityIds: string[]): Promise<void>;
   remember(
     campaignId: string,
     m: { kind: 'fact' | 'thread' | 'promise'; content: string; importance: number },
@@ -274,7 +278,7 @@ export const pgStore: GameStore = {
   async entities(campaignId) {
     const rows = await q(
       `SELECT id, kind, name, aliases, summary, article, status, secret, article_secret,
-              secret_revealed, first_seen_message_id, in_codex, sheet, hidden,
+              secret_revealed, first_seen_message_id, in_codex, sheet, hidden, in_scene,
               (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at,
               (SELECT p.portrait FROM npc_portraits p WHERE p.entity_id = entities.id) AS portrait
          FROM entities
@@ -296,6 +300,7 @@ export const pgStore: GameStore = {
       inCodex: r.in_codex,
       sheet: readStatLines(r.sheet),
       hidden: r.hidden,
+      inScene: r.in_scene,
       ...(r.portrait ? { portrait: npcPortraitUrl(campaignId, r.id, r.portrait) } : {}),
     }));
   },
@@ -433,6 +438,14 @@ export const pgStore: GameStore = {
 
   async setScene(campaignId, text) {
     await q('UPDATE campaigns SET scene = $2 WHERE id = $1', [campaignId, text]);
+  },
+
+  async setPresent(campaignId, entityIds) {
+    await q(
+      `UPDATE entities SET in_scene = (id = ANY($2::uuid[]))
+        WHERE campaign_id = $1 AND kind IN ('npc', 'creature') AND in_scene <> (id = ANY($2::uuid[]))`,
+      [campaignId, entityIds],
+    );
   },
 
   async remember(campaignId, m) {

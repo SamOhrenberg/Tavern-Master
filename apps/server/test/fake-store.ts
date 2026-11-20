@@ -122,6 +122,7 @@ export class FakeStore implements GameStore {
       inCodex: true,
       sheet: mergeStatLines([], e.sheet ?? []),
       hidden: e.hidden ?? false,
+      inScene: false,
     });
     return { id, created: true };
   }
@@ -175,6 +176,10 @@ export class FakeStore implements GameStore {
   }
   async setScene(_campaignId: string, text: string) {
     this.sceneText = text;
+  }
+  async setPresent(_campaignId: string, entityIds: string[]) {
+    for (const e of this.ents)
+      if (e.kind === 'npc' || e.kind === 'creature') e.inScene = entityIds.includes(e.id);
   }
   async remember(_campaignId: string, m: { content: string }) {
     this.memories.push(m.content);

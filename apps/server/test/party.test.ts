@@ -310,6 +310,7 @@ describe('a companion with its own AI', () => {
       inCodex: true,
       sheet: [],
       hidden: false,
+      inScene: false,
       ...over,
     });
     const known = knownEntries([
