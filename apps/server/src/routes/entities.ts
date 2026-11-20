@@ -1,22 +1,32 @@
+import { createReadStream } from 'node:fs';
 import type { EntityFull } from '@tavern/protocol';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { fullEntity } from '../agent/codex.js';
+import { fullEntity, playerVisible } from '../agent/codex.js';
 import { pgStore } from '../agent/store.js';
 import { q, q1 } from '../db/pool.js';
-import { conflict, notFound, parse } from '../errors.js';
+import { badRequest, conflict, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
+import { discard, readHead, receiveFile } from '../http/upload.js';
+import { npcPortraitUrl, setNpcPortrait, sweepNpcPortraits } from '../npc-portraits.js';
 import { getRoom } from '../realtime/room.js';
+import { sniffImage } from '../rules/parse.js';
+import { uploadPath } from '../storage.js';
 
 /**
  * The campaign's owners editing the codex by hand: the people and creatures
  * on the NPCs tab, and any other entry. These are the only routes that send
  * spoilers (unrevealed secrets, hidden stat block lines, entries the party
  * has not met), so every one of them is for owners alone. The DM reads the
- * same rows, so what an owner changes is what it plays from.
+ * same rows, so what an owner changes is what it plays from. Pictures of
+ * people and creatures are the exception: anyone at the table may load the
+ * picture of an entry they are sent.
  */
 
 const uuid = z.string().uuid();
+/** Pictures arrive cropped and shrunk by the app; this is room to spare. */
+const PORTRAIT_MAX_BYTES = 2 * 1024 * 1024;
+const PICTURED = new Set(['npc', 'creature']);
 const text = (max: number) => z.string().trim().max(max);
 
 const entityEdit = z.object({
@@ -139,8 +149,80 @@ export async function entityRoutes(app: FastifyInstance): Promise<void> {
         parse(uuid, req.params.entityId),
       ]);
       if (!rows.length) throw notFound('No such entry');
+      await sweepNpcPortraits(campaignId);
       getRoom(campaignId)?.broadcast({ type: 'state_changed' });
       return { ok: true };
+    },
+  );
+
+  // ---- pictures of people and creatures ----
+
+  /** Set a person's or creature's picture: a PNG, JPEG or WebP image, replacing any it had. */
+  app.put<{ Params: { id: string; entityId: string } }>(
+    '/api/campaigns/:id/entities/:entityId/portrait',
+    async (req): Promise<{ portrait: string }> => {
+      const { campaignId } = await requireMember(req, 'owner');
+      const entityId = parse(uuid, req.params.entityId);
+      // Check before taking the file, so nothing is written to disk for an entry that is not there.
+      const entry = await q1<{ kind: string }>(
+        'SELECT kind FROM entities WHERE campaign_id = $1 AND id = $2',
+        [campaignId, entityId],
+      );
+      if (!entry) throw notFound('No such entry');
+      if (!PICTURED.has(entry.kind)) throw badRequest('Only people and creatures have pictures.');
+      const file = await receiveFile(req, PORTRAIT_MAX_BYTES);
+      try {
+        if (!sniffImage(await readHead(file.path))) throw badRequest('Choose a PNG, JPEG or WebP picture.');
+        await setNpcPortrait(campaignId, entityId, file.storageName);
+      } catch (err) {
+        await discard(file);
+        throw err;
+      }
+      // An entry deleted while the picture was on its way leaves nothing behind.
+      await sweepNpcPortraits(campaignId);
+      getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+      return { portrait: npcPortraitUrl(campaignId, entityId, file.storageName) };
+    },
+  );
+
+  app.delete<{ Params: { id: string; entityId: string } }>(
+    '/api/campaigns/:id/entities/:entityId/portrait',
+    async (req): Promise<{ ok: true }> => {
+      const { campaignId } = await requireMember(req, 'owner');
+      await setNpcPortrait(campaignId, parse(uuid, req.params.entityId), null);
+      getRoom(campaignId)?.broadcast({ type: 'state_changed' });
+      return { ok: true };
+    },
+  );
+
+  /**
+   * Anyone at the table may see the picture of someone the party has met. Of
+   * anyone else (still planned, or bookkeeping) only the owners may: to a
+   * player there is no such picture, so it cannot give away who is coming.
+   */
+  app.get<{ Params: { id: string; entityId: string } }>(
+    '/api/campaigns/:id/entities/:entityId/portrait',
+    async (req, reply) => {
+      const { campaignId, role } = await requireMember(req);
+      const entityId = parse(uuid, req.params.entityId);
+      const row = await q1<{ portrait: string; hidden: boolean; in_codex: boolean }>(
+        `SELECT p.portrait, e.hidden, e.in_codex
+           FROM npc_portraits p JOIN entities e ON e.id = p.entity_id AND e.campaign_id = p.campaign_id
+          WHERE p.entity_id = $1 AND p.campaign_id = $2`,
+        [entityId, campaignId],
+      );
+      if (!row) throw notFound('No picture');
+      if (role !== 'owner' && !playerVisible({ inCodex: row.in_codex, hidden: row.hidden })) {
+        throw notFound('No picture');
+      }
+      const path = uploadPath(row.portrait);
+      const type = sniffImage(await readHead(path).catch(() => Buffer.alloc(0)));
+      if (!type) throw notFound('No picture');
+      // The address changes with every new picture, so this one never goes stale.
+      return reply
+        .header('Cache-Control', 'private, max-age=31536000, immutable')
+        .type(type)
+        .send(createReadStream(path));
     },
   );
 }

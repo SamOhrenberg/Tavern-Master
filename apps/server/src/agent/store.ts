@@ -16,6 +16,7 @@ import { campaignSchema, inventoryOf } from '../sheet-schema.js';
 import { editMessage } from '../realtime/messages.js';
 import { redactSecrets } from './loop.js';
 import { mergeStatLines, readStatLines } from './codex.js';
+import { npcPortraitUrl, sweepNpcPortraits } from '../npc-portraits.js';
 import { keywordQuery, searchCampaignDocs, searchRules, searchSetting } from '../rules/retrieve.js';
 
 /** A player taking part in the turn being resolved. Built by the server, never by the model. */
@@ -84,6 +85,8 @@ export interface EntityRow {
   sheet: StatLineFull[];
   /** Planned: the party has not met it yet. */
   hidden: boolean;
+  /** Where to load its picture from; absent when it has none. */
+  portrait?: string;
 }
 
 export interface EntityInput {
@@ -272,7 +275,8 @@ export const pgStore: GameStore = {
     const rows = await q(
       `SELECT id, kind, name, aliases, summary, article, status, secret, article_secret,
               secret_revealed, first_seen_message_id, in_codex, sheet, hidden,
-              (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at
+              (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at,
+              (SELECT p.portrait FROM npc_portraits p WHERE p.entity_id = entities.id) AS portrait
          FROM entities
         WHERE campaign_id = $1 ORDER BY kind, name`,
       [campaignId],
@@ -292,6 +296,7 @@ export const pgStore: GameStore = {
       inCodex: r.in_codex,
       sheet: readStatLines(r.sheet),
       hidden: r.hidden,
+      ...(r.portrait ? { portrait: npcPortraitUrl(campaignId, r.id, r.portrait) } : {}),
     }));
   },
 
@@ -383,6 +388,7 @@ export const pgStore: GameStore = {
       'DELETE FROM entities WHERE campaign_id = $1 AND kind = $2 AND lower(name) = lower($3) RETURNING id',
       [campaignId, kind, name],
     );
+    if (rows.length) await sweepNpcPortraits(campaignId);
     return rows.length > 0;
   },
 

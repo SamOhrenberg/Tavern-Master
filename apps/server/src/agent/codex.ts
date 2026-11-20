@@ -22,6 +22,7 @@ export function scopeEntity(e: EntityRow): Entity {
     ...(revealed && e.articleSecret ? { articleSecret: e.articleSecret } : {}),
     // Hidden lines are spoilers: they stay on the server until the DM reveals them.
     sheet: e.sheet.filter((l) => !l.hidden).map(({ label, value }) => ({ label, value })),
+    ...(e.portrait ? { portrait: e.portrait } : {}),
   };
 }
 
@@ -41,11 +42,12 @@ export function fullEntity(e: EntityRow): EntityFull {
     firstSeenAt: e.firstSeenAt,
     sheet: e.sheet,
     hidden: e.hidden,
+    ...(e.portrait ? { portrait: e.portrait } : {}),
   };
 }
 
 /** Entries players are sent: browsable, and met (not still planned). */
-export const playerVisible = (e: EntityRow) => e.inCodex && !e.hidden;
+export const playerVisible = (e: Pick<EntityRow, 'inCodex' | 'hidden'>) => e.inCodex && !e.hidden;
 
 const MAX_LINES = 40;
 

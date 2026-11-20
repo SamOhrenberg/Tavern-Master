@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { q, q1, tx, type Queryable } from './db/pool.js';
 import { badRequest, conflict, notFound } from './errors.js';
+import { sweepNpcPortraits } from './npc-portraits.js';
 import { carrySheets } from './sheet-versions.js';
 
 /**
@@ -127,7 +128,7 @@ async function rewindAfter(
   /** What happened, as Claude is told it ("The host took the story back to…"). */
   what: string,
 ): Promise<RewindResult> {
-  return tx(async (c) => {
+  const out = await tx(async (c) => {
     const at =
       keep > 0
         ? await q1<{ created_at: Date; session_id: string | null }>(
@@ -245,6 +246,9 @@ async function rewindAfter(
     );
     return { reopen: !narrated, removed: removed.length };
   });
+  // Pictures stay through a rewind, except those of entries it took away.
+  await sweepNpcPortraits(campaignId);
+  return out;
 }
 
 const excerpt = (text: string, max = 240) => {

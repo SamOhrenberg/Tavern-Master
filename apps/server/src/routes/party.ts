@@ -21,7 +21,7 @@ import { q, q1, tx } from '../db/pool.js';
 import { badRequest, conflict, forbidden, HttpError, notFound, parse } from '../errors.js';
 import { requireMember } from '../http/membership.js';
 import { enforceLimit, rateLimiters } from '../http/security.js';
-import { discard, receiveFile } from '../http/upload.js';
+import { discard, readHead, receiveFile } from '../http/upload.js';
 import { enqueue } from '../jobs/queue.js';
 import { resolveLlm } from '../llm/index.js';
 import { budgetBlock, recordUsage } from '../llm/usage.js';
@@ -80,17 +80,6 @@ const DOC_SQL = `SELECT d.id, d.title, d.size_bytes, d.status, d.error, d.kind, 
                    FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by`;
 
 const docKinds = z.enum(['rules', 'setting', 'adventure', 'character', 'handout', 'other']);
-
-async function readHead(path: string): Promise<Buffer> {
-  const fh = await open(path, 'r');
-  try {
-    const buf = Buffer.alloc(8192);
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-    return buf.subarray(0, bytesRead);
-  } finally {
-    await fh.close();
-  }
-}
 
 export async function partyRoutes(app: FastifyInstance): Promise<void> {
   // ---- characters ----
