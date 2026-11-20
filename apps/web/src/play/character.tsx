@@ -7,11 +7,11 @@ import type {
   SheetSuggestion,
   SheetSchema,
 } from '@tavern/protocol';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import { useAction, useToast } from '../app';
-import { IconCheck, IconImage, IconPlus, IconSparkle, IconTrash } from '../icons';
-import { Avatar, ConfirmButton, Field, Sheet } from '../ui';
+import { IconCheck, IconPlus, IconSparkle, IconTrash } from '../icons';
+import { ConfirmButton, Field, Sheet } from '../ui';
 import {
   fieldsOf,
   formatValue,
@@ -24,7 +24,7 @@ import {
   type FieldInput,
   type FormValues,
 } from './sheet-fields';
-import { PortraitCropper, type Crop } from './portrait-crop';
+import { PortraitPick, usePortraitPick } from './portrait-pick';
 
 /** Who will run a character that does not exist yet. */
 export interface Control {
@@ -138,44 +138,10 @@ export function CharacterSheet({
   const [notes, setNotes] = useState(character?.privateNotes ?? '');
   // Changes the rules check proposed on an uploaded draft, until applied or waved off.
   const [suggestions, setSuggestions] = useState<SheetSuggestion[]>(draft?.suggestions ?? []);
-  // A picture chosen here goes up with the sheet; until then it is only previewed. The original
-  // and the crop are kept so it can be cropped again.
-  const [picture, setPicture] = useState<{ blob: Blob; url: string; file: File; crop: Crop } | null>(null);
-  const [dropPicture, setDropPicture] = useState(false);
-  const [cropping, setCropping] = useState<{ file: File; crop?: Crop } | null>(null);
-  const picker = useRef<HTMLInputElement>(null);
+  // A picture chosen here goes up with the sheet; until then it is only previewed.
+  const pick = usePortraitPick(character?.portrait);
   const notify = useToast();
   const [busy, run] = useAction();
-  useEffect(
-    () => () => {
-      if (picture) URL.revokeObjectURL(picture.url);
-    },
-    [picture],
-  );
-  const shownPicture = picture?.url ?? (dropPicture ? undefined : character?.portrait);
-
-  const choosePicture = (file: File | undefined) => {
-    if (picker.current) picker.current.value = '';
-    if (file) setCropping({ file });
-  };
-
-  const cropped = (blob: Blob, crop: Crop) => {
-    if (cropping) setPicture({ blob, url: URL.createObjectURL(blob), file: cropping.file, crop });
-    setDropPicture(false);
-    setCropping(null);
-  };
-
-  /** Send the picture change, if any, once the character exists. */
-  const savePicture = async (id: string) => {
-    const path = `/campaigns/${campaignId}/characters/${id}/portrait`;
-    if (picture) {
-      const form = new FormData();
-      form.append('file', picture.blob, 'portrait.jpg');
-      await api(path, { method: 'PUT', form });
-    } else if (dropPicture && character?.portrait) {
-      await api(path, { method: 'DELETE' });
-    }
-  };
 
   const companion = (character?.kind ?? control?.kind) === 'npc';
   const aiRun = (character?.controller ?? control?.controller ?? 'player') !== 'player';
@@ -257,9 +223,11 @@ export function CharacterSheet({
         // The sheet is saved either way: a picture that fails to send must not leave the form
         // open for a second "Join the party" that would make the character twice.
         if (id)
-          await savePicture(id).catch((err) =>
-            notify(`The sheet is saved, but the picture was not: ${errorMessage(err)}`, 'error'),
-          );
+          await pick
+            .save(`/campaigns/${campaignId}/characters/${id}/portrait`)
+            .catch((err) =>
+              notify(`The sheet is saved, but the picture was not: ${errorMessage(err)}`, 'error'),
+            );
         onSaved();
       },
       character ? 'Sheet saved' : companion ? `${body.name} joins the party` : 'Welcome to the party',
@@ -322,63 +290,7 @@ export function CharacterSheet({
             ))}
           </div>
         )}
-        <div className="portrait-pick">
-          <button
-            type="button"
-            className="portrait-btn"
-            onClick={() => picker.current?.click()}
-            aria-label={shownPicture ? 'Change the picture' : 'Add a picture'}
-          >
-            <Avatar name={name || '?'} seed={character?.id ?? name} src={shownPicture} large />
-            <span className="portrait-badge" aria-hidden="true">
-              <IconImage />
-            </span>
-          </button>
-          <div className="portrait-acts">
-            <button type="button" className="btn sm ghost" onClick={() => picker.current?.click()}>
-              {shownPicture ? 'Change picture' : 'Add a picture'}
-            </button>
-            {picture && (
-              <button
-                type="button"
-                className="btn sm ghost"
-                onClick={() => setCropping({ file: picture.file, crop: picture.crop })}
-              >
-                Crop again
-              </button>
-            )}
-            {shownPicture && (
-              <button
-                type="button"
-                className="btn sm ghost"
-                onClick={() => {
-                  setPicture(null);
-                  setDropPicture(true);
-                }}
-              >
-                Remove
-              </button>
-            )}
-          </div>
-          <input
-            ref={picker}
-            type="file"
-            className="sr-only"
-            // The extensions too: Windows does not always know HEIC's type, and would hide the files.
-            accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif"
-            onChange={(e) => choosePicture(e.target.files?.[0])}
-            tabIndex={-1}
-            aria-hidden="true"
-          />
-          {cropping && (
-            <PortraitCropper
-              file={cropping.file}
-              initial={cropping.crop}
-              onCancel={() => setCropping(null)}
-              onDone={cropped}
-            />
-          )}
-        </div>
+        <PortraitPick pick={pick} name={name} seed={character?.id ?? name} />
 
         <Field label="Name">
           <input
