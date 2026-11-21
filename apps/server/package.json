@@ -16,7 +16,7 @@
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^1.1.2",
     "@anthropic-ai/foundry-sdk": "^1.1.1",
-    "@anthropic-ai/sdk": "^1.8.0",
+    "@anthropic-ai/sdk": "^1.10.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/multipart": "^10.1.8",
     "@fastify/static": "^10.1.10",
