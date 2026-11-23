@@ -44,9 +44,10 @@ export async function compileBrief(campaignId: string): Promise<string> {
     q<NoteRow>('SELECT title, content FROM gm_notes WHERE campaign_id = $1 ORDER BY created_at', [
       campaignId,
     ]),
+    // Newest first within each importance, so a cap drops the oldest notes rather than the latest.
     q<MemoryRow>(
       `SELECT kind, content FROM memories WHERE campaign_id = $1 AND superseded_at IS NULL
-        ORDER BY importance DESC, created_at LIMIT 50`,
+        ORDER BY importance DESC, created_at DESC LIMIT 50`,
       [campaignId],
     ),
     q<{ content: string }>(

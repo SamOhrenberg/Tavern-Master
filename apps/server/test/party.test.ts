@@ -15,7 +15,7 @@ import { publicSummary, runAgentTurn } from '../src/agent/loop.js';
 import { placeKey } from '../src/agent/places.js';
 import type { EntityRow } from '../src/agent/store.js';
 import { draftFromRecord, readSheet, suggestionsFromChanges, validateSheet } from '../src/agent/sheets.js';
-import { parseNotes } from '../src/agent/summarize.js';
+import { parseNotes, parseSummary } from '../src/agent/summarize.js';
 import { dispatchTool, EDIT_SHEET, gmTools, toolDefs, TOOLS } from '../src/agent/tools.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
 import type { ResolvedLlm } from '../src/llm/index.js';
@@ -693,6 +693,22 @@ describe('the DM’s records', () => {
       parseNotes('{"memories":[{"kind":"promise","content":"Thorn owes Bram 50 gold","importance":9}]}'),
     ).toEqual([{ kind: 'promise', content: 'Thorn owes Bram 50 gold', importance: 5 }]);
     expect(parseNotes('I could not do that.')).toEqual([]);
+  });
+
+  it('takes a summary only from a usable reply', () => {
+    expect(parseSummary('```json\n{"summary": "The party crossed the river.", "memories": []}\n```')).toEqual(
+      {
+        summary: 'The party crossed the river.',
+        memories: [],
+      },
+    );
+    const prose =
+      'The party crossed the river at dawn, paid the ferryman in silver, and reached the ruined abbey by nightfall.';
+    expect(parseSummary(prose)).toEqual({ summary: prose, memories: [] });
+    // Nothing, or JSON that was cut off, is no summary: it must not replace the play it covers.
+    expect(parseSummary('')).toBeNull();
+    expect(parseSummary('{"summary": "The party crossed the river at dawn, paid the ferryman')).toBeNull();
+    expect(parseSummary('Done.')).toBeNull();
   });
 });
 
