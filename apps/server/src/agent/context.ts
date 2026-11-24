@@ -267,14 +267,21 @@ export async function recentHistory(campaignId: string, excludeTurnId: string | 
   return out;
 }
 
+interface PlayRow {
+  kind: string;
+  content: string;
+  character_name: string | null;
+  display_name: string | null;
+}
+
+const playLine = (r: PlayRow) =>
+  r.kind === 'dm'
+    ? `DM: ${r.content}`
+    : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`;
+
 /** The last few lines of play as plain text, for an AI that is not resolving a turn. */
 export async function recentPlay(campaignId: string, limit = 12): Promise<string> {
-  const rows = await q<{
-    kind: string;
-    content: string;
-    character_name: string | null;
-    display_name: string | null;
-  }>(
+  const rows = await q<PlayRow>(
     `SELECT * FROM (
        SELECT m.id, m.kind, m.content, m.character_name, u.display_name
          FROM messages m LEFT JOIN users u ON u.id = m.user_id
@@ -282,13 +289,35 @@ export async function recentPlay(campaignId: string, limit = 12): Promise<string
      ) r ORDER BY r.id`,
     [campaignId, limit],
   );
-  return rows
-    .map((r) =>
-      r.kind === 'dm'
-        ? `DM: ${r.content}`
-        : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`,
-    )
-    .join('\n\n');
+  return rows.map(playLine).join('\n\n');
+}
+
+/**
+ * All the play not yet folded into a summary, as plain text, for an AI that
+ * reads it beside the brief: the brief's story so far ends where this begins,
+ * so nothing falls between them. A very long stretch keeps its end and says
+ * how much was left out. With everything summarised, the last lines of play.
+ */
+export async function playSinceSummary(campaignId: string, maxTokens = 8000): Promise<string> {
+  const rows = await q<PlayRow>(
+    `SELECT m.kind, m.content, m.character_name, u.display_name
+       FROM messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.campaign_id = $1 AND m.summary_id IS NULL AND m.kind IN ('action', 'dm')
+      ORDER BY m.id`,
+    [campaignId],
+  );
+  if (!rows.length) return recentPlay(campaignId);
+  const lines = rows.map(playLine);
+  let start = lines.length;
+  let used = 0;
+  while (start > 0) {
+    const cost = estimateTokens(lines[start - 1]!);
+    if (start < lines.length && used + cost > maxTokens) break;
+    used += cost;
+    start--;
+  }
+  const kept = lines.slice(start).join('\n\n');
+  return start ? `(${start} earlier lines of play are not shown; recall finds them.)\n\n${kept}` : kept;
 }
 
 /**

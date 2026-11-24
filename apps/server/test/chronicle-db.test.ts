@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { playSinceSummary } from '../src/agent/context.js';
 import { summarizeCampaign } from '../src/agent/summarize.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
 import { migrate } from '../src/db/migrate.js';
@@ -103,5 +104,19 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the built-in chronicle (databas
     // The most recent messages stay verbatim.
     expect(await unsummarised()).toBeGreaterThan(0);
     expect(await unsummarised()).toBeLessThan(12);
+  });
+
+  it('hands a new conversation all the play since the last summary', async () => {
+    const play = await playSinceSummary(camp);
+    // The summary covers the first four messages; everything after it is there, in full.
+    expect(play).not.toContain('step 2.');
+    expect(play).not.toContain('scene 3.');
+    expect(play).toContain('step 4.');
+    expect(play).toContain('scene 11.');
+    // A tight budget keeps the end and says what it left out.
+    const tight = await playSinceSummary(camp, 30);
+    expect(tight).toMatch(/^\(\d+ earlier lines of play are not shown/);
+    expect(tight).toContain('scene 11.');
+    expect(tight).not.toContain('step 4.');
   });
 });

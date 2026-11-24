@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { briefAndChanges, buildOpening, recentPlay, renderTurn, stateSnapshot } from '../agent/context.js';
+import {
+  briefAndChanges,
+  buildOpening,
+  playSinceSummary,
+  renderTurn,
+  stateSnapshot,
+} from '../agent/context.js';
 import { wishesSince } from '../agent/brief.js';
 import { rulingsBlock } from '../agent/rulings.js';
 import { systemRng } from '../agent/dice.js';
@@ -282,7 +288,8 @@ export async function campaignBrief(t: Table): Promise<string> {
   const [{ brief, changes }, snapshot, recent, waiting, rulings, rewound] = await Promise.all([
     briefAndChanges(t.id),
     stateSnapshot(ctx, pgStore),
-    recentPlay(t.id),
+    // Everything since the last summary, so a new conversation misses none of it.
+    playSinceSummary(t.id),
     waitingBlock(t),
     rulingsBlock(t.id),
     rewoundNotice(t.id),
