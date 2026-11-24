@@ -202,6 +202,8 @@ export async function runLoreReader(deps: LoreReaderDeps): Promise<LoreOutcome> 
           text: `Distil the voice of this world. Here is what is available to read:\n\n${deps.outline}`,
         },
       ],
+      // The same every round: read from the cache after the first.
+      cache: true,
     },
   ];
 
@@ -265,8 +267,10 @@ export async function runLoreReader(deps: LoreReaderDeps): Promise<LoreOutcome> 
     }
 
     if (lastRound) return { ok: false, reason: 'the reader ran out of steps before saving lore' };
+    // A second breakpoint follows the newest passages, so each round reads the one before from the cache.
+    for (const m of messages.slice(1)) m.cache = false;
     messages.push({ role: 'assistant', content: done.content });
-    messages.push({ role: 'user', content: results });
+    messages.push({ role: 'user', content: results, cache: true });
   }
   return { ok: false, reason: 'the reader ran out of steps before saving lore' };
 }

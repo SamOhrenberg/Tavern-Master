@@ -172,6 +172,8 @@ export async function runSheetDrafter(deps: DrafterDeps): Promise<DraftOutcome> 
           ].join('\n\n'),
         },
       ],
+      // Long and the same every round: read from the cache after the first.
+      cache: true,
     },
   ];
 
@@ -231,8 +233,10 @@ export async function runSheetDrafter(deps: DrafterDeps): Promise<DraftOutcome> 
       results.push({ type: 'tool_result', toolUseId: call.id, content });
     }
     if (round === maxRounds) break;
+    // A second breakpoint follows the newest results, so each round reads the one before from the cache.
+    for (const m of messages.slice(1)) m.cache = false;
     messages.push({ role: 'assistant', content: done.content });
-    messages.push({ role: 'user', content: results });
+    messages.push({ role: 'user', content: results, cache: true });
   }
   return { ok: false, reason: 'the drafter ran out of steps before saving a sheet' };
 }
