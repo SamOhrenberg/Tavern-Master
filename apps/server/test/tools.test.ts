@@ -134,6 +134,35 @@ describe('tool dispatch', () => {
     ).toBe('Unknown tool "Roll_Dice". Did you mean roll_dice?');
   });
 
+  it('reads the codex entries in play in full, and lists the rest by name', async () => {
+    const store = new FakeStore();
+    store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn' })];
+    const state = async (input: object) =>
+      JSON.parse((await dispatchTool('get_state', input, context(), store)).content) as {
+        characters: unknown[];
+        entities: { name: string; secret?: string }[];
+        otherEntries?: string[];
+        notInCodex?: string[];
+      };
+    for (let i = 0; i < 12; i++) await store.upsertEntity('c', { kind: 'item', name: `Trinket ${i}` });
+    // A small codex comes back whole.
+    expect((await state({})).entities).toHaveLength(12);
+    expect((await state({})).otherEntries).toBeUndefined();
+
+    for (let i = 12; i < 30; i++) await store.upsertEntity('c', { kind: 'item', name: `Trinket ${i}` });
+    await store.upsertEntity('c', { kind: 'npc', name: 'Mara Voss', secret: 'She sold the map.' });
+    await store.upsertEntity('c', { kind: 'npc', name: 'Captain Vane', aliases: ['the Captain'] });
+    store.ents.find((e) => e.name === 'Mara Voss')!.inScene = true;
+    // A large one: who is in the scene and what was asked for, in full; the rest by name.
+    const big = await state({ names: ['the captain', 'Nobody'] });
+    expect(big.characters).toHaveLength(1);
+    expect(big.entities.map((e) => e.name)).toEqual(['Mara Voss', 'Captain Vane']);
+    expect(big.entities[0]!.secret).toBe('She sold the map.');
+    expect(big.otherEntries).toHaveLength(30);
+    expect(big.otherEntries).toContain('item: Trinket 29');
+    expect(big.notInCodex).toEqual(['Nobody']);
+  });
+
   it('refuses keys a tool does not take instead of dropping them', async () => {
     const store = new FakeStore();
     store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn' })];

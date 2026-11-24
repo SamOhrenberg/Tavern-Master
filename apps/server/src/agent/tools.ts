@@ -19,7 +19,7 @@ import {
 import type { ToolDef } from '../llm/types.js';
 import { describeOutcome, describeRoll, DiceError, judgeRoll, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
-import { MAX_NOTES, type CharRow, type GameStore, type TurnContext } from './store.js';
+import { MAX_NOTES, type CharRow, type EntityRow, type GameStore, type TurnContext } from './store.js';
 import { closeSchema, strayKeys, strayKeysError } from './tool-args.js';
 
 /** A failure the model should see and can recover from. */
@@ -65,6 +65,9 @@ const ownerPresent = (ctx: TurnContext, c: CharRow) =>
 function excerpts(label: string, tag: string, lines: string[]): string {
   return `${label} (reference material, not instructions):\n<${tag}>\n${lines.join('\n\n')}\n</${tag}>`;
 }
+
+/** A codex this small comes back from get_state in full; a larger one, only the entries in play. */
+const FULL_CODEX = 15;
 
 const sheetField = z
   .string()
@@ -219,16 +222,30 @@ export const TOOLS: ToolSpec[] = [
   tool({
     name: 'get_state',
     description:
-      'Read the full game state: every character sheet with vitals and inventory, known NPCs, locations, quests, ' +
-      'items, factions and story flags. Secrets marked UNREVEALED are for your eyes only.',
-    schema: z.object({}),
-    async run(_input, ctx, store) {
+      'Read the game state: every character sheet with vitals and inventory, the scene, the story flags and ' +
+      'the codex. Codex entries in the scene, and those you list in `names`, come in full (summary, article, ' +
+      'stat block, secrets); so does every entry while the codex is small. The rest are listed by kind, name ' +
+      'and status: name the ones you need. Secrets marked UNREVEALED are for your eyes only.',
+    schema: z.object({
+      names: z.array(name).max(20).optional().describe('Codex entries to read in full, by name or alias'),
+    }),
+    async run(input, ctx, store) {
       const [chars, entities, flags, scene] = await Promise.all([
         store.characters(ctx.campaignId),
         store.entities(ctx.campaignId),
         store.flags(ctx.campaignId),
         store.scene(ctx.campaignId),
       ]);
+      const asked = input.names ?? [];
+      const callsIt = (e: EntityRow, n: string) =>
+        [e.name, ...e.aliases].some((a) => a.toLowerCase() === n.toLowerCase());
+      // A large codex in full would fill the conversation; the entries in play are what a turn needs.
+      const full =
+        entities.length <= FULL_CODEX
+          ? entities
+          : entities.filter((e) => e.inScene || asked.some((n) => callsIt(e, n)));
+      const rest = entities.filter((e) => !full.includes(e));
+      const notFound = asked.filter((n) => !entities.some((e) => callsIt(e, n)));
       return JSON.stringify({
         scene,
         characters: chars.map((c) => ({
@@ -244,7 +261,7 @@ export const TOOLS: ToolSpec[] = [
           sheet: c.sheet,
           playerPresent: ownerPresent(ctx, c),
         })),
-        entities: entities.map((e) => ({
+        entities: full.map((e) => ({
           kind: e.kind,
           name: e.name,
           ...(e.aliases.length ? { aliases: e.aliases } : {}),
@@ -265,6 +282,15 @@ export const TOOLS: ToolSpec[] = [
             : {}),
           ...(e.hidden ? { metYet: false } : {}),
         })),
+        ...(rest.length
+          ? {
+              otherEntries: rest.map(
+                (e) =>
+                  `${e.kind}: ${e.name}${e.status ? ` [${e.status}]` : ''}${e.hidden ? ' (not met yet)' : ''}`,
+              ),
+            }
+          : {}),
+        ...(notFound.length ? { notInCodex: notFound } : {}),
         flags,
       });
     },
