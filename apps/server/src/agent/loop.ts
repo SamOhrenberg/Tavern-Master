@@ -36,6 +36,14 @@ export interface AgentResult {
 const REFUSAL_TEXT =
   'The narrator falters and sets the scene aside. (The model declined to continue this thread; try approaching it differently.)';
 
+/**
+ * Sent once when a reply ends with nothing for the reader. Some models return
+ * text written before a tool call as a hidden progress note, so a narration
+ * written ahead of its bookkeeping can come back empty.
+ */
+const ASK_AGAIN =
+  'Nothing you have written has reached the reader yet: text written before a tool call is not shown to them. Write your reply now, in full, with no more tool calls.';
+
 /** What players may see about a tool call. Never includes hidden state. */
 export function publicSummary(tool: string, input: unknown, result: string): string {
   switch (tool) {
@@ -95,6 +103,14 @@ export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
   const texts: string[] = [];
   let toolCalls = 0;
   let truncated = false;
+  let askedAgain = false;
+
+  /** Add a round, with the cache breakpoint moved to its newest message. */
+  const append = (assistant: Block[], user: Block[]) => {
+    for (const m of messages.slice(run.messages.length)) m.cache = false;
+    messages.push({ role: 'assistant', content: assistant });
+    messages.push({ role: 'user', content: user, cache: true });
+  };
 
   for (let round = 1; round <= run.maxRounds; round++) {
     let done: Extract<StreamEvent, { type: 'done' }> | undefined;
@@ -130,6 +146,21 @@ export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
       (b): b is Extract<Block, { type: 'tool_use' }> => b.type === 'tool_use',
     );
     if (done.stop !== 'tool_use' || calls.length === 0) {
+      // Nothing for the reader at all (a hidden narration, or a reply cut off while thinking): ask once more.
+      if (!texts.length && !askedAgain && round < run.maxRounds) {
+        askedAgain = true;
+        append(done.content, [
+          // A call that was cut off is answered too, so the conversation stays well formed.
+          ...calls.map((c): Block => ({
+            type: 'tool_result',
+            toolUseId: c.id,
+            content: 'Not run: your reply was cut off before this call was finished.',
+            isError: true,
+          })),
+          { type: 'text', text: ASK_AGAIN },
+        ]);
+        continue;
+      }
       return { text: texts.join('\n\n'), refused: false, truncated, rounds: round, toolCalls };
     }
 
@@ -152,11 +183,7 @@ export async function runAgentTurn(run: AgentRun): Promise<AgentResult> {
       });
     }
 
-    // Move the cache breakpoint to the newest tool results.
-    for (const m of messages)
-      if (m.role === 'user' && m.content.some((b) => b.type === 'tool_result')) m.cache = false;
-    messages.push({ role: 'assistant', content: done.content });
-    messages.push({ role: 'user', content: results, cache: true });
+    append(done.content, results);
   }
 
   // Out of rounds while still asking for tools: use whatever was narrated.

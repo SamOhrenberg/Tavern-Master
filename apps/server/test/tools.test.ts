@@ -367,6 +367,67 @@ describe('agent loop with a mocked model', () => {
     expect(result.text).toMatch(/ran out of steps/);
   });
 
+  it('asks once more when a turn ends with nothing for the reader', async () => {
+    const store = new FakeStore();
+    store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn' })];
+    // The narration was written ahead of the bookkeeping and came back hidden.
+    const provider = scripted([
+      [call('t1', 'update_character', { character: 'Thorn', hp_delta: -2 })],
+      [],
+      [{ type: 'text', text: 'Thorn staggers back, bleeding.' }],
+    ]);
+    const result = await runAgentTurn({
+      llm: llm(provider),
+      system: [],
+      messages: userTurn('go'),
+      ctx: context(),
+      store,
+      maxRounds: 4,
+      maxTokens: 100,
+    });
+    expect(result.text).toBe('Thorn staggers back, bleeding.');
+    expect(provider.requests).toHaveLength(3);
+    const third = provider.requests[2]!.messages;
+    expect(third.at(-1)!.content.at(-1)).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Nothing you have written'),
+    });
+    // The breakpoint moved to the newest message; no earlier one keeps it.
+    expect(third.filter((m) => m.cache)).toEqual([third.at(-1)]);
+  });
+
+  it('answers a call cut off mid-way before asking again', async () => {
+    const requests: ChatRequest[] = [];
+    const provider: ChatProvider = {
+      name: 'cut-off',
+      async *stream(req) {
+        requests.push(structuredClone({ ...req, signal: undefined }));
+        if (requests.length === 1) {
+          const content = [call('t1', 'remember', { content: 'The ga' })];
+          yield { type: 'done', stop: 'max_tokens', content, usage: ZERO_USAGE, model: req.model };
+          return;
+        }
+        const content: Block[] = [{ type: 'text', text: 'The gate creaks open.' }];
+        yield { type: 'text', text: 'The gate creaks open.' };
+        yield { type: 'done', stop: 'end', content, usage: ZERO_USAGE, model: req.model };
+      },
+    };
+    const result = await runAgentTurn({
+      llm: llm(provider),
+      system: [],
+      messages: userTurn('go'),
+      ctx: context(),
+      store: new FakeStore(),
+      maxRounds: 4,
+      maxTokens: 100,
+    });
+    expect(result).toMatchObject({ text: 'The gate creaks open.', truncated: true, toolCalls: 0 });
+    expect(requests[1]!.messages.at(-1)!.content).toMatchObject([
+      { type: 'tool_result', toolUseId: 't1', isError: true },
+      { type: 'text', text: expect.stringContaining('Nothing you have written') },
+    ]);
+  });
+
   it('plays a whole two-player turn with the built-in mock DM', async () => {
     const store = new FakeStore();
     store.rules = { 'sys-a': [hit(4, 'To attack, roll a d20 and add the relevant modifier.')] };
