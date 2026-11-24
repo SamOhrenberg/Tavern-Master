@@ -294,6 +294,12 @@ describe('provider selection and pricing', () => {
     expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' });
     setConfigForTests(testConfig({ LLM_MODEL_COMPANION: 'claude-sonnet-5-5' }));
     expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-sonnet-5-5' });
+    // The guide chats cheaply; design work on a system reads its rulebooks with more thought.
+    setConfigForTests(testConfig({ LLM_MODEL_PREP: 'claude-sonnet-5-5', LLM_EFFORT_NARRATION: 'low' }));
+    expect(await resolveLlm('prep')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
+    expect(await resolveLlm('design')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    setConfigForTests(testConfig({ LLM_EFFORT_NARRATION: 'high' }));
+    expect(await resolveLlm('design')).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
     setConfigForTests(testConfig());
     setProviderForTests();
   });

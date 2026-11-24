@@ -305,7 +305,7 @@ export async function workshopTurn(
       rolls: [],
       stateChanged: false,
     };
-    const llm = await resolveLlm('prep', sys.created_by ?? userId);
+    const llm = await resolveLlm('design', sys.created_by ?? userId);
     const cfg = config();
     const result = await runAgentTurn({
       llm,

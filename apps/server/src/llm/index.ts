@@ -10,8 +10,14 @@ import type { ChatProvider, Effort } from './types.js';
 /**
  * narration: the GM. utility: summaries, cataloguing, reading uploaded sheets.
  * companion: a party member with its own AI. prep: the character-building guide.
+ * design: work on a game system from its rulebooks, done once and kept (drafting
+ * its sheet, distilling its setting's voice, the workshop with the admins).
  */
-export type LlmTask = 'narration' | 'utility' | 'companion' | 'prep';
+export type LlmTask = 'narration' | 'utility' | 'companion' | 'prep' | 'design';
+
+const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const atLeast = (effort: Effort, floor: Effort): Effort =>
+  EFFORTS.indexOf(effort) < EFFORTS.indexOf(floor) ? floor : effort;
 
 export interface ResolvedLlm {
   provider: ChatProvider;
@@ -113,15 +119,22 @@ interface KeyRow {
 export async function resolveLlm(task: LlmTask, ownerId?: string | null): Promise<ResolvedLlm> {
   const cfg = config();
   // Companions and the guide write a few sentences at a time; low effort keeps them cheap.
+  // Design work reads rulebooks closely and is done once, so it is worth more thought.
   const effort: Effort =
-    task === 'narration' ? cfg.LLM_EFFORT_NARRATION : task === 'utility' ? cfg.LLM_EFFORT_UTILITY : 'low';
+    task === 'narration'
+      ? cfg.LLM_EFFORT_NARRATION
+      : task === 'utility'
+        ? cfg.LLM_EFFORT_UTILITY
+        : task === 'design'
+          ? atLeast(cfg.LLM_EFFORT_NARRATION, 'medium')
+          : 'low';
   // Tasks that fall back to the narration model when nothing more specific is set.
   // Companions are among them: playing a character well, blind, needs a capable model.
-  const heavy = task === 'narration' || task === 'prep' || task === 'companion';
+  const heavy = task !== 'utility';
   const defaultModel =
     task === 'companion'
       ? (cfg.LLM_MODEL_COMPANION ?? cfg.LLM_MODEL_NARRATION)
-      : task === 'prep'
+      : task === 'prep' || task === 'design'
         ? (cfg.LLM_MODEL_PREP ?? cfg.LLM_MODEL_NARRATION)
         : heavy
           ? cfg.LLM_MODEL_NARRATION

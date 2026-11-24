@@ -332,7 +332,7 @@ export async function distilLore(systemId: string): Promise<void> {
 
   await setLoreStatus(systemId, 'reading');
   try {
-    const llm = await resolveLlm('prep', sys.created_by);
+    const llm = await resolveLlm('design', sys.created_by);
     const emb = embedder('worker');
     let usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     let model = llm.model;

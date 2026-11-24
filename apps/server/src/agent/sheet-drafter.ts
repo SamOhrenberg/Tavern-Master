@@ -298,7 +298,7 @@ export async function draftSheet(systemId: string): Promise<void> {
   }
   await setStatus(systemId, 'drafting');
   try {
-    const llm = await resolveLlm('prep', sys.created_by);
+    const llm = await resolveLlm('design', sys.created_by);
     const emb = embedder('worker');
     const format = (hits: { document: string; heading: string; text: string }[], max: number) =>
       hits
