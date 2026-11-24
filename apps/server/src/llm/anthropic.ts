@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { betaRefusalFallbackMiddleware } from '@anthropic-ai/sdk';
 import { AnthropicBedrockMantle } from '@anthropic-ai/bedrock-sdk';
 import { AnthropicFoundry } from '@anthropic-ai/foundry-sdk';
 import type { Config } from '../config.js';
@@ -15,9 +15,33 @@ export function isAdaptiveModel(model: string): boolean {
   return /claude-(fable|mythos|opus|sonnet|haiku)-(4-[6-9]|[5-9])/.test(model);
 }
 
-/** Models that can hand a declined request to another model on the first-party API. */
+/** Models that can hand a declined request to another model (Bedrock names carry a vendor prefix). */
 function supportsFallback(model: string): boolean {
-  return /^claude-(fable-5|opus-5|sonnet-5-5)/.test(model);
+  return /^(anthropic\.)?claude-(fable-5|opus-5|sonnet-5-5)/.test(model);
+}
+
+/**
+ * Where the API has no server-side fallback (Bedrock, Foundry), the client
+ * retries a declined request itself, down this chain: the documented targets.
+ * A target the platform does not offer is skipped, and the refusal stands.
+ */
+const clientFallbacks = (prefix: string) =>
+  betaRefusalFallbackMiddleware([
+    { model: `${prefix}claude-opus-4-8` },
+    { model: `${prefix}claude-sonnet-5` },
+  ]);
+
+/**
+ * When a model declined part-way and another took over, the reply is what the
+ * second wrote: before the last switch point only the text stands (it is the
+ * part the new model continued from). Thinking and calls from before it are
+ * neither sent back nor run, and the switch point stays where it was.
+ */
+function afterFallback<T>(content: T[]): T[] {
+  const kind = (b: T) => (b as { type: string }).type;
+  const last = content.findLastIndex((b) => kind(b) === 'fallback');
+  if (last < 0) return content;
+  return content.filter((b, i) => i >= last || kind(b) === 'text' || kind(b) === 'fallback');
 }
 
 function toContent(blocks: Block[], provider: string, cache: CacheControl | undefined): ContentParam[] {
@@ -56,6 +80,8 @@ export interface AnthropicOptions {
   client: Pick<Anthropic, 'messages' | 'beta'>;
   /** Let the API retry a declined request on another model (first-party API only). */
   refusalFallback?: boolean;
+  /** The client's own fallback middleware retries declined requests; it acts on the beta surface. */
+  clientFallback?: boolean;
   /** Keep cached prompt prefixes for an hour instead of five minutes (first-party API only). */
   longCache?: boolean;
 }
@@ -100,15 +126,17 @@ export function anthropicProvider(opts: AnthropicOptions): ChatProvider {
         ...(adaptive && req.effort ? { output_config: { effort: req.effort } } : {}),
       };
 
-      const useFallback = !!opts.refusalFallback && supportsFallback(req.model);
-      const stream = useFallback
-        ? client.beta.messages.stream(
-            { ...(params as object), betas: [FALLBACK_BETA], fallbacks: 'default' } as Parameters<
-              typeof client.beta.messages.stream
-            >[0],
-            { signal: req.signal },
-          )
-        : client.messages.stream(params, { signal: req.signal });
+      const canFall = supportsFallback(req.model);
+      type BetaParams = Parameters<typeof client.beta.messages.stream>[0];
+      const stream =
+        opts.refusalFallback && canFall
+          ? client.beta.messages.stream(
+              { ...(params as object), betas: [FALLBACK_BETA], fallbacks: 'default' } as BetaParams,
+              { signal: req.signal },
+            )
+          : opts.clientFallback && canFall
+            ? client.beta.messages.stream(params as BetaParams, { signal: req.signal })
+            : client.messages.stream(params, { signal: req.signal });
 
       for await (const ev of stream) {
         if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
@@ -117,7 +145,7 @@ export function anthropicProvider(opts: AnthropicOptions): ChatProvider {
       }
       const final = await stream.finalMessage();
       const content: Block[] = [];
-      for (const b of final.content) {
+      for (const b of afterFallback([...final.content])) {
         if (b.type === 'text') content.push({ type: 'text', text: b.text });
         else if (b.type === 'tool_use')
           content.push({ type: 'tool_use', id: b.id, name: b.name, input: b.input });
@@ -166,6 +194,7 @@ export function firstPartyProvider(
 }
 
 export function bedrockProvider(cfg: ProviderEnv): ChatProvider {
+  const fallback = cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default';
   const client = new AnthropicBedrockMantle({
     awsRegion: cfg.AWS_REGION,
     ...(cfg.AWS_BEARER_TOKEN_BEDROCK
@@ -177,14 +206,25 @@ export function bedrockProvider(cfg: ProviderEnv): ChatProvider {
             awsSessionToken: cfg.AWS_SESSION_TOKEN,
           }
         : {}),
+    ...(fallback ? { middleware: [clientFallbacks('anthropic.')] } : {}),
   });
-  return anthropicProvider({ name: 'bedrock', client: client as unknown as Anthropic });
+  return anthropicProvider({
+    name: 'bedrock',
+    client: client as unknown as Anthropic,
+    clientFallback: fallback,
+  });
 }
 
 export function foundryProvider(cfg: ProviderEnv): ChatProvider {
+  const fallback = cfg.ANTHROPIC_REFUSAL_FALLBACK === 'default';
   const client = new AnthropicFoundry({
     resource: cfg.ANTHROPIC_FOUNDRY_RESOURCE,
     apiKey: cfg.ANTHROPIC_FOUNDRY_API_KEY,
+    ...(fallback ? { middleware: [clientFallbacks('')] } : {}),
   });
-  return anthropicProvider({ name: 'foundry', client: client as unknown as Anthropic });
+  return anthropicProvider({
+    name: 'foundry',
+    client: client as unknown as Anthropic,
+    clientFallback: fallback,
+  });
 }

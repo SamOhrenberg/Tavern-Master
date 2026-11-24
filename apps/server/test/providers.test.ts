@@ -153,6 +153,36 @@ describe('anthropic provider', () => {
     expect(haiku.calls[0]!.beta).toBe(false);
   });
 
+  it('leaves retries to the client where the platform has no server-side fallback', async () => {
+    const onBedrock = fakeAnthropic(finalMessage);
+    const provider = anthropicProvider({ name: 'bedrock', client: onBedrock.client, clientFallback: true });
+    await collect(provider, { ...request, model: 'anthropic.claude-opus-5-5' });
+    // The middleware acts on the beta surface; the request itself names no fallbacks.
+    expect(onBedrock.calls[0]!.beta).toBe(true);
+    expect(onBedrock.calls[0]!.params).not.toHaveProperty('fallbacks');
+    await collect(provider, { ...request, model: 'anthropic.claude-haiku-5-5' });
+    expect(onBedrock.calls[1]!.beta).toBe(false);
+  });
+
+  it('keeps only what the model that took over wrote after a mid-reply fallback', async () => {
+    const switched = fakeAnthropic({
+      ...finalMessage,
+      content: [
+        { type: 'thinking', thinking: '', signature: 'declined' },
+        { type: 'text', text: 'The door ' },
+        { type: 'tool_use', id: 'tu_declined', name: 'roll_dice', input: { expression: '1d20' } },
+        { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' } },
+        { type: 'text', text: 'creaks open.' },
+        { type: 'tool_use', id: 'tu_kept', name: 'roll_dice', input: { expression: '1d6' } },
+      ],
+    });
+    const done = (await collect(anthropicProvider({ name: 'anthropic', client: switched.client }))).at(-1)!;
+    if (done.type !== 'done') throw new Error('unreachable');
+    // The text before the switch stands; the declined attempt's thinking and call are gone.
+    expect(done.content.map((b) => b.type)).toEqual(['text', 'opaque', 'text', 'tool_use']);
+    expect(done.content.filter((b) => b.type === 'tool_use').map((b) => b.id)).toEqual(['tu_kept']);
+  });
+
   it('only sends adaptive thinking to models that support it', () => {
     expect(isAdaptiveModel('claude-opus-5-5')).toBe(true);
     expect(isAdaptiveModel('anthropic.claude-haiku-5-5')).toBe(true);
