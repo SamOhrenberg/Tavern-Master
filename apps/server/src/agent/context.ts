@@ -5,7 +5,7 @@ import type { Message } from '../llm/types.js';
 import { estimateTokens } from '../rules/chunk.js';
 import { formatValue } from '../sheet-schema.js';
 import { changesSince, refreshBrief } from './brief.js';
-import type { CharRow, GameStore, TurnContext } from './store.js';
+import type { CharRow, EntityRow, GameStore, TurnContext } from './store.js';
 
 export interface TurnAction {
   userId: string;
@@ -311,6 +311,20 @@ const RUN_BY = { player: 'player', gm: 'you', agent: 'own-ai' } as const;
 
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 
+/** Most codex entries the turn's snapshot names; get_state has every one. */
+const SNAPSHOT_ENTRIES = 40;
+
+/**
+ * The entries most likely to matter this turn: those in the scene, then the
+ * ones that changed most recently. Over the cap, what has not come up for a
+ * while is left out, never a whole kind of entry.
+ */
+function likelyEntries(entities: EntityRow[]): EntityRow[] {
+  return [...entities].sort(
+    (a, b) => Number(b.inScene) - Number(a.inScene) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''),
+  );
+}
+
 /** Compact, always-fresh view of the table for the current turn. */
 export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise<string> {
   const [chars, entities, scene] = await Promise.all([
@@ -339,13 +353,15 @@ export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise
     lines.push(`  <character name="${escapeXml(c.name)}" hp="${c.hp}/${c.maxHp}" ${extra}/>`);
   }
   if (entities.length) {
-    const known = entities
-      .slice(0, 40)
+    const shown = likelyEntries(entities).slice(0, SNAPSHOT_ENTRIES);
+    const known = shown
       .map(
         (e) => `${e.kind}: ${e.name}${e.status ? ` [${e.status}]` : ''}${e.hidden ? ' (not met yet)' : ''}`,
       )
       .join('; ');
-    lines.push(`  <known>${escapeXml(known)}</known>`);
+    const more = entities.length - shown.length;
+    const rest = more ? `; and ${more} more that have not come up lately (get_state lists them)` : '';
+    lines.push(`  <known>${escapeXml(known + rest)}</known>`);
   }
   lines.push('</state>');
   return lines.join('\n');

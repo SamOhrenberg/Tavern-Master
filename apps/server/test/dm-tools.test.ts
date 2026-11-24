@@ -152,4 +152,23 @@ describe('who is in the scene', () => {
     await dispatchTool('set_scene', { present: ['Mara Voss'] }, ctx, store);
     expect(await stateSnapshot(ctx, store)).toContain('<present>Mara Voss</present>');
   });
+
+  it('names the entries most likely to matter once the codex is large', async () => {
+    const store = new FakeStore();
+    for (let i = 0; i < 40; i++)
+      await store.upsertEntity('c', { kind: i % 2 ? 'creature' : 'item', name: `Old thing ${i}` });
+    for (const e of store.ents) e.updatedAt = '2026-01-01T00:00:00.000Z';
+    await store.upsertEntity('c', { kind: 'npc', name: 'Captain Vane' });
+    await store.upsertEntity('c', { kind: 'quest', name: 'The Ashen Crown' });
+    await store.upsertEntity('c', { kind: 'npc', name: 'Mara Voss' });
+    const [vane, crown, mara] = store.ents.slice(-3);
+    vane!.updatedAt = '2026-03-01T00:00:00.000Z';
+    crown!.updatedAt = '2026-03-02T00:00:00.000Z';
+    Object.assign(mara!, { updatedAt: '2026-02-01T00:00:00.000Z', inScene: true });
+
+    const known = /<known>(.*)<\/known>/.exec(await stateSnapshot(context(), store))![1]!;
+    // Whoever is in the scene first, then what changed lately; old entries make way.
+    expect(known.startsWith('npc: Mara Voss; quest: The Ashen Crown; npc: Captain Vane;')).toBe(true);
+    expect(known).toContain('and 3 more that have not come up lately');
+  });
 });
