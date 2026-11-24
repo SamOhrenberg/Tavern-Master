@@ -330,6 +330,12 @@ export class Room {
   readonly desk = new DmDesk();
   /** Context for an outside DM's tool calls made outside a turn (planning, the opening scene). */
   private loose: TurnContext | null = null;
+  /**
+   * A hash of the DM guide last handed to the outside DM, by open_campaign or
+   * by a turn that carried it. A later turn compares it with the guide as it is
+   * now, so an edit made while Claude plays still reaches Claude.
+   */
+  guideTold: string | null = null;
 
   /** Who is this campaign's AI. */
   mode: DmMode;

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   briefAndChanges,
@@ -116,6 +117,24 @@ export async function wishesNoteForTurn(campaignId: string, turnNumber: number):
 }
 addTurnNote((t, turn) => wishesNoteForTurn(t.id, turn.number));
 
+const guideHash = (guide: string) => createHash('sha256').update(guide).digest('hex');
+
+/**
+ * The DM guide as it is now, once, when it is not the one Claude was handed:
+ * an admin rewrote the GM guide, or the host changed the tone or premise, while
+ * the conversation went on. Claude's copy came with open_campaign, and the
+ * built-in DM reads the guide afresh every turn, so this keeps the two alike.
+ * A room that has handed out nothing yet (after a restart) hands it out too.
+ */
+export async function guideNotice(t: Table): Promise<string> {
+  const guide = connectorGuide(infoOf(t.id, await loadCampaign(t.id)));
+  const hash = guideHash(guide);
+  if (t.room.guideTold === hash) return '';
+  t.room.guideTold = hash;
+  return `<dm_instructions_updated>\nYour instructions for this campaign as they stand now. They replace any you were given earlier in this conversation.\n\n${guide}\n</dm_instructions_updated>`;
+}
+addTurnNote((t) => guideNotice(t));
+
 async function renderClaimed(t: Table, turn: DeskTurn, note = ''): Promise<string> {
   const [snapshot, applied, extra] = await Promise.all([
     stateSnapshot(turn.ctx, pgStore),
@@ -130,7 +149,7 @@ async function renderClaimed(t: Table, turn: DeskTurn, note = ''): Promise<strin
       ? `Already applied this turn (do not repeat):\n${applied.map((s) => `- ${s}`).join('\n')}`
       : '',
     ...extra,
-    'Resolve every action with the tools, then post the scene with narrate.',
+    'Resolve every action with the tools, then post the scene with narrate. If the instructions open_campaign gave you are no longer in this conversation, call open_campaign first.',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -318,10 +337,13 @@ export async function campaignBrief(t: Table): Promise<string> {
     next = 'The table is in play.';
   }
 
+  const guide = connectorGuide(info);
+  // What Claude holds now, so a later turn can tell when the guide has changed.
+  t.room.guideTold = guideHash(guide);
   return [
     `# ${info.name}`,
     rewound,
-    `<dm_instructions>\n${connectorGuide(info)}\n</dm_instructions>`,
+    `<dm_instructions>\n${guide}\n</dm_instructions>`,
     brief ? `<brief>\n${brief}\n</brief>` : '',
     changes ? `<since_brief>\n${changes}\n</since_brief>` : '',
     rulings,

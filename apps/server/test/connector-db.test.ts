@@ -194,6 +194,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
   });
 
   it('sends the host’s own action and closes the turn on request', async () => {
+    // The host changes the tone in the app while Claude plays.
+    await q(`UPDATE campaigns SET settings = settings || '{"tone": "grim and wet"}'::jsonb WHERE id = $1`, [
+      camp,
+    ]);
     const sent = await claude.call('host_action', { action: 'I ring the bell myself' });
     // Ann is connected and has not acted, so the table is still waiting on her.
     expect(sent.text).toContain('Waiting on: Wren');
@@ -201,10 +205,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     const turn = await nextTurn();
     expect(turn.text).toContain('Turn 2 is yours to resolve');
     expect(turn.text).toContain('I ring the bell myself');
+    // The next turn carries the changed instructions, once.
+    expect(turn.text).toContain('<dm_instructions_updated>');
+    expect(turn.text).toContain('Tone for this table: grim and wet');
     // Asking again before narrating hands back the same turn.
     const again = await claude.call('wait_for_work', { wait_seconds: 0 });
     expect(again.text).toContain('Turn 2 is yours');
     expect(again.text).toContain('You claimed this turn earlier');
+    expect(again.text).not.toContain('<dm_instructions_updated>');
     expect((await claude.call('narrate', { text: 'The bell answers from below.' })).text).toContain(
       'Posted turn 2',
     );
@@ -444,7 +452,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Claude as every AI at the table
     room.done(annRef());
     const next = await nextTurn();
     expect(next.text).toMatch(/Wren rolls Dexterity save: \d+ \(1d20\+3: \d+\)\./);
-    expect(next.text).not.toContain('roll_not_made');
+    // The element itself; the instructions a turn may carry mention it too.
+    expect(next.text).not.toContain('<roll_not_made character=');
 
     // A roll asked for and never made is dropped when the next turn goes to the DM, and the DM is told.
     await claude.call('request_roll', {
