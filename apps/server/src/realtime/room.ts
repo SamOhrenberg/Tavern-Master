@@ -330,6 +330,12 @@ export class Room {
   readonly desk = new DmDesk();
   /** Context for an outside DM's tool calls made outside a turn (planning, the opening scene). */
   private loose: TurnContext | null = null;
+  /**
+   * A hash of the DM guide last handed to the outside DM, by open_campaign or
+   * by a turn that carried it. A later turn compares it with the guide as it is
+   * now, so an edit made while Claude plays still reaches Claude.
+   */
+  guideTold: string | null = null;
 
   /** Who is this campaign's AI. */
   mode: DmMode;
@@ -1988,7 +1994,12 @@ export class Room {
         tool: 'polish',
         summary: `${polish.with} is polishing the narration`,
       });
-      safe.text = (await polishNarration(polish.with, safe.text, said, polish.tone)).text;
+      // The scene before this one, so the other AI keeps voices and details as they were.
+      const previous = await q1<{ content: string }>(
+        `SELECT content FROM messages WHERE campaign_id = $1 AND kind = 'dm' ORDER BY id DESC LIMIT 1`,
+        [this.campaignId],
+      );
+      safe.text = (await polishNarration(polish.with, safe.text, said, polish.tone, previous?.content)).text;
     }
     // Resolve [[name]] codex markers against the known world, after redaction so a
     // marker inside a withheld passage is gone before it can resolve.

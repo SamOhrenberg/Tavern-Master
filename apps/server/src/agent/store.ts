@@ -89,6 +89,8 @@ export interface EntityRow {
   inScene: boolean;
   /** Where to load its picture from; absent when it has none. */
   portrait?: string;
+  /** When the entry last changed, as an ISO time: what has come up lately. */
+  updatedAt?: string;
 }
 
 export interface EntityInput {
@@ -278,7 +280,7 @@ export const pgStore: GameStore = {
   async entities(campaignId) {
     const rows = await q(
       `SELECT id, kind, name, aliases, summary, article, status, secret, article_secret,
-              secret_revealed, first_seen_message_id, in_codex, sheet, hidden, in_scene,
+              secret_revealed, first_seen_message_id, in_codex, sheet, hidden, in_scene, updated_at,
               (SELECT m.created_at FROM messages m WHERE m.id = entities.first_seen_message_id) AS first_seen_at,
               (SELECT p.portrait FROM npc_portraits p WHERE p.entity_id = entities.id) AS portrait
          FROM entities
@@ -302,6 +304,7 @@ export const pgStore: GameStore = {
       hidden: r.hidden,
       inScene: r.in_scene,
       ...(r.portrait ? { portrait: npcPortraitUrl(campaignId, r.id, r.portrait) } : {}),
+      updatedAt: r.updated_at.toISOString(),
     }));
   },
 

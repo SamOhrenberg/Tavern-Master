@@ -92,12 +92,22 @@ function jsonIn(raw: string): Record<string, unknown> | undefined {
   }
 }
 
-/** Pull the JSON object out of a reply, tolerating stray prose or a code fence. */
-export function parseSummary(raw: string): Extracted {
+/** The shortest reply worth storing as a summary, as for Claude's save_chronicle. */
+const MIN_SUMMARY = 80;
+
+/**
+ * Pull the JSON object out of a reply, tolerating stray prose or a code fence.
+ * A reply in plain prose is taken as the summary itself. Null when there is no
+ * summary to store: an empty reply, or JSON that was cut off or broken. The
+ * summary replaces the play it covers, so storing nothing beats storing that.
+ */
+export function parseSummary(raw: string): Extracted | null {
   const obj = jsonIn(raw);
   if (obj && typeof obj.summary === 'string' && obj.summary.trim())
     return { summary: obj.summary.trim(), memories: memoriesOf(obj.memories, 5) };
-  return { summary: raw.trim().slice(0, 2000), memories: [] };
+  const prose = raw.trim();
+  if (prose.includes('{') || prose.length < MIN_SUMMARY) return null;
+  return { summary: prose.slice(0, 2000), memories: [] };
 }
 
 /** The tidied notes from a reply, or nothing if it is not usable. */
@@ -135,19 +145,25 @@ export async function maybeQueueSummary(campaignId: string): Promise<void> {
   await enqueue('summarize_campaign', { campaignId });
 }
 
+/**
+ * One call to the utility model. Throws when the reply is declined, cut off or
+ * empty, so the job fails and is retried rather than storing a summary of
+ * nothing in place of the play it was meant to cover.
+ */
 async function ask(
   campaignId: string,
   ownerId: string | null,
   system: string,
   prompt: string,
   task: string,
+  maxTokens = 4000,
 ): Promise<string> {
   const llm = await resolveLlm('utility', ownerId);
   const done = await complete(llm.provider, {
     model: llm.model,
     system: [{ text: system }],
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-    maxTokens: 4000,
+    maxTokens,
     effort: llm.effort,
     signal: AbortSignal.timeout(120_000),
     task,
@@ -161,7 +177,11 @@ async function ask(
     userIds: [],
     usage: done.usage,
   });
-  return textOf(done.content);
+  const text = textOf(done.content).trim();
+  if (done.stop === 'refusal') throw new Error(`the model declined to write the ${task}`);
+  if (done.stop === 'max_tokens') throw new Error(`the ${task} was cut off before it was finished`);
+  if (!text) throw new Error(`the model wrote nothing for the ${task}`);
+  return text;
 }
 
 /** The part of the unsummarised play that is due for a summary, ending on a DM message. */
@@ -535,6 +555,7 @@ async function summarise(campaignId: string, ownerId: string, sessionId?: string
       (previous ? `<previously>\n${previous.content}\n</previously>\n\n` : '') +
       `<transcript>\n${transcript(older)}\n</transcript>`;
     const out = parseSummary(await ask(campaignId, ownerId, SYSTEM, prompt, 'summary'));
+    if (!out) throw new Error('the model returned no usable summary');
     await storeChunk(campaignId, older, out);
   }
 
@@ -552,6 +573,8 @@ async function summarise(campaignId: string, ownerId: string, sessionId?: string
           'summary',
         ),
       );
+      // Without a merged summary the session's chunk summaries stay as they are.
+      if (!merged) throw new Error('the model returned no usable session summary');
       content = merged.summary;
     }
     await storeSession(
@@ -579,8 +602,8 @@ async function compactArcs(campaignId: string, ownerId: string | null): Promise<
   for (let i = 0; i < 2; i++) {
     const due = await arcBacklog(campaignId);
     if (!due) return;
-    const raw = await ask(campaignId, ownerId, ARC_SYSTEM, due.input, 'arc');
-    if (!(await saveArc(campaignId, due.summaryIds, parseSummary(raw).summary))) return;
+    const merged = parseSummary(await ask(campaignId, ownerId, ARC_SYSTEM, due.input, 'arc'));
+    if (!merged || !(await saveArc(campaignId, due.summaryIds, merged.summary))) return;
   }
 }
 
@@ -588,6 +611,7 @@ async function compactArcs(campaignId: string, ownerId: string | null): Promise<
 async function consolidateMemories(campaignId: string, ownerId: string | null): Promise<void> {
   const due = await notesBacklog(campaignId);
   if (!due) return;
-  const raw = await ask(campaignId, ownerId, NOTES_SYSTEM, due.input, 'consolidate');
+  // Up to 60 notes of up to 400 characters each, rewritten: more room than a summary needs.
+  const raw = await ask(campaignId, ownerId, NOTES_SYSTEM, due.input, 'consolidate', 16_000);
   await saveNotes(campaignId, due.memoryIds, parseNotes(raw));
 }

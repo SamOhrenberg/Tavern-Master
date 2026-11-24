@@ -15,7 +15,7 @@ import { publicSummary, runAgentTurn } from '../src/agent/loop.js';
 import { placeKey } from '../src/agent/places.js';
 import type { EntityRow } from '../src/agent/store.js';
 import { draftFromRecord, readSheet, suggestionsFromChanges, validateSheet } from '../src/agent/sheets.js';
-import { parseNotes } from '../src/agent/summarize.js';
+import { parseNotes, parseSummary } from '../src/agent/summarize.js';
 import { dispatchTool, EDIT_SHEET, gmTools, toolDefs, TOOLS } from '../src/agent/tools.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
 import type { ResolvedLlm } from '../src/llm/index.js';
@@ -415,6 +415,12 @@ describe('a companion with its own AI', () => {
     const req = provider.requests[0]!;
     const sent = JSON.stringify(req);
     expect(req.tools).toBeUndefined();
+    // What holds all turn comes first and is cached on its own; this call's part follows it.
+    expect(req.messages).toHaveLength(2);
+    expect(req.messages[0]).toMatchObject({ role: 'user', cache: true });
+    expect(JSON.stringify(req.messages[0]!.content)).toContain('The door is ajar.');
+    expect(JSON.stringify(req.messages[1]!.content)).toContain('I open the door');
+    expect(req.messages[1]!.cache).toBeFalsy();
     expect(sent).toContain('cheerful tinker');
     expect(sent).toContain('The party reached the keep.');
     expect(sent).toContain('I open the door');
@@ -677,12 +683,16 @@ describe('the DM’s records', () => {
   it('searches the documents of this campaign, whatever the model sends', async () => {
     const store = new FakeStore();
     store.docs = [hit(1, 'The Sunken Vault lies under the lake.', 'Adventure')];
-    const out = await dispatchTool(
+    // A campaign the model names is no argument at all: the call is refused and nothing is searched.
+    const named = await dispatchTool(
       'search_documents',
       { query: 'vault', campaignId: 'camp-2', campaign_id: 'camp-2' },
       context(),
       store,
     );
+    expect(named.isError).toBe(true);
+    expect(store.docSearches).toEqual([]);
+    const out = await dispatchTool('search_documents', { query: 'vault' }, context(), store);
     expect(store.docSearches).toEqual([{ campaignId: 'camp-1', query: 'vault', tableOnly: false }]);
     expect(out.content).toContain('<documents>');
     expect(out.content).toContain('Sunken Vault');
@@ -693,6 +703,22 @@ describe('the DM’s records', () => {
       parseNotes('{"memories":[{"kind":"promise","content":"Thorn owes Bram 50 gold","importance":9}]}'),
     ).toEqual([{ kind: 'promise', content: 'Thorn owes Bram 50 gold', importance: 5 }]);
     expect(parseNotes('I could not do that.')).toEqual([]);
+  });
+
+  it('takes a summary only from a usable reply', () => {
+    expect(parseSummary('```json\n{"summary": "The party crossed the river.", "memories": []}\n```')).toEqual(
+      {
+        summary: 'The party crossed the river.',
+        memories: [],
+      },
+    );
+    const prose =
+      'The party crossed the river at dawn, paid the ferryman in silver, and reached the ruined abbey by nightfall.';
+    expect(parseSummary(prose)).toEqual({ summary: prose, memories: [] });
+    // Nothing, or JSON that was cut off, is no summary: it must not replace the play it covers.
+    expect(parseSummary('')).toBeNull();
+    expect(parseSummary('{"summary": "The party crossed the river at dawn, paid the ferryman')).toBeNull();
+    expect(parseSummary('Done.')).toBeNull();
   });
 });
 
@@ -716,7 +742,10 @@ describe('sheets kept by the DM', () => {
       context(),
       store,
     );
-    expect(out).toEqual({ isError: true, content: 'Unknown tool "edit_sheet".' });
+    expect(out).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/^Unknown tool "edit_sheet"\. The tools here: /),
+    });
     expect(store.chars[0]!.sheet).toEqual({ Strength: 10 });
   });
 

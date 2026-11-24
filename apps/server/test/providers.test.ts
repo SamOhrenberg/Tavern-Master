@@ -153,6 +153,36 @@ describe('anthropic provider', () => {
     expect(haiku.calls[0]!.beta).toBe(false);
   });
 
+  it('leaves retries to the client where the platform has no server-side fallback', async () => {
+    const onBedrock = fakeAnthropic(finalMessage);
+    const provider = anthropicProvider({ name: 'bedrock', client: onBedrock.client, clientFallback: true });
+    await collect(provider, { ...request, model: 'anthropic.claude-opus-5-5' });
+    // The middleware acts on the beta surface; the request itself names no fallbacks.
+    expect(onBedrock.calls[0]!.beta).toBe(true);
+    expect(onBedrock.calls[0]!.params).not.toHaveProperty('fallbacks');
+    await collect(provider, { ...request, model: 'anthropic.claude-haiku-5-5' });
+    expect(onBedrock.calls[1]!.beta).toBe(false);
+  });
+
+  it('keeps only what the model that took over wrote after a mid-reply fallback', async () => {
+    const switched = fakeAnthropic({
+      ...finalMessage,
+      content: [
+        { type: 'thinking', thinking: '', signature: 'declined' },
+        { type: 'text', text: 'The door ' },
+        { type: 'tool_use', id: 'tu_declined', name: 'roll_dice', input: { expression: '1d20' } },
+        { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' } },
+        { type: 'text', text: 'creaks open.' },
+        { type: 'tool_use', id: 'tu_kept', name: 'roll_dice', input: { expression: '1d6' } },
+      ],
+    });
+    const done = (await collect(anthropicProvider({ name: 'anthropic', client: switched.client }))).at(-1)!;
+    if (done.type !== 'done') throw new Error('unreachable');
+    // The text before the switch stands; the declined attempt's thinking and call are gone.
+    expect(done.content.map((b) => b.type)).toEqual(['text', 'opaque', 'text', 'tool_use']);
+    expect(done.content.filter((b) => b.type === 'tool_use').map((b) => b.id)).toEqual(['tu_kept']);
+  });
+
   it('only sends adaptive thinking to models that support it', () => {
     expect(isAdaptiveModel('claude-opus-5-5')).toBe(true);
     expect(isAdaptiveModel('anthropic.claude-haiku-5-5')).toBe(true);
@@ -294,6 +324,12 @@ describe('provider selection and pricing', () => {
     expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' });
     setConfigForTests(testConfig({ LLM_MODEL_COMPANION: 'claude-sonnet-5-5' }));
     expect(await resolveLlm('companion')).toMatchObject({ model: 'claude-sonnet-5-5' });
+    // The guide chats cheaply; design work on a system reads its rulebooks with more thought.
+    setConfigForTests(testConfig({ LLM_MODEL_PREP: 'claude-sonnet-5-5', LLM_EFFORT_NARRATION: 'low' }));
+    expect(await resolveLlm('prep')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
+    expect(await resolveLlm('design')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    setConfigForTests(testConfig({ LLM_EFFORT_NARRATION: 'high' }));
+    expect(await resolveLlm('design')).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
     setConfigForTests(testConfig());
     setProviderForTests();
   });
@@ -309,6 +345,9 @@ describe('provider selection and pricing', () => {
     });
     // 2000×4 + 1100×20 + 28000×0.2 + 6000×5 micro-dollars
     expect(cost).toBe(65_600);
+    // Writes to the one-hour cache cost twice the input price, not 1.25 times: 6000×8.
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 6000 };
+    expect(costMicroUsd('claude-opus-5-5', usage, { longCache: true })).toBe(48_000);
     expect(
       costMicroUsd('some-local-model', {
         inputTokens: 1e6,

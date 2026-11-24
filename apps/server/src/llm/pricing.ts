@@ -5,7 +5,10 @@ export interface Price {
   input: number;
   output: number;
   cacheRead: number;
+  /** A write to the five-minute cache. */
   cacheWrite: number;
+  /** A write to the one-hour cache (LLM_CACHE_TTL=1h). Twice the input price when not given. */
+  cacheWrite1h?: number;
 }
 
 export interface Usage {
@@ -21,10 +24,10 @@ export const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTok
 // ("anthropic.claude-opus-5-5", "anthropic/claude-opus-5.5") still resolve.
 // Override or extend with LLM_PRICES_JSON.
 const DEFAULT_PRICES: Record<string, Price> = {
-  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-  'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, cacheWrite1h: 0.2 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, cacheWrite1h: 4 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8 },
+  'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10, cacheWrite1h: 16 },
 };
 
 let table: Record<string, Price> | undefined;
@@ -55,15 +58,19 @@ export function priceFor(model: string): Price | undefined {
   return key ? t[key] : undefined;
 }
 
-/** Estimated cost in millionths of a dollar. Unknown models cost 0 (tokens are still counted). */
-export function costMicroUsd(model: string, u: Usage): number {
+/**
+ * Estimated cost in millionths of a dollar. Unknown models cost 0 (tokens are
+ * still counted). `longCache` when the call wrote to the one-hour cache.
+ */
+export function costMicroUsd(model: string, u: Usage, opts: { longCache?: boolean } = {}): number {
   const p = priceFor(model);
   if (!p) return 0;
+  const write = opts.longCache ? (p.cacheWrite1h ?? p.input * 2) : p.cacheWrite;
   return Math.round(
     u.inputTokens * p.input +
       u.outputTokens * p.output +
       u.cacheReadTokens * p.cacheRead +
-      u.cacheWriteTokens * p.cacheWrite,
+      u.cacheWriteTokens * write,
   );
 }
 

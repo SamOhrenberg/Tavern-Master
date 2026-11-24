@@ -5,7 +5,7 @@ import type { Message } from '../llm/types.js';
 import { estimateTokens } from '../rules/chunk.js';
 import { formatValue } from '../sheet-schema.js';
 import { changesSince, refreshBrief } from './brief.js';
-import type { CharRow, GameStore, TurnContext } from './store.js';
+import type { CharRow, EntityRow, GameStore, TurnContext } from './store.js';
 
 export interface TurnAction {
   userId: string;
@@ -156,6 +156,7 @@ Players act at the same time. Each user message contains one <turn> element with
 - Deal with every action. Name the character each time you describe what happens to them, so everyone can tell whose action led to what.
 - Decide a sensible order (initiative if the rules call for it, otherwise whatever reads naturally) and let simultaneous actions affect each other.
 - Give each acting character a real consequence, then end on the situation as it now stands and an opening for what they might do next.
+- Do the bookkeeping first: make every roll and record what changes with the tools, then write the narration last, in one piece. Text you write before a tool call may never reach the players.
 
 ## The party
 The <state> block lists every party member and who speaks for them.
@@ -184,9 +185,9 @@ This is a homebrew system, still being shaped by the people who play it. Out of 
     : ''
 }
 ## Game state
-The state tools are the campaign's memory; your narration alone changes nothing. When hit points, conditions or inventory change, when an NPC, place, quest or item becomes important, or when a lasting fact is established, record it with the matching tool in the same turn so the sheets the players see agree with the story. Use get_state when you need details beyond the snapshot in the turn message.${c.gmSheets ? '\n\nYou keep the character sheets at this table. When a character changes in a lasting way (a level gained, a feature learned, an ability score raised), record it with edit_sheet so the sheet stays true.' : ''}
+The state tools are the campaign's memory; your narration alone changes nothing. When hit points, conditions or inventory change, when an NPC, place, quest or item becomes important, or when a lasting fact is established, record it with the matching tool in the same turn so the sheets the players see agree with the story. Use get_state when you need details beyond the snapshot in the turn message, naming the codex entries you need.${c.gmSheets ? '\n\nYou keep the character sheets at this table. When a character changes in a lasting way (a level gained, a feature learned, an ability score raised), record it with edit_sheet so the sheet stays true.' : ''}
 
-Every person and creature the party meets belongs in the codex, the players' record of who and what they have run into: named NPCs as npc, monsters and kinds of mob as creature, the first time they meet. Give them a stat block (sheet) from the rules: the numbers you fight them with, their attacks and abilities, what they want. Mark hidden every line the party has not learned yet, and reveal a line with reveal_secret when they do. Hidden lines and unmet entries are spoilers, just like secrets; an unmet entry appears to the players once you name it in [[double brackets]]. The campaign's owners can edit these entries too, so read them with get_state rather than assuming they are as you left them.
+Every person and creature the party meets belongs in the codex, the players' record of who and what they have run into: named NPCs as npc, monsters and kinds of mob as creature, the first time they meet. Give them a stat block (sheet) from the rules: the numbers you fight them with, their attacks and abilities, what they want. Mark hidden every line the party has not learned yet, and reveal a line with reveal_secret when they do. Hidden lines and unmet entries are spoilers, just like secrets; an unmet entry appears to the players once you name it in [[double brackets]]. The campaign's owners can edit these entries too, so read the ones in play with get_state rather than assuming they are as you left them.
 
 Entity secrets marked UNREVEALED are things the party has not discovered. Do not state or hint at them directly until the story reaches the moment of discovery; at that moment call reveal_secret and then narrate it.
 
@@ -266,14 +267,21 @@ export async function recentHistory(campaignId: string, excludeTurnId: string | 
   return out;
 }
 
+interface PlayRow {
+  kind: string;
+  content: string;
+  character_name: string | null;
+  display_name: string | null;
+}
+
+const playLine = (r: PlayRow) =>
+  r.kind === 'dm'
+    ? `DM: ${r.content}`
+    : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`;
+
 /** The last few lines of play as plain text, for an AI that is not resolving a turn. */
 export async function recentPlay(campaignId: string, limit = 12): Promise<string> {
-  const rows = await q<{
-    kind: string;
-    content: string;
-    character_name: string | null;
-    display_name: string | null;
-  }>(
+  const rows = await q<PlayRow>(
     `SELECT * FROM (
        SELECT m.id, m.kind, m.content, m.character_name, u.display_name
          FROM messages m LEFT JOIN users u ON u.id = m.user_id
@@ -281,13 +289,35 @@ export async function recentPlay(campaignId: string, limit = 12): Promise<string
      ) r ORDER BY r.id`,
     [campaignId, limit],
   );
-  return rows
-    .map((r) =>
-      r.kind === 'dm'
-        ? `DM: ${r.content}`
-        : `${r.display_name ?? 'AI companion'}${r.character_name ? ` (as ${r.character_name})` : ''}: ${r.content}`,
-    )
-    .join('\n\n');
+  return rows.map(playLine).join('\n\n');
+}
+
+/**
+ * All the play not yet folded into a summary, as plain text, for an AI that
+ * reads it beside the brief: the brief's story so far ends where this begins,
+ * so nothing falls between them. A very long stretch keeps its end and says
+ * how much was left out. With everything summarised, the last lines of play.
+ */
+export async function playSinceSummary(campaignId: string, maxTokens = 8000): Promise<string> {
+  const rows = await q<PlayRow>(
+    `SELECT m.kind, m.content, m.character_name, u.display_name
+       FROM messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.campaign_id = $1 AND m.summary_id IS NULL AND m.kind IN ('action', 'dm')
+      ORDER BY m.id`,
+    [campaignId],
+  );
+  if (!rows.length) return recentPlay(campaignId);
+  const lines = rows.map(playLine);
+  let start = lines.length;
+  let used = 0;
+  while (start > 0) {
+    const cost = estimateTokens(lines[start - 1]!);
+    if (start < lines.length && used + cost > maxTokens) break;
+    used += cost;
+    start--;
+  }
+  const kept = lines.slice(start).join('\n\n');
+  return start ? `(${start} earlier lines of play are not shown; recall finds them.)\n\n${kept}` : kept;
 }
 
 /**
@@ -310,6 +340,20 @@ export async function briefAndChanges(campaignId: string): Promise<{ brief: stri
 const RUN_BY = { player: 'player', gm: 'you', agent: 'own-ai' } as const;
 
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
+
+/** Most codex entries the turn's snapshot names; get_state has every one. */
+const SNAPSHOT_ENTRIES = 40;
+
+/**
+ * The entries most likely to matter this turn: those in the scene, then the
+ * ones that changed most recently. Over the cap, what has not come up for a
+ * while is left out, never a whole kind of entry.
+ */
+function likelyEntries(entities: EntityRow[]): EntityRow[] {
+  return [...entities].sort(
+    (a, b) => Number(b.inScene) - Number(a.inScene) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''),
+  );
+}
 
 /** Compact, always-fresh view of the table for the current turn. */
 export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise<string> {
@@ -339,13 +383,15 @@ export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise
     lines.push(`  <character name="${escapeXml(c.name)}" hp="${c.hp}/${c.maxHp}" ${extra}/>`);
   }
   if (entities.length) {
-    const known = entities
-      .slice(0, 40)
+    const shown = likelyEntries(entities).slice(0, SNAPSHOT_ENTRIES);
+    const known = shown
       .map(
         (e) => `${e.kind}: ${e.name}${e.status ? ` [${e.status}]` : ''}${e.hidden ? ' (not met yet)' : ''}`,
       )
       .join('; ');
-    lines.push(`  <known>${escapeXml(known)}</known>`);
+    const more = entities.length - shown.length;
+    const rest = more ? `; and ${more} more that have not come up lately (get_state lists them)` : '';
+    lines.push(`  <known>${escapeXml(known + rest)}</known>`);
   }
   lines.push('</state>');
   return lines.join('\n');

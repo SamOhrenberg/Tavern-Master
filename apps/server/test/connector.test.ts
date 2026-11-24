@@ -11,7 +11,8 @@ import { connectorGuide, projectInstructions } from '../src/connector/instructio
 import { dmModeOf } from '../src/connector/mode.js';
 import { presenceOf, type PresenceFacts } from '../src/connector/presence.js';
 import '../src/connector/register.js';
-import { gateAllows } from '../src/connector/toolkit.js';
+import { gateAllows, own, type ConnectorCall } from '../src/connector/toolkit.js';
+import { z } from 'zod';
 import { connectorTools } from '../src/connector/tools.js';
 import { zipStore } from '../src/connector/zip.js';
 
@@ -244,6 +245,24 @@ describe('connector tools', () => {
     expect(gateAllows(['turn'], 'guide', true)).toBe(false);
     expect(gateAllows(['sheet'], 'sheet', false)).toBe(true);
     expect(gateAllows(['sheet'], null, false)).toBe(false);
+  });
+
+  it('refuses keys a connector tool does not take, and says so in its schema', async () => {
+    const echo = own({
+      name: 'echo',
+      description: 'Say it back.',
+      schema: z.object({ text: z.string() }),
+      annotations: {},
+      during: ['any'],
+      run: async (input) => input.text,
+    });
+    const call = {} as ConnectorCall;
+    expect(echo.inputSchema.additionalProperties).toBe(false);
+    expect(await echo.call({ text: 'hi' }, call)).toEqual({ text: 'hi', isError: false });
+    expect(await echo.call({ text: 'hi', txt: 'hi' }, call)).toMatchObject({
+      isError: true,
+      text: expect.stringContaining('echo does not take "txt"'),
+    });
   });
 });
 

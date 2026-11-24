@@ -95,6 +95,7 @@ function builderText(c: BuilderCampaign, control: Control): string {
 - When a choice needs dice (rolled ability scores, starting gold, hit points), roll with roll_dice. The player sees every roll, so never state one you did not make.
 - Save as you go with save_character. As soon as there is a name or a decision worth keeping, record it, and keep recording as things firm up. The <sheet> block in each message shows what is saved right now. Only what is saved reaches the game: something agreed in conversation and never saved is lost.
 - When the sheet has what the rules need to start play, say it is ready and mention what they could still add.
+- Make your tool calls first and write your reply last: text you write before a tool call may never reach the player.
 
 ## The sheet
 ${schemaGuide(toSchema(c.sheet_template), { steps: true })}

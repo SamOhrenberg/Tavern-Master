@@ -450,7 +450,8 @@ transcript when it needs a detail it can no longer see.
 All of that is compiled into one *brief* that is stored and left alone between
 summaries, which keeps the front of the prompt byte-identical from turn to
 turn: instructions, then the brief, then recent history are read from the
-provider's prompt cache at a tenth of the price, and only the notes written
+provider's prompt cache at a tenth of the price or less (a twentieth on
+Claude Opus 5.5 and Sonnet 5.5), and only the notes written
 since, the state snapshot and the new turn are paid for in full. Per-task
 models (`LLM_MODEL_NARRATION`, `_UTILITY`, `_COMPANION`, `_PREP`) keep the
 small jobs on a small model, and `LLM_CACHE_TTL` trades cache lifetime against

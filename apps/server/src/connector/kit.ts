@@ -58,7 +58,9 @@ description: Run this Tavern Master campaign's table as its Dungeon Master until
 ---
 Run the table.
 
-1. Call \`open_campaign\` and follow the instructions it returns.
+1. Unless this conversation already holds what \`open_campaign\` returned for this campaign, call
+   \`open_campaign\` and follow the instructions it returns. Do call it again at the start of a session
+   and after the conversation is compacted; a turn tells you when the instructions change.
 2. Call \`wait_for_work\`. Do what the result asks, then call it again. Repeat.
 3. When a turn lists companions with an AI of their own that have not acted, start the
    \`companion\` subagent for each, one at a time, in the order the turn lists them: wait for
