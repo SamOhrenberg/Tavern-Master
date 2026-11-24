@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { pgStore, type Actor } from '../agent/store.js';
+import { closeSchema, strayKeys, strayKeysError } from '../agent/tool-args.js';
 import { ToolError } from '../agent/tools.js';
 import { q, q1 } from '../db/pool.js';
 import { openRoom, type Room } from '../realtime/room.js';
@@ -61,9 +62,10 @@ export function gateAllows(during: Gate[], held: WorkKind | null, turnClaimed: b
   return during.includes('free') || (during.includes('turn') && turnClaimed);
 }
 
+/** A tool's arguments as Claude is shown them: each object takes its own keys and no others. */
 export const jsonSchema = (schema: z.ZodType) => {
   const { $schema: _drop, ...rest } = z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>;
-  return rest;
+  return closeSchema(rest);
 };
 
 export interface Spec<S extends z.ZodType> {
@@ -91,14 +93,19 @@ export function unescapeQuotes(value: unknown): unknown {
 
 /** A connector tool from a zod schema and a function. ToolErrors come back to Claude as tool errors. */
 export function own<S extends z.ZodType>(spec: Spec<S>): ConnectorTool {
+  const inputSchema = jsonSchema(spec.schema);
   return {
     name: spec.name,
     description: spec.description,
-    inputSchema: jsonSchema(spec.schema),
+    inputSchema,
     annotations: spec.annotations,
     during: spec.during,
     async call(input, call) {
-      const parsed = spec.schema.safeParse(unescapeQuotes(input ?? {}));
+      const args = unescapeQuotes(input ?? {});
+      // A key the tool does not take would be dropped without a word; say so instead.
+      const stray = strayKeys(inputSchema, args);
+      if (stray.length) return { text: strayKeysError(spec.name, inputSchema, stray), isError: true };
+      const parsed = spec.schema.safeParse(args);
       if (!parsed.success) {
         const issues = parsed.error.issues
           .map((i) => `${i.path.join('.') || 'input'}: ${i.message}`)

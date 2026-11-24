@@ -677,12 +677,16 @@ describe('the DM’s records', () => {
   it('searches the documents of this campaign, whatever the model sends', async () => {
     const store = new FakeStore();
     store.docs = [hit(1, 'The Sunken Vault lies under the lake.', 'Adventure')];
-    const out = await dispatchTool(
+    // A campaign the model names is no argument at all: the call is refused and nothing is searched.
+    const named = await dispatchTool(
       'search_documents',
       { query: 'vault', campaignId: 'camp-2', campaign_id: 'camp-2' },
       context(),
       store,
     );
+    expect(named.isError).toBe(true);
+    expect(store.docSearches).toEqual([]);
+    const out = await dispatchTool('search_documents', { query: 'vault' }, context(), store);
     expect(store.docSearches).toEqual([{ campaignId: 'camp-1', query: 'vault', tableOnly: false }]);
     expect(out.content).toContain('<documents>');
     expect(out.content).toContain('Sunken Vault');
@@ -732,7 +736,10 @@ describe('sheets kept by the DM', () => {
       context(),
       store,
     );
-    expect(out).toEqual({ isError: true, content: 'Unknown tool "edit_sheet".' });
+    expect(out).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/^Unknown tool "edit_sheet"\. The tools here: /),
+    });
     expect(store.chars[0]!.sheet).toEqual({ Strength: 10 });
   });
 

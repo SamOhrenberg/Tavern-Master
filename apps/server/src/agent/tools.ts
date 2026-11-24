@@ -20,6 +20,7 @@ import type { ToolDef } from '../llm/types.js';
 import { describeOutcome, describeRoll, DiceError, judgeRoll, roll, systemRng, type Rng } from './dice.js';
 import { placeKey } from './places.js';
 import { MAX_NOTES, type CharRow, type GameStore, type TurnContext } from './store.js';
+import { closeSchema, strayKeys, strayKeysError } from './tool-args.js';
 
 /** A failure the model should see and can recover from. */
 export class ToolError extends Error {}
@@ -74,7 +75,7 @@ export const TOOLS: ToolSpec[] = [
   tool({
     name: 'roll_dice',
     description:
-      "Roll dice with the server's random number generator. ALWAYS use this for any roll; never invent a result. " +
+      "Roll dice with the server's random number generator. Every roll comes from here; never invent a result. " +
       'Notation: d20, 2d6+3, 4d6kh3 (keep highest 3), 2d20kh1+5 (advantage), 2d20kl1 (disadvantage). ' +
       'Always set `kind`: "attack" for a to-hit roll, "damage" for a damage roll, "check" for an ability/skill check, ' +
       '"save" for a saving throw, "initiative" to order combat. Make the `reason` name the target or weapon, e.g. ' +
@@ -283,6 +284,15 @@ export const TOOLS: ToolSpec[] = [
       remove_conditions: z.array(z.string().trim().min(1).max(40)).max(6).optional(),
     }),
     async run(input, ctx, store) {
+      if (
+        input.hp_delta === undefined &&
+        input.temp_hp === undefined &&
+        !input.add_conditions?.length &&
+        !input.remove_conditions?.length
+      )
+        throw new ToolError(
+          'Nothing to change: give hp_delta, temp_hp, add_conditions or remove_conditions.',
+        );
       const c = await findCharacter(store, ctx, input.character);
       const before = { hp: c.hp, tempHp: c.tempHp, conditions: [...c.conditions] };
       let note = '';
@@ -1036,15 +1046,25 @@ export function gmTools(opts: { sheets: boolean; askAi?: boolean }): ToolSpec[] 
   return [...TOOLS, ...(opts.sheets ? [EDIT_SHEET] : []), ...(opts.askAi ? [ASK_AI] : [])];
 }
 
-/** Tool definitions in the form sent to the model. */
-export function toolDefs(tools: ToolSpec[] = TOOLS): ToolDef[] {
-  return tools.map((t) => {
-    const { $schema: _drop, ...schema } = z.toJSONSchema(t.schema, { io: 'input' }) as Record<
+const inputSchemas = new WeakMap<ToolSpec, Record<string, unknown>>();
+
+/** The JSON Schema a tool's arguments must fit, as the model is shown it: no keys but its own. */
+function inputSchemaOf(spec: ToolSpec): Record<string, unknown> {
+  let schema = inputSchemas.get(spec);
+  if (!schema) {
+    const { $schema: _drop, ...raw } = z.toJSONSchema(spec.schema, { io: 'input' }) as Record<
       string,
       unknown
     >;
-    return { name: t.name, description: t.description, inputSchema: schema };
-  });
+    schema = closeSchema(raw);
+    inputSchemas.set(spec, schema);
+  }
+  return schema;
+}
+
+/** Tool definitions in the form sent to the model. */
+export function toolDefs(tools: ToolSpec[] = TOOLS): ToolDef[] {
+  return tools.map((t) => ({ name: t.name, description: t.description, inputSchema: inputSchemaOf(t) }));
 }
 
 export interface ToolOutcome {
@@ -1066,7 +1086,18 @@ export async function dispatchTool(
   tools: ToolSpec[] = TOOLS,
 ): Promise<ToolOutcome> {
   const spec = tools.find((t) => t.name === toolName);
-  if (!spec) return { content: `Unknown tool "${toolName.slice(0, 40)}".`, isError: true };
+  if (!spec) {
+    const near = tools.find((t) => t.name.toLowerCase() === toolName.toLowerCase());
+    return {
+      content: near
+        ? `Unknown tool "${toolName.slice(0, 40)}". Did you mean ${near.name}?`
+        : `Unknown tool "${toolName.slice(0, 40)}". The tools here: ${tools.map((t) => t.name).join(', ')}.`,
+      isError: true,
+    };
+  }
+  const schema = inputSchemaOf(spec);
+  const stray = strayKeys(schema, input ?? {});
+  if (stray.length) return { content: strayKeysError(spec.name, schema, stray), isError: true };
   const parsed = spec.schema.safeParse(input ?? {});
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ');

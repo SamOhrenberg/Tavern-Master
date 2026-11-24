@@ -125,10 +125,43 @@ describe('tool dispatch', () => {
     expect(
       (await dispatchTool('roll_dice', { expression: 'banana', reason: 'x' }, context(), store)).content,
     ).toMatch(/Could not read/);
-    expect(await dispatchTool('drop_database', {}, context(), store)).toEqual({
-      isError: true,
-      content: 'Unknown tool "drop_database".',
-    });
+    const unknown = await dispatchTool('drop_database', {}, context(), store);
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content).toMatch(/^Unknown tool "drop_database"\. The tools here: roll_dice, /);
+    // A known name in the wrong case is pointed at the right one.
+    expect(
+      (await dispatchTool('Roll_Dice', { expression: '1d20', reason: 'x' }, context(), store)).content,
+    ).toBe('Unknown tool "Roll_Dice". Did you mean roll_dice?');
+  });
+
+  it('refuses keys a tool does not take instead of dropping them', async () => {
+    const store = new FakeStore();
+    store.chars = [character({ id: 'c1', playerIds: ['u-ann'], name: 'Thorn' })];
+    const ctx = context();
+    // hpDelta for hp_delta would otherwise succeed and change nothing.
+    const misnamed = await dispatchTool('update_character', { character: 'Thorn', hpDelta: -5 }, ctx, store);
+    expect(misnamed).toMatchObject({ isError: true, content: expect.stringContaining('"hpDelta"') });
+    expect(misnamed.content).toContain('hp_delta');
+    // Inside a list too: quantity for qty would otherwise add just one.
+    const nested = await dispatchTool(
+      'modify_inventory',
+      { character: 'Thorn', add: [{ name: 'Gold', quantity: 50 }] },
+      ctx,
+      store,
+    );
+    expect(nested).toMatchObject({ isError: true, content: expect.stringContaining('"add[0].quantity"') });
+    expect(store.chars[0]!).toMatchObject({ hp: 10, inventory: [] });
+    // Asked to change nothing at all, it says so rather than reporting HP 10→10.
+    expect((await dispatchTool('update_character', { character: 'Thorn' }, ctx, store)).content).toMatch(
+      /^Nothing to change/,
+    );
+    // The model is told up front: each object takes its own keys and no others.
+    const def = toolDefs().find((t) => t.name === 'modify_inventory')!.inputSchema as {
+      additionalProperties?: boolean;
+      properties: { add: { items: { additionalProperties?: boolean } } };
+    };
+    expect(def.additionalProperties).toBe(false);
+    expect(def.properties.add.items.additionalProperties).toBe(false);
   });
 
   it('scopes rules lookup to the campaign system, whatever the model sends', async () => {
@@ -138,12 +171,19 @@ describe('tool dispatch', () => {
       'sys-b': [hit(9, 'Roll 2d6 under your skill.', 'Other Game')],
     };
     const ctx = context({ systemId: 'sys-a' });
-    const out = await dispatchTool(
+    // A system the model names is no argument at all: the call is refused and nothing is searched.
+    const named = await dispatchTool(
       'lookup_rules',
       { query: 'attack roll', systemId: 'sys-b', system_id: 'sys-b' },
       ctx,
       store,
     );
+    expect(named).toMatchObject({
+      isError: true,
+      content: expect.stringContaining('"systemId", "system_id"'),
+    });
+    expect(store.searches).toEqual([]);
+    const out = await dispatchTool('lookup_rules', { query: 'attack roll' }, ctx, store);
     expect(store.searches).toEqual([{ systemId: 'sys-a', query: 'attack roll' }]);
     expect(out.content).toContain('[R1] Core Rules — Combat — p. 12');
     expect(out.content).not.toContain('Other Game');
@@ -161,7 +201,10 @@ describe('tool dispatch', () => {
       'sys-b': [hit(9, 'A different world entirely.', 'Other Book')],
     };
     const ctx = context({ systemId: 'sys-a' });
-    const out = await dispatchTool('search_setting', { query: 'the crawl', systemId: 'sys-b' }, ctx, store);
+    const named = await dispatchTool('search_setting', { query: 'the crawl', systemId: 'sys-b' }, ctx, store);
+    expect(named.isError).toBe(true);
+    expect(store.settingSearches).toEqual([]);
+    const out = await dispatchTool('search_setting', { query: 'the crawl' }, ctx, store);
     expect(store.settingSearches).toEqual([{ systemId: 'sys-a', query: 'the crawl' }]);
     expect(out.content).toContain('Crawl');
     expect(out.content).not.toContain('Other Book');
