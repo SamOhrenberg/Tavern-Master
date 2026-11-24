@@ -1994,7 +1994,12 @@ export class Room {
         tool: 'polish',
         summary: `${polish.with} is polishing the narration`,
       });
-      safe.text = (await polishNarration(polish.with, safe.text, said, polish.tone)).text;
+      // The scene before this one, so the other AI keeps voices and details as they were.
+      const previous = await q1<{ content: string }>(
+        `SELECT content FROM messages WHERE campaign_id = $1 AND kind = 'dm' ORDER BY id DESC LIMIT 1`,
+        [this.campaignId],
+      );
+      safe.text = (await polishNarration(polish.with, safe.text, said, polish.tone, previous?.content)).text;
     }
     // Resolve [[name]] codex markers against the known world, after redaction so a
     // marker inside a withheld passage is gone before it can resolve.

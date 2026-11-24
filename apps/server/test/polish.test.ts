@@ -69,6 +69,14 @@ describe('polishing narration', () => {
     expect(polishRequest('No markers here', 0, '')).not.toContain('Markers like');
   });
 
+  it('shows the editor the scene before, for voices and details already set down', () => {
+    const req = polishRequest('Some text', 0, '', 'Captain Vane growls, "Off my dock."');
+    expect(req).toContain('<earlier>\nCaptain Vane growls, "Off my dock."\n</earlier>');
+    // The scene to rewrite comes after it, and only that one is rewritten.
+    expect(req.indexOf('<earlier>')).toBeLessThan(req.indexOf('<narration>'));
+    expect(polishRequest('Some text', 0, '')).not.toContain('<earlier>');
+  });
+
   it('sends the masked draft and posts the polished text with the players’ words exactly as written', async () => {
     const g = fakeGemini((req) =>
       masked(req).replace('The guard squints at', 'The grizzled guard narrows his eyes at'),

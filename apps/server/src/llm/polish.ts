@@ -23,8 +23,13 @@ const MAX_RATIO = 1.8;
 const SYSTEM =
   'You are a prose editor for the Game Master of a tabletop role-playing game. You are given a passage ' +
   "of the Game Master's narration and rewrite it so it reads better: livelier wording, sharper rhythm, " +
-  'vivid sensory detail and distinct voices for the non-player characters. You are an editor, not an ' +
-  'author: the story stays exactly as written. Reply with only the rewritten passage.';
+  'and sharper versions of the sensory details it already has. Keep each non-player character sounding ' +
+  'the way they have before. You are an editor, not an author: the story stays exactly as written, and ' +
+  'you add no new facts about people, places or things, because what you write becomes the story the ' +
+  'Game Master remembers. Reply with only the rewritten passage.';
+
+/** Most of the earlier narration the editor is shown, for voices and details already set down. */
+const PREVIOUS_CHARS = 2000;
 
 const marker = (n: number) => `⟦${n}⟧`;
 const MARKER_RE = /⟦(\d+)⟧/g;
@@ -122,8 +127,12 @@ export function unmask(polished: string, kept: string[], draftLength: number): s
   return out;
 }
 
-export function polishRequest(masked: string, kept: number, tone: string): string {
+export function polishRequest(masked: string, kept: number, tone: string, previous = ''): string {
+  const earlier = previous.trim().slice(-PREVIOUS_CHARS);
   return [
+    earlier
+      ? `The narration just before this one, for how the characters sound and what is already established. Do not rewrite or repeat it:\n<earlier>\n${earlier}\n</earlier>\n`
+      : '',
     'Rewrite this narration so it reads better. Keep to these rules:',
     '- Keep every event, outcome, name, number and die result, in the same order. Add no new events, characters, items, injuries or discoveries, and leave nothing out.',
     '- The player characters do, say and feel only what the draft says they do. Do not invent their words, choices or feelings.',
@@ -152,11 +161,12 @@ export async function polishNarration(
   draft: string,
   playerLines: string[],
   tone = '',
+  previous = '',
 ): Promise<{ text: string; polished: boolean }> {
   if (!aiName.trim()) return { text: draft, polished: false };
   try {
     const ai = await findOutsideAi(aiName);
-    if (ai) return await polishWith(ai, draft, playerLines, tone);
+    if (ai) return await polishWith(ai, draft, playerLines, tone, fetch, previous);
     log().warn({ ai: aiName }, 'polishing AI is not set up; posting the draft');
   } catch (err) {
     log().warn({ err, ai: aiName }, 'could not look up the polishing AI; posting the draft');
@@ -164,19 +174,20 @@ export async function polishNarration(
   return { text: draft, polished: false };
 }
 
-/** polishNarration with the AI in hand. `fetchImpl` is for tests. */
+/** polishNarration with the AI in hand. `fetchImpl` is for tests; `previous` is the narration before this one. */
 export async function polishWith(
   ai: OutsideAi,
   draft: string,
   playerLines: string[],
   tone = '',
   fetchImpl: typeof fetch = fetch,
+  previous = '',
 ): Promise<{ text: string; polished: boolean }> {
   const asIs = { text: draft, polished: false };
   if (draft.trim().length < 40) return asIs;
   try {
     const { masked, kept } = maskDraft(draft, playerLines);
-    const reply = await callOutsideAi(ai, polishRequest(masked, kept.length, tone), fetchImpl, {
+    const reply = await callOutsideAi(ai, polishRequest(masked, kept.length, tone, previous), fetchImpl, {
       system: SYSTEM,
       timeoutMs: POLISH_TIMEOUT_MS,
       maxChars: Math.max(draft.length * 2, 2000),
