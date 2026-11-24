@@ -345,6 +345,9 @@ describe('provider selection and pricing', () => {
     });
     // 2000×4 + 1100×20 + 28000×0.2 + 6000×5 micro-dollars
     expect(cost).toBe(65_600);
+    // Writes to the one-hour cache cost twice the input price, not 1.25 times: 6000×8.
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 6000 };
+    expect(costMicroUsd('claude-opus-5-5', usage, { longCache: true })).toBe(48_000);
     expect(
       costMicroUsd('some-local-model', {
         inputTokens: 1e6,

@@ -18,7 +18,9 @@ export interface UsageRecord {
 export async function recordUsage(r: UsageRecord): Promise<void> {
   const users: (string | null)[] = r.userIds.length ? r.userIds : [null];
   const n = users.length;
-  const cost = costMicroUsd(r.model, r.usage);
+  // The one-hour cache is asked for only on the Anthropic API, and its writes cost more.
+  const longCache = r.provider === 'anthropic' && config().LLM_CACHE_TTL === '1h';
+  const cost = costMicroUsd(r.model, r.usage, { longCache });
   const share = (v: number, i: number) => Math.floor(v / n) + (i < v % n ? 1 : 0);
   for (let i = 0; i < n; i++) {
     await q(
