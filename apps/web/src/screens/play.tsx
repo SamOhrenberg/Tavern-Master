@@ -14,6 +14,7 @@ import { useAction, useAuth, useMe, useQuery, useToast, useVisualViewport, type 
 import { IconBack, IconChevron, IconDots, IconGavel, IconScroll, IconSparkle, IconUsers } from '../icons';
 import { CastPanels, hostOf, runsIt, type CastPanel } from '../play/cast';
 import { CodexSheet } from '../play/codex';
+import { SceneSheet, SceneStrip } from '../play/scene';
 import { Composer, TurnBar, type Mode } from '../play/composer';
 import { FeedbackButton } from '../feedback/button';
 import { AnimatedRoll, DiceTray } from '../play/dice';
@@ -107,6 +108,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
   const [actAs, setActAs] = useState<string | null>(null);
   const [citation, setCitation] = useState<Citation | null>(null);
   const [entry, setEntry] = useState<Entity | null>(null);
+  const [sceneOpen, setSceneOpen] = useState(false);
   const [unseen, setUnseen] = useState(false);
   const [guideSignal, setGuideSignal] = useState(0);
   const [settingUp, setSettingUp] = useState(false);
@@ -491,6 +493,7 @@ function Play({ id, campaign, state, schema }: TableProps) {
         />
       ) : (
         <>
+          {game && <SceneStrip state={game} onOpen={() => setSceneOpen(true)} />}
           <div className="feed" ref={feed} onScroll={onScroll}>
             <div className="feed-inner">
               {hasMore && (
@@ -717,6 +720,22 @@ function Play({ id, campaign, state, schema }: TableProps) {
           <p className="small gold">{ruleSource(citation.document, citation.heading, citation.page)}</p>
           <p className="excerpt">{citation.excerpt}</p>
         </Sheet>
+      )}
+      {sceneOpen && game && (
+        <SceneSheet
+          campaignId={id}
+          state={game}
+          owner={owner}
+          onEntry={(e) => {
+            setSceneOpen(false);
+            setEntry(e);
+          }}
+          onParty={() => {
+            setSceneOpen(false);
+            setPanel('party');
+          }}
+          onClose={() => setSceneOpen(false)}
+        />
       )}
       {entry && <CodexSheet entity={entry} onClose={() => setEntry(null)} />}
       {rulesOpen && (

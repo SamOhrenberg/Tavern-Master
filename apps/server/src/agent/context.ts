@@ -320,6 +320,9 @@ export async function stateSnapshot(ctx: TurnContext, store: GameStore): Promise
   ]);
   const lines = ['<state>'];
   if (scene) lines.push(`  <scene>${escapeXml(scene)}</scene>`);
+  // Who the players see above the story, besides the party.
+  const here = entities.filter((e) => e.inScene).map((e) => e.name);
+  lines.push(`  <present>${here.length ? escapeXml(here.join(', ')) : 'nobody but the party'}</present>`);
   for (const c of chars) {
     const away = c.controller === 'player' && !ctx.actors.some((a) => c.playerIds.includes(a.userId));
     const extra = [
@@ -445,7 +448,7 @@ The campaign begins now, and the players are waiting for the first scene. Nothin
 First, prepare in private:
 - Decide what this story is about. Where the premise${brief.includes('## What the players asked for') ? ' and the players’ wishes in your brief' : ''} give you direction, follow it; where they leave room, invent. If your brief lists an adventure or setting document, search it and build on it rather than around it.
 - Write a "Story plan" page in your notebook with write_note: the central conflict, two or three arcs you could follow, what is really going on behind the scenes, a hook for each party member drawn from their sheet and persona, and anything the players asked to avoid.
-- Create the few people and places the opening needs with upsert_entity, with their secrets, and set the scene with set_scene.${campaign.gmSheets ? '\n- You keep the sheets at this table: if a party member’s sheet is missing basics the rules need, fill them in with edit_sheet.' : ''}
+- Create the few people and places the opening needs with upsert_entity, with their secrets, and set the scene with set_scene, naming who is there in "present".${campaign.gmSheets ? '\n- You keep the sheets at this table: if a party member’s sheet is missing basics the rules need, fill them in with edit_sheet.' : ''}
 
 Then write the opening narration: where the party is and why they are together, what they see, and one clear thing pulling at them. Introduce each party member by name in a line that suits them. End on an invitation to act. This one may run to about 250 words.`;
   return { system, messages: [{ role: 'user', content: [{ type: 'text', text }] }] };

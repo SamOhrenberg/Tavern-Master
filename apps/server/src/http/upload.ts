@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { open, rm } from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyRequest } from 'fastify';
@@ -69,3 +69,15 @@ export async function receiveFile(req: FastifyRequest, maxBytes?: number): Promi
 }
 
 export const discard = (file: ReceivedFile) => rm(file.path, { force: true });
+
+/** The first few kilobytes of a stored file: enough to tell what it really is. */
+export async function readHead(path: string): Promise<Buffer> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(8192);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}

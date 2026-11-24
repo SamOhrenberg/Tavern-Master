@@ -794,6 +794,10 @@ export interface Entity {
   firstSeenAt: string | null;
   /** The stat block, for people and creatures: only the lines the party may know. */
   sheet: StatLine[];
+  /** Where to load its picture from (people and creatures); absent when it has none. */
+  portrait?: string;
+  /** A person or creature the DM says is in the current scene with the party. */
+  inScene: boolean;
 }
 
 /**

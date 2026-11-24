@@ -250,6 +250,7 @@ export const TOOLS: ToolSpec[] = [
           summary: e.summary,
           ...(e.article ? { article: e.article } : {}),
           status: e.status,
+          ...(e.inScene ? { inScene: true } : {}),
           ...(e.secret
             ? { secret: e.secret, secretStatus: e.secretRevealed ? 'revealed' : 'UNREVEALED' }
             : {}),
@@ -680,13 +681,61 @@ export const TOOLS: ToolSpec[] = [
   tool({
     name: 'set_scene',
     description:
-      'Replace the current scene description: where the party is, who is there, what is at stake. Two or three sentences.',
-    schema: z.object({ description: z.string().trim().min(1).max(800) }),
+      'Replace the current scene description (where the party is, who is there, what is at stake; two or three ' +
+      'sentences), and say who is in it besides the party. The players see the faces of everyone in `present` ' +
+      'above the story, so keep it true: when someone arrives or leaves mid-scene, call this with just `present`. ' +
+      'List people and creatures from the codex by name (add a new one with upsert_entity first); a group of ' +
+      'creatures is one entry. An empty list means the party is alone. Leaving `present` out keeps it as it is.',
+    schema: z
+      .object({
+        description: z.string().trim().min(1).max(800).optional(),
+        present: z
+          .array(name)
+          .max(24)
+          .optional()
+          .describe('Everyone in the scene besides the party, by name'),
+      })
+      .refine(
+        (v) => v.description !== undefined || v.present !== undefined,
+        'Give a description, present, or both.',
+      ),
     async run(input, ctx, store) {
-      await store.setScene(ctx.campaignId, input.description);
+      let here: string[] | undefined;
+      if (input.present) {
+        const pool = (await store.entities(ctx.campaignId)).filter(
+          (e) => e.kind === 'npc' || e.kind === 'creature',
+        );
+        const ids = new Set<string>();
+        const missing: string[] = [];
+        for (const who of input.present) {
+          const want = who.trim().toLowerCase();
+          const hit =
+            pool.find((e) => e.name.toLowerCase() === want) ??
+            pool.find((e) => e.aliases.some((a) => a.toLowerCase() === want));
+          if (hit) ids.add(hit.id);
+          else missing.push(who);
+        }
+        // All or nothing, so a typo never leaves the list half changed.
+        if (missing.length) {
+          throw new ToolError(
+            `Not in the codex as a person or creature: ${missing.join(', ')}. Add them with upsert_entity ` +
+              '(kind npc or creature) first, or use the name they are filed under. Nothing was changed.',
+          );
+        }
+        await store.setPresent(ctx.campaignId, [...ids]);
+        here = pool.filter((e) => ids.has(e.id)).map((e) => e.name);
+      }
+      if (input.description !== undefined) await store.setScene(ctx.campaignId, input.description);
       ctx.stateChanged = true;
-      await store.recordEvent(ctx, { tool: 'set_scene', summary: 'Scene changed' });
-      return 'Scene updated.';
+      if (!here) {
+        here = (await store.entities(ctx.campaignId)).filter((e) => e.inScene).map((e) => e.name);
+      }
+      const who = here.length ? here.join(', ') : 'nobody but the party';
+      await store.recordEvent(ctx, {
+        tool: 'set_scene',
+        summary: input.description !== undefined ? `Scene changed. Present: ${who}` : `Present: ${who}`,
+      });
+      return `${input.description !== undefined ? 'Scene updated. ' : ''}In the scene besides the party: ${who}.`;
     },
   }),
 

@@ -24,6 +24,7 @@ const row = (over: Partial<EntityRow> = {}): EntityRow => ({
   inCodex: true,
   sheet: [],
   hidden: false,
+  inScene: false,
   ...over,
 });
 

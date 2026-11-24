@@ -46,7 +46,11 @@ screenshots in [portfolio.md](portfolio.md).
   party has run into, with a search and the stat block the DM keeps for each.
   Players see only what the party has learned: lines the DM marks hidden,
   unrevealed secrets and anyone not met yet never leave the server for them.
-  Owners can add and edit entries, and can turn on the spoilers to see it all.
+  Owners can add and edit entries, give anyone a picture (shown in the list,
+  on their entry and wherever the story names them), and can turn on the
+  spoilers to see it all. A strip above the story shows the faces of everyone
+  in the current scene, the party and whoever the DM says is with them, and
+  opens to the scene in full.
 - **A prep phase.** Before the first scene, build characters by hand, in a
   chat with a guide that knows the rules, or from an uploaded sheet; add
   campaign documents; and tell the DM what you hope the story holds, or leave
