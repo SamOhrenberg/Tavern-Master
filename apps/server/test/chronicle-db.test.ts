@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { publicStory } from '../src/agent/companion.js';
 import { playSinceSummary } from '../src/agent/context.js';
 import { summarizeCampaign } from '../src/agent/summarize.js';
 import { setConfigForTests, testConfig } from '../src/config.js';
@@ -118,5 +119,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the built-in chronicle (databas
     expect(tight).toMatch(/^\(\d+ earlier lines of play are not shown/);
     expect(tight).toContain('scene 11.');
     expect(tight).not.toContain('step 4.');
+  });
+
+  it('shows a companion the summaries and, word for word, all that they do not cover', async () => {
+    const story = await publicStory(camp, null);
+    expect(story.summaries).toContain('howling pass');
+    expect(story.recent).toContain('step 4.');
+    expect(story.recent).toContain('scene 11.');
+    // Already in the summary, so not repeated.
+    expect(story.recent).not.toContain('step 2.');
   });
 });

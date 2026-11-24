@@ -415,6 +415,12 @@ describe('a companion with its own AI', () => {
     const req = provider.requests[0]!;
     const sent = JSON.stringify(req);
     expect(req.tools).toBeUndefined();
+    // What holds all turn comes first and is cached on its own; this call's part follows it.
+    expect(req.messages).toHaveLength(2);
+    expect(req.messages[0]).toMatchObject({ role: 'user', cache: true });
+    expect(JSON.stringify(req.messages[0]!.content)).toContain('The door is ajar.');
+    expect(JSON.stringify(req.messages[1]!.content)).toContain('I open the door');
+    expect(req.messages[1]!.cache).toBeFalsy();
     expect(sent).toContain('cheerful tinker');
     expect(sent).toContain('The party reached the keep.');
     expect(sent).toContain('I open the door');

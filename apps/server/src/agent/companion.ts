@@ -1,7 +1,7 @@
 import { q } from '../db/pool.js';
 import type { ResolvedLlm } from '../llm/index.js';
 import type { Usage } from '../llm/pricing.js';
-import { complete, textOf } from '../llm/types.js';
+import { complete, textOf, type Message } from '../llm/types.js';
 import { COMPANION_LABEL, escapeXml, renderTurn, type CampaignInfo, type TurnInput } from './context.js';
 import { formatValue } from '../sheet-schema.js';
 import { placeKey } from './places.js';
@@ -100,35 +100,60 @@ interface Line {
   display_name: string | null;
 }
 
-/** The story as the players have seen it: summaries, then the latest exchanges word for word. */
+/** Most of the recent story a companion reads, in characters: about what piles up before a summary. */
+const RECENT_CHARS = 24_000;
+/** With less than this left unsummarised (just after a summary), the latest lines are shown anyway. */
+const MIN_RECENT_LINES = 6;
+
+const storyLine = (l: Line) =>
+  l.kind === 'dm'
+    ? `Dungeon Master: ${l.content}`
+    : `${l.character_name ?? l.display_name ?? 'Someone'}: ${l.content}`;
+
+/** The newest whole lines that fit in `max` characters, oldest first. */
+function newestFitting(lines: string[], max: number): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    used += lines[i]!.length + 2;
+    if (kept.length && used > max) break;
+    kept.unshift(lines[i]!);
+  }
+  return kept;
+}
+
+/**
+ * The story as the players have seen it: the summaries, then word for word
+ * everything they do not cover yet, so nothing falls between the two.
+ */
 export async function publicStory(
   campaignId: string,
   excludeTurnId: string | null,
 ): Promise<{ summaries: string; recent: string }> {
-  const [summaries, lines] = await Promise.all([
-    q<{ content: string }>(
-      `SELECT content FROM summaries WHERE campaign_id = $1 AND superseded_at IS NULL ORDER BY created_at`,
-      [campaignId],
-    ),
+  const recentLines = (onlyUnsummarised: boolean) =>
     q<Line>(
       `SELECT * FROM (
          SELECT m.id, m.kind, m.content, m.character_name, u.display_name
            FROM messages m LEFT JOIN users u ON u.id = m.user_id
           WHERE m.campaign_id = $1 AND m.kind IN ('action', 'dm')
             AND ($2::uuid IS NULL OR m.turn_id IS DISTINCT FROM $2)
-          ORDER BY m.id DESC LIMIT 30) recent
+            AND (NOT $3 OR m.summary_id IS NULL)
+          ORDER BY m.id DESC LIMIT $4) recent
         ORDER BY id`,
-      [campaignId, excludeTurnId],
+      [campaignId, excludeTurnId, onlyUnsummarised, onlyUnsummarised ? 400 : 12],
+    );
+  const [summaries, unsummarised] = await Promise.all([
+    q<{ content: string }>(
+      `SELECT content FROM summaries WHERE campaign_id = $1 AND superseded_at IS NULL ORDER BY created_at`,
+      [campaignId],
     ),
+    recentLines(true),
   ]);
-  const recent = lines
-    .map((l) =>
-      l.kind === 'dm'
-        ? `Dungeon Master: ${l.content}`
-        : `${l.character_name ?? l.display_name ?? 'Someone'}: ${l.content}`,
-    )
-    .join('\n\n');
-  return { summaries: summaries.map((s) => s.content).join('\n\n'), recent: recent.slice(-14000) };
+  const lines = unsummarised.length >= MIN_RECENT_LINES ? unsummarised : await recentLines(false);
+  return {
+    summaries: summaries.map((s) => s.content).join('\n\n'),
+    recent: newestFitting(lines.map(storyLine), RECENT_CHARS).join('\n\n'),
+  };
 }
 
 function escapeRegExp(s: string): string {
@@ -284,8 +309,19 @@ export type CompanionView = Pick<
  * the story so far, and this turn. Nothing from the DM's notebook, secrets,
  * DM-only documents or brief is in it. Shared by the built-in companion call
  * and by Claude's blind companion subagent.
+ *
+ * `text` is the whole message, in two parts: `stable`, what holds all turn
+ * (the story, the scene, the codex, the party), and `now`, what this call is
+ * about. A companion is asked again each time a player speaks mid-turn, so
+ * the stable part is worth caching apart from the rest.
  */
-export function companionPrompt(run: CompanionView): { system: string; storySoFar: string; text: string } {
+export function companionPrompt(run: CompanionView): {
+  system: string;
+  storySoFar: string;
+  text: string;
+  stable: string;
+  now: string;
+} {
   const { campaign, character: c, story } = run;
   const here = sight(run.party, c);
   // Only what the character can see: actions from party members in the same place.
@@ -312,12 +348,16 @@ export function companionPrompt(run: CompanionView): { system: string; storySoFa
   ]
     .filter(Boolean)
     .join(' ');
-  const text = [
+  const stable = [
     story.recent ? `<story>\n${escapeXml(story.recent)}\n</story>` : '',
     // The current scene is the main group's; a companion off on its own is not in it.
     run.scene && !c.whereabouts ? `<scene>${escapeXml(run.scene)}</scene>` : '',
     knownBlock(run.known),
     partyBlock(run.party, c, here),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const now = [
     `<you name="${escapeXml(c.name)}" ${vitals}/>`,
     renderTurn(turn),
     unseen > 0
@@ -338,7 +378,9 @@ export function companionPrompt(run: CompanionView): { system: string; storySoFa
   return {
     system: companionSystem(campaign, c),
     storySoFar: story.summaries ? `## The story so far\n${story.summaries}` : '',
-    text,
+    text: [stable, now].filter(Boolean).join('\n\n'),
+    stable,
+    now,
   };
 }
 
@@ -389,12 +431,18 @@ export async function companionTurn(run: CompanionRun): Promise<string | null> {
   const prompt = companionPrompt(run);
   const system = [{ text: prompt.system, cache: true }];
   if (prompt.storySoFar) system.push({ text: prompt.storySoFar, cache: true });
-  const text = prompt.text;
+  const messages: Message[] = [
+    // The same all turn, so a companion asked again as the players talk reads it from the cache.
+    ...(prompt.stable
+      ? [{ role: 'user' as const, content: [{ type: 'text' as const, text: prompt.stable }], cache: true }]
+      : []),
+    { role: 'user', content: [{ type: 'text', text: prompt.now }] },
+  ];
 
   const done = await complete(llm.provider, {
     model: llm.model,
     system,
-    messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+    messages,
     // Room for a little thinking; the reply itself is a sentence or three.
     maxTokens: 2000,
     effort: llm.effort,
